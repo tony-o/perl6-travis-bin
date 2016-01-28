@@ -1,0 +1,7 @@
+.bash*
+.cache
+.profile
+.ssh
+.viminfo
+.zef/*
+.gitconfig
