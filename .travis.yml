@@ -11,6 +11,6 @@ before_install:
     - eval "$($HOME/brew/bin/rakudobrew init -)"
 install:
     # need at least 1 statement in 'install'
-    - perl6 -e 'Hello world.'
+    - perl6 -v
 script:
     - sh test.sh
