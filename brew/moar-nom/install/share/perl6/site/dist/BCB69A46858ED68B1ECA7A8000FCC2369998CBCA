@@ -1,0 +1,20 @@
+{
+  "files" : { },
+  "name" : "File::Find",
+  "source-url" : "/home/travis/brew/moar-nom/panda/ext/File__Find",
+  "provides" : {
+    "File::Find" : {
+      "pm" : {
+        "cver" : "2015.12-225-g7801920",
+        "file" : "1E7B7CD270D1C8B782A53241595DA9FD38CE4B28",
+        "time" : 1454009578.06926
+      }
+    }
+  },
+  "auth" : null,
+  "depends" : [
+    [ ]
+  ],
+  "description" : "Bla bla",
+  "ver" : "*"
+}

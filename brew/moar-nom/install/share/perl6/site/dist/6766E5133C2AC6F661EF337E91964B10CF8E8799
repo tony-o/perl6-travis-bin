@@ -1,0 +1,22 @@
+{
+  "files" : { },
+  "name" : "Shell::Command",
+  "source-url" : "/home/travis/brew/moar-nom/panda/ext/Shell__Command",
+  "provides" : {
+    "Shell::Command" : {
+      "pm" : {
+        "cver" : "2015.12-225-g7801920",
+        "file" : "2B0BFDD931143BF2AC199A2EF61C1E1E545334E0",
+        "time" : 1454009583.67726
+      }
+    }
+  },
+  "auth" : null,
+  "depends" : [
+    [
+      "File::Find"
+    ]
+  ],
+  "description" : "Ble ble",
+  "ver" : "*"
+}

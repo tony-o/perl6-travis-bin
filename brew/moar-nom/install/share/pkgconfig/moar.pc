@@ -1,0 +1,21 @@
+# pkg-config information for MoarVM 2015.12-29-g8079ca5
+#
+prefix=/home/travis/brew/moar-nom/install
+package=moar
+includedir=/home/travis/brew/moar-nom/install/include
+bindir=/home/travis/brew/moar-nom/install/bin
+libdir=/home/travis/brew/moar-nom/install/lib
+mastdir=/home/travis/brew/moar-nom/install/share/nqp/lib/MAST
+ldopts= -O3 -DNDEBUG -Wl,-rpath,/home/travis/brew/moar-nom/install/lib -Wl,-rpath,/home/travis/brew/moar-nom/install/share/perl6/site/lib
+exeext=
+version=2015.12-29-g8079ca5
+moar=/home/travis/brew/moar-nom/install/bin/moar
+libs= -O3 -DNDEBUG -Wl,-rpath,/home/travis/brew/moar-nom/install/lib -Wl,-rpath,/home/travis/brew/moar-nom/install/share/perl6/site/lib -L/home/travis/brew/moar-nom/install/lib -lmoar
+static_libs=
+
+Name:           MoarVM
+Description:    A virtual machine for Rakudo Perl 6 and NQP
+URL:            http://moarvm.org
+Version:        2015.12-29-g8079ca5
+Libs:            -O3 -DNDEBUG -Wl,-rpath,/home/travis/brew/moar-nom/install/lib -Wl,-rpath,/home/travis/brew/moar-nom/install/share/perl6/site/lib -L/home/travis/brew/moar-nom/install/lib -lmoar
+Cflags:         -I/home/travis/brew/moar-nom/install/include
