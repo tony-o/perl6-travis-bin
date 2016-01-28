@@ -1,0 +1,16 @@
+language: perl
+perl:
+    - '5.20'
+env:
+    - BACKEND=moar
+matrix:
+    fast_finish: true
+sudo: false
+before_install:
+    - mv brew ~/
+    - eval "$($HOME/brew/bin/rakudobrew init -)"
+install:
+    # need at least 1 statement in 'install'
+    - perl6 -e 'Hello world.'
+script:
+    - sh test.sh
