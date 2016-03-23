@@ -23,6 +23,27 @@ class CompUnit::PrecompilationRepository::Default does CompUnit::PrecompilationR
     my $lle;
     my $profile;
 
+    method try-load(CompUnit::PrecompilationId $id, IO::Path $source) returns CompUnit::Handle {
+        my $handle = (
+            self.may-precomp and (
+                self.load($id, :since($source.modified)) # already precompiled?
+                or self.precompile($source, $id) and self.load($id) # if not do it now
+            )
+        );
+        my $precompiled = ?$handle;
+
+        if $*W and $*W.is_precompilation_mode {
+            if $precompiled {
+                say "$id $source";
+            }
+            else {
+                nqp::exit(0);
+            }
+        }
+
+        $handle ?? $handle !! Nil
+    }
+
     method !load-handle-for-path(IO::Path $path) {
         my $preserve_global := nqp::ifnull(nqp::gethllsym('perl6', 'GLOBAL'), Mu);
         if $*RAKUDO_MODULE_DEBUG -> $RMD { $RMD("Loading precompiled\n$path") }
@@ -122,6 +143,7 @@ class CompUnit::PrecompilationRepository::Default does CompUnit::PrecompilationR
           "--output=$io",
           $path,
           :out,
+          :err,
         );
         %ENV.DELETE-KEY(<RAKUDO_PRECOMP_WITH>);
         %ENV.DELETE-KEY(<RAKUDO_PRECOMP_LOADING>);
@@ -130,26 +152,32 @@ class CompUnit::PrecompilationRepository::Default does CompUnit::PrecompilationR
         my @result = $proc.out.lines.unique;
         if not $proc.out.close or $proc.status {  # something wrong
             self.store.unlock;
-            push @result, "Return status { $proc.status }\n";
-            $RMD("Precomping $path failed: {@result}") if $RMD;
-            fail @result if @result;
+            $RMD("Precomping $path failed: $proc.status()") if $RMD;
+            Rakudo::Internals.VERBATIM-EXCEPTION(1);
+            die $proc.err.slurp-rest;
         }
-        else {
-            $RMD("Precompiled $path into $io") if $RMD;
-            my str $dependencies = '';
-            for @result -> $dependency {
-                Rakudo::Internals.KEY_SPACE_VALUE(
-                  $dependency,my $dependency-id,my $dependency-src);
-                my $path = self.store.path($compiler-id, $dependency-id);
-                if $path.e {
-                    $dependencies ~= "$dependency\n";
-                    spurt($path ~ '.rev-deps', "$id\n", :append);
-                }
+
+        if $proc.err.slurp-rest -> $warnings {
+            $*ERR.print($warnings);
+        }
+        $RMD("Precompiled $path into $io") if $RMD;
+        my str $dependencies = '';
+        for @result -> $dependency {
+            unless $dependency ~~ /^<[A..Z0..9]> ** 40 \s .+/ {
+                say $dependency;
+                next
             }
-            spurt($io ~ '.deps', $dependencies);
-            self.store.unlock;
-            True
+            Rakudo::Internals.KEY_SPACE_VALUE(
+              $dependency,my $dependency-id,my $dependency-src);
+            my $path = self.store.path($compiler-id, $dependency-id);
+            if $path.e {
+                $dependencies ~= "$dependency\n";
+                spurt($path ~ '.rev-deps', "$id\n", :append);
+            }
         }
+        spurt($io ~ '.deps', $dependencies);
+        self.store.unlock;
+        True
     }
 }
 

@@ -7,10 +7,10 @@
  */
 
 /* Version information. */
-#define MVM_VERSION "2015.12-29-g8079ca5"
-#define MVM_VERSION_MAJOR 2015
-#define MVM_VERSION_MINOR 12
-#define MVM_VERSION_PATCH 29
+#define MVM_VERSION "2016.03"
+#define MVM_VERSION_MAJOR 2016
+#define MVM_VERSION_MINOR 03
+#define MVM_VERSION_PATCH 0
 
 /* Various compiler-specific pragmii. */
 #define MVM_NO_RETURN 

@@ -13,14 +13,11 @@ end of this document.
 
 =head2 Planned future releases
 
-  2016-01-16   Rakudo #95  - Coke
+Note that we are trying very hard to insure there are no backward
+compatibility issues post Christmas. As such, we may end up delaying
+some releases to insure any compatibility issues are resolved.
 
-Note that #95 will be the first release that has to cope with
-backward compatibility issues. As such, we may end up delaying
-this release to insure any compatibility issues are resolved.
-
-  2016-02-20   Rakudo #96
-  2016-03-19   Rakudo #97
+  2016-03-19   Rakudo #97 (Coke)
   2016-04-16   Rakudo #98
   2016-05-21   Rakudo #99
   2016-06-18   Rakudo #100
@@ -46,8 +43,7 @@ A few days before the Rakudo release, it’s a good idea to...
 =item *
 
 Remind people of the upcoming release, invite people to
-update the ChangeLog file, update the ROADMAP, choose a
-release name, etc.
+update the ChangeLog file, update the ROADMAP, etc.
 
 =item *
 
@@ -89,12 +85,12 @@ in a year not reflected by the file’s copyright notice.)
 
 Update Rakudo’s leap-second tables:
 
-  $ perl tools/update-tai-utc.pl src/core/tai-utc.pm
+  $ perl tools/update-tai-utc.pl
 
 If a new leap second has been announced, F<tai-utc.pm> will be modified, so
 commit the new version:
 
-  $ git commit src/core/tai-utc.pm
+  $ git commit src
 
 But probably there won’t be any new leap seconds, in which case the file
 will be unchanged.
@@ -117,10 +113,7 @@ This can be conveniently done with
 When it’s time to cut the release, finalize the new release
 announcement in docs/announce/YYYY.MM.md .  (If one hasn’t already
 been created, see step 1 above.) Highlight areas in which the
-new release is significant.  If possible, also give some small
-details about the choice of release name.  (If the details
-are a bit lengthy, this can often best be done as a separate
-section at the bottom of the announcement.)
+new release is significant.
 
 Include a list of contributors since the last release in the announcement.
 You can get an automatically generated list by running
@@ -175,9 +168,9 @@ Make sure everything compiles and runs from a known clean state:
   $ make
   $ make test
   $ make install
-  $ (cd t/spec & git checkout 6.c)    # test stable language spec
+  $ (cd t/spec & git checkout 6.c-errata) # test stable language spec
   $ make stresstest
-  $ (cd t/spec & git checkout master) # test latest language spec
+  $ (cd t/spec & git checkout master)     # test latest language spec
   $ make stresstest
 
 There are many tests to run for the stresstest target.  If
@@ -213,15 +206,7 @@ If there are any problems, fix them and go back to step 10.
 
 Tag the release by its release month ("YYYY.MM") and its code name.
 
-  $ git tag -s -a -m"tag release #nn" YYYY.MM    # e.g., 2013.08
-  $ git tag -s -a -m"tag release #nn" CODENAME   # e.g., "Bratislava"
-
-If this is a new non-dev $*PERL.version, tag with the version as well.
-
-  $ git tag -s -a -m"tag release #nn" VERSION   # e.g., v6.b
-
-Push all tags.
-
+  $ git tag -u <email> -s -a -m"tag release #nn" YYYY.MM    # e.g., 2013.08
   $ git push --tags
 
 The C<-s> tells git to sign the release with your PGP/GPG key, so it will
@@ -302,7 +287,6 @@ Previous releases were bundled as part of monthly Parrot releases.
   2011-05-19   Rakudo #41 "Dahut"              (jdhore)
   2011-06-23   Rakudo #42 "Bruxelles"          (jdhore)
   2011-07-21   Rakudo #43 "Beijing"            (mberends,moritz)
-  2011-08-18    -- none --
   2011-09-30   Rakudo #44 "Riga"               (tadzik)
   2011-10-20   Rakudo #45 "Houston"            (duff)
   2011-11-17   Rakudo #46 "London"             (tadzik)
@@ -359,11 +343,15 @@ Previous releases were bundled as part of monthly Parrot releases.
   2015-09-17   Rakudo #91 "Zürich"             (Coke)
   2015-10-22   Rakudo #92 "Niceville"          (Coke) # v6.b
   2015-11-19   Rakudo #93 "Bend"               (Coke)
+
   2015-12-25   Rakudo #94 "коледа"             (Coke) # v6.c
+  2016-02-01   Rakudo #95 "2016.01"            (Coke)
+  2016-02-02   2016.01.1                       (Coke)
+  2016-02-21   Rakudo #96 "2016.02"            (Coke)
 
 =head1 COPYRIGHT
 
-Copyright (C) 2009-2015, The Perl Foundation.
+Copyright (C) 2009-2016, The Perl Foundation.
 
 =cut
 

@@ -3,26 +3,62 @@ my class Seq { ... }
 my class Lock is repr('ReentrantMutex') { ... }
 my class X::IllegalOnFixedDimensionArray { ... };
 my class X::Assignment::ToShaped { ... };
+my class X::Str::Sprintf::Directives::BadType { ... };
+my class X::Str::Sprintf::Directives::Count { ... };
+my class X::Str::Sprintf::Directives::Unsupported { ... };
 
 my class Rakudo::Internals {
 
-    our role MappyIterator does Iterator {
-        has $!hash-storage;
-        has $!hash-iter;
+    # an empty hash for when we need to iterate over something
+    my \no-keys := nqp::hash;
 
-        method BUILD(\hash) {
-            $!hash-storage := nqp::getattr(hash, Map, '$!storage');
-            $!hash-storage := nqp::hash() unless $!hash-storage.DEFINITE;
-            $!hash-iter    := nqp::iterator($!hash-storage);
+    our role MappyIterator does Iterator {
+        has $!storage;
+        has $!iter;
+
+        method !SET-SELF(\hash) {
+            $!storage := nqp::getattr(hash,Map,'$!storage');
+            $!storage := no-keys unless $!storage.DEFINITE;
+            $!iter    := nqp::iterator($!storage);
             self
         }
-        method new(\hash) { nqp::create(self).BUILD(hash) }
+        method new(\hash) { nqp::create(self)!SET-SELF(hash) }
         method count-only() {
-            $!hash-iter := Mu;
-            nqp::p6box_i(nqp::elems($!hash-storage))
+            $!iter := Mu;
+            nqp::p6box_i(nqp::elems($!storage))
         }
         method sink-all() {
-            $!hash-iter := Mu;
+            $!iter := Mu;
+            IterationEnd
+        }
+    }
+
+    our role BlobbyIterator does Iterator {
+        has $!blob;
+        has int $!elems;
+        has Int $!i;   # cannot be an int yet sadly enough
+
+        method SET-SELF(\blob) {
+            $!blob := blob;
+            $!i     = -1;
+            $!elems = nqp::elems($!blob);
+            self
+        }
+        method new(\blob) { nqp::create(self).SET-SELF(blob) }
+        method push-all($target) {
+            my $blob      := $!blob;  # attribute access is slower
+            my int $i      = $!i;
+            my int $elems  = $!elems;
+            $target.push(nqp::atpos_i($blob,$i))
+              while nqp::islt_i($i = nqp::add_i($i,1),$elems);
+            IterationEnd
+        }
+        method count-only() {
+            $!i = $!elems;
+            nqp::p6box_i($!elems)
+        }
+        method sink-all() {
+            $!i = $!elems;
             IterationEnd
         }
     }
@@ -113,7 +149,7 @@ my class Rakudo::Internals {
         has @!pairs;
         has $!total;
 
-        method BUILD(\list-of-pairs) {
+        method !SET-SELF(\list-of-pairs) {
             $!total = 0;
             for list-of-pairs.pairs {
                 my $value := .value;
@@ -124,7 +160,7 @@ my class Rakudo::Internals {
             }
             self
         }
-        method new(\list-of-pairs) { nqp::create(self).BUILD(list-of-pairs) }
+        method new(\list-of-pairs) { nqp::create(self)!SET-SELF(list-of-pairs) }
         method roll() {
             my $rand = $!total.rand;
             my $seen = 0;
@@ -375,42 +411,25 @@ my class Rakudo::Internals {
     }
 
     our role ShapedArrayCommon {
-        proto method push(|c) {
-            self.DEFINITE
-                ?? X::IllegalOnFixedDimensionArray.new(operation => 'push').throw
-                !! self.Any::push(|c)
+        method !illegal($operation) {
+            X::IllegalOnFixedDimensionArray.new(:$operation).throw
         }
-        proto method append(|c) {
-            self.DEFINITE
-                ?? X::IllegalOnFixedDimensionArray.new(operation => 'append').throw
-                !! self.Any::append(|c)
-        }
+        multi method pop(::?CLASS:D:)    { self!illegal("pop")    }
+        multi method shift(::?CLASS:D:)  { self!illegal("shift")  }
+        multi method splice(::?CLASS:D: *@) { self!illegal("splice") }
+        multi method plan(::?CLASS:D: *@)   { self!illegal("plan")   }
 
-        multi method pop(::?CLASS:D:) {
-            X::IllegalOnFixedDimensionArray.new(operation => 'pop').throw
+        proto method push(|c) is nodal {
+            self.DEFINITE ?? self!illegal("push")    !! self.Any::push(|c)
         }
-
-        multi method shift(::?CLASS:D:) {
-            X::IllegalOnFixedDimensionArray.new(operation => 'shift').throw
+        proto method append(|c) is nodal {
+            self.DEFINITE ?? self!illegal("append")  !! self.Any::append(|c)
         }
-
-        proto method unshift(|c) {
-            self.DEFINITE
-                ?? X::IllegalOnFixedDimensionArray.new(operation => 'unshift').throw
-                !! self.Any::unshift(|c)
+        proto method unshift(|c) is nodal {
+            self.DEFINITE ?? self!illegal("unshift") !! self.Any::unshift(|c)
         }
-        proto method prepend(|c) {
-            self.DEFINITE
-                ?? X::IllegalOnFixedDimensionArray.new(operation => 'prepend').throw
-                !! self.Any::prepend(|c)
-        }
-
-        multi method splice(::?CLASS:D: *@) {
-            X::IllegalOnFixedDimensionArray.new(operation => 'splice').throw
-        }
-
-        multi method plan(::?CLASS:D: *@) {
-            X::IllegalOnFixedDimensionArray.new(operation => 'plan').throw
+        proto method prepend(|c) is nodal {
+            self.DEFINITE ?? self!illegal("prepend") !! self.Any::prepend(|c)
         }
 
         multi method keys(::?CLASS:D:) {
@@ -538,7 +557,8 @@ my class Rakudo::Internals {
         has int $!bust;
         has $!lock;
 
-        submethod BUILD(:&!on-data-ready!, :&!on-completed!, :&!on-error!) {
+        submethod BUILD(
+          :&!on-data-ready!, :&!on-completed!, :&!on-error! --> Nil) {
             $!buffer := nqp::list();
             $!buffer-start-seq = 0;
             $!done-target = -1;
@@ -650,8 +670,16 @@ my class Rakudo::Internals {
     }
     method IS-WIN() { $IS-WIN }
 
+    method NUMERIC-ENV-KEY(\key) {
+        %*ENV.EXISTS-KEY(key)
+          ?? %*ENV.AT-KEY(key)
+            ?? +%*ENV.AT-KEY(key)
+            !! 0
+          !! Nil
+    }
+
     method error-rcgye() {  # red clear green yellow eject
-        %*ENV<RAKUDO_ERROR_COLOR> // !self.IS-WIN
+        self.NUMERIC-ENV-KEY("RAKUDO_ERROR_COLOR") // !self.IS-WIN
           ?? ("\e[31m", "\e[0m", "\e[32m", "\e[33m", "\x[23CF]")
           !! ("", "", "", "", "<HERE>");
     }
@@ -717,7 +745,6 @@ my class Rakudo::Internals {
 
     # easy access to compile options
     my Mu $compiling-options := nqp::atkey(%*COMPILING, '%?OPTIONS');
-    $compiling-options := nqp::hash() if nqp::isnull($compiling-options);
 
     # running with --ll-exception
     method LL-EXCEPTION() {
@@ -872,13 +899,19 @@ my class Rakudo::Internals {
         my int $i = -1;
         Nil while ($i = $i + 1) < $elems && nqp::atpos($posixes,$i) < ($t - $i);
         tai - $initial-offset - $i,
-          $i < $elems && nqp::atpos($posixes,$i) == $t - $i
+          nqp::p6bool($i < $elems && nqp::atpos($posixes,$i) == $t - $i)
     }
 
     my $initializers := nqp::hash;
-    method REGISTER-DYNAMIC(Str:D \name, &code, Str \ver = '6.c' --> Nil) {
+#nqp::print("running mainline\n");
+#method INITIALIZERS() { $initializers }
+
+    method REGISTER-DYNAMIC(Str:D \name, &code, Str $version = '6.c' --> Nil) {
+#nqp::print("Registering ");
+#nqp::print(name);
+#nqp::print("\n");
         my str $name = nqp::unbox_s(name);
-        my str $ver  = nqp::unbox_s(ver);
+        my str $ver  = nqp::unbox_s($version);
         my str $with = $ver ~ "\0" ~ $name;
         nqp::existskey($initializers,$with)
           ?? die "Already have initializer for '$name' ('$ver')"
@@ -887,7 +920,9 @@ my class Rakudo::Internals {
           unless nqp::existskey($initializers,$name);
     }
     method INITIALIZE-DYNAMIC(str \name) {
-#print "Initializing {name}\n";
+#nqp::print("Initializing");
+#nqp::print(name);
+#nqp::print("\n");
         my str $ver  = nqp::getcomp('perl6').language_version;
         my str $with = $ver ~ "\0" ~ name;
         nqp::existskey($initializers,$with)
@@ -895,6 +930,53 @@ my class Rakudo::Internals {
           !! nqp::existskey($initializers,name)
             ?? nqp::atkey($initializers,name)()
             !! X::Dynamic::NotFound.new(:name(name));
+    }
+
+    method EXPAND-LITERAL-RANGE(Str:D \x,$list) {
+        my str $s      = nqp::unbox_s(x);
+        my int $chars  = nqp::chars($s);
+        my Mu $result := nqp::list();
+        my int $start  = 1;
+        my int $found  = nqp::index($s,'..',$start);
+
+        # found and not at the end without trail
+        while nqp::isne_i($found,-1) && nqp::isne_i($found,$chars-2) {
+
+            if $found - $start -> $unsplit {
+                nqp::splice(
+                  $result,
+                  nqp::split("",nqp::substr($s,$start - 1,$unsplit)),
+                  nqp::elems($result),
+                  0
+                )
+            }
+
+            # add the range excluding last (may be begin point next range)
+            my int $from = nqp::ordat($s,$found - 1) - 1;
+            my int $to   = nqp::ordat($s,$found + 2);
+            nqp::push($result,nqp::chr($from))
+              while nqp::islt_i($from = $from + 1,$to);
+
+            # look for next range
+            $found = nqp::index($s,'..',$start = $found + 3);
+        }
+
+        # add final bits
+        nqp::splice(
+          $result,
+          nqp::split("",nqp::substr($s,$start - 1)),
+          nqp::elems($result),
+          0
+        ) if nqp::isle_i($start,$chars);
+
+        $list ?? $result !! nqp::join("",$result)
+    }
+
+    my int $VERBATIM-EXCEPTION = 0;
+    method VERBATIM-EXCEPTION($set?) {
+        my int $value = $VERBATIM-EXCEPTION;
+        $VERBATIM-EXCEPTION = $set if defined($set);
+        $value
     }
 
     method MAKE-ABSOLUTE-PATH(Str:D $path, Str:D $abspath) {
@@ -1079,29 +1161,63 @@ my class Rakudo::Internals {
     }
 
     method FILETEST-MODIFIED(Str:D \abspath) {
-#?if moar
         nqp::stat_time(nqp::unbox_s(abspath), nqp::const::STAT_MODIFYTIME)
-#?endif
-#?if !moar
-        nqp::stat(nqp::unbox_s(abspath), nqp::const::STAT_MODIFYTIME)
-#?endif
     }
     method FILETEST-ACCESSED(Str:D \abspath) {
-#?if moar
         nqp::stat_time(nqp::unbox_s(abspath), nqp::const::STAT_ACCESSTIME)
-#?endif
-#?if !moar
-        nqp::stat(nqp::unbox_s(abspath), nqp::const::STAT_ACCESSTIME)
-#?endif
     }
     method FILETEST-CHANGED(Str:D \abspath) {
-#?if moar
         nqp::stat_time(nqp::unbox_s(abspath), nqp::const::STAT_CHANGETIME)
-#?endif
-#?if !moar
-        nqp::stat(nqp::unbox_s(abspath), nqp::const::STAT_CHANGETIME)
-#?endif
+    }
+
+    our class CompilerServices {
+        has Mu $!compiler;
+
+        method generate_accessor(str $name, Mu \package_type, str $attr_name, Mu \type, int $rw) {
+            $!compiler.generate_accessor($name, package_type, $attr_name, type, $rw);
+        }
+    }
+
+    method HANDLE-NQP-SPRINTF-ERRORS(Mu \exception) {
+        my $vmex := nqp::getattr(nqp::decont(exception), Exception, '$!ex');
+        my \payload := nqp::getpayload($vmex);
+        if nqp::elems(payload) == 1 {
+            if nqp::existskey(payload, 'BAD_TYPE_FOR_DIRECTIVE') {
+                X::Str::Sprintf::Directives::BadType.new(
+                    type      => nqp::atkey(nqp::atkey(payload, 'BAD_TYPE_FOR_DIRECTIVE'), 'TYPE'),
+                    directive => nqp::atkey(nqp::atkey(payload, 'BAD_TYPE_FOR_DIRECTIVE'), 'DIRECTIVE'),
+                ).throw
+            }
+            if nqp::existskey(payload, 'BAD_DIRECTIVE') {
+                X::Str::Sprintf::Directives::Unsupported.new(
+                    directive => nqp::atkey(nqp::atkey(payload, 'BAD_DIRECTIVE'), 'DIRECTIVE'),
+                    sequence  => nqp::atkey(nqp::atkey(payload, 'BAD_DIRECTIVE'), 'SEQUENCE'),
+                ).throw
+            }
+            if nqp::existskey(payload, 'DIRECTIVES_COUNT') {
+                X::Str::Sprintf::Directives::Count.new(
+                    args-have => nqp::atkey(nqp::atkey(payload, 'DIRECTIVES_COUNT'), 'ARGS_HAVE'),
+                    args-used => nqp::atkey(nqp::atkey(payload, 'DIRECTIVES_COUNT'), 'ARGS_USED'),
+                ).throw
+            }
+        }
     }
 }
+
+# we need this to run *after* the mainline of Rakudo::Internals has run
+Rakudo::Internals.REGISTER-DYNAMIC: '&*EXIT', {
+    PROCESS::<&EXIT> := sub exit($status) {
+        state $exit;
+        $exit = $status;
+
+        once {
+            Rakudo::Internals.THE_END();
+            nqp::exit(nqp::unbox_i($exit.Int));
+        }
+        $exit;
+    }
+}
+
+sub exit($status = 0) { &*EXIT($status) }
 
 # vim: ft=perl6 expandtab sw=4

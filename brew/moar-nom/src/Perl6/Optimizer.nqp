@@ -1557,7 +1557,7 @@ class Perl6::Optimizer {
         if +@($op) > 0 {
             # if we know we're directly calling the result, we can be smarter
             # about METAOPs
-            my $is_var := 0;
+            my int $is_var := 0;
             if nqp::istype((my $metaop := $op[0]), QAST::Op) && ($metaop.op eq 'call' || $metaop.op eq 'callstatic') {
                 if $metaop.name eq '&METAOP_ASSIGN' && $!symbols.is_from_core('&METAOP_ASSIGN') {
                     if nqp::istype($metaop[0], QAST::Var) {
@@ -1567,15 +1567,18 @@ class Perl6::Optimizer {
                             || (nqp::istype($op[1], QAST::Op)
                                 && ($op[1].op eq 'callmethod'
                                     || ($op[1].op eq 'hllize'
-                                        && nqp::istype($op[1][0], QAST::Op) && $op[1][0].op eq 'callmethod'))) {
+                                        && nqp::istype($op[1][0], QAST::Op) && $op[1][0].op eq 'callmethod')
+                                    || $op[1].op eq 'call' || $op[1].op eq 'callstatic')) {
                             my str $assignop;
                             my $assignee;
                             my $assignee_var;
+                            my int $is-always-definite;
                             if $is_var {
                                 my str $sigil := nqp::substr($op[1].name, 0, 1);
 
                                 if nqp::objprimspec($op[1].returns) -> $spec {
                                     $assignop := @native_assign_ops[$spec];
+                                    $is-always-definite := 1;
                                 } elsif $sigil eq '$' {
                                     $assignop := 'assign';
                                 } else {
@@ -1611,12 +1614,18 @@ class Perl6::Optimizer {
                             $op.pop;
 
                             $op.push($assignee);
-                            $op.push(QAST::Op.new( :op('call'), :name($metaop[0].name),
-                                QAST::Op.new( :op('if'),
-                                    QAST::Op.new( :op('p6definite'), $assignee_var),
+                            if ($is-always-definite) {
+                                $op.push(QAST::Op.new( :op('call'), :name($metaop[0].name),
                                     $assignee_var,
-                                    QAST::Op.new( :op('call'), :name($metaop[0].name) ) ),
-                                $operand));
+                                    $operand));
+                            } else {
+                                $op.push(QAST::Op.new( :op('call'), :name($metaop[0].name),
+                                    QAST::Op.new( :op('if'),
+                                        QAST::Op.new( :op('p6definite'), $assignee_var),
+                                        $assignee_var,
+                                        QAST::Op.new( :op('call'), :name($metaop[0].name) ) ),
+                                    $operand));
+                            }
 
                             if $assignop ne 'assign' && nqp::objprimspec($assignee.returns) {
                                 $op.returns($assignee.returns);

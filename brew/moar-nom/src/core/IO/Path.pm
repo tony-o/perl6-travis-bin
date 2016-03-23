@@ -17,7 +17,7 @@ my class IO::Path is Cool {
         nqp::p6bool(nqp::iseq_s($.abspath,nqp::unbox_s(IO::Path.new(|that).abspath)));
     }
 
-    submethod BUILD(Str() :$!path!, :$!SPEC!, Str() :$!CWD!) { }
+    submethod BUILD(Str() :$!path!, :$!SPEC!, Str() :$!CWD! --> Nil) { }
 
     method new-from-absolute-path($path, :$SPEC = $*SPEC, :$CWD = $*CWD) {
         method !fap() {
@@ -465,21 +465,27 @@ my class IO::Path is Cool {
 
         my Mu $PIO := nqp::getattr(nqp::decont($handle),IO::Handle,'$!PIO');
         if $bin {
-            my $Buf := buf8.new();
-            loop {
-                my $buf := buf8.new();
-                nqp::readfh($PIO,$buf,65536);
-                last if $buf.bytes == 0;
-                $Buf := $Buf ~ $buf;
+            # normal file
+            if Rakudo::Internals.FILETEST-S(self.abspath) -> int $size {
+                nqp::readfh($PIO,buf8.new,$size)
             }
-            $handle.close;
-            $Buf;
+            # spooky file with zero size?
+            else {
+                my $res := buf8.new();
+                loop {
+                    my $buf := nqp::readfh($PIO,buf8.new,0x100000);
+                    last unless nqp::elems($buf);
+                    $res.push($buf);
+                }
+                $handle.close;
+                $res
+            }
         }
         else {
             $handle.encoding($enc) if $enc.defined;
             my $slurped := nqp::p6box_s(nqp::readallfh($PIO));
             $handle.close;
-            $slurped;
+            $slurped
         }
     }
 

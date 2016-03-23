@@ -123,9 +123,7 @@ my class Cool { # declared in BOOTSTRAP
     method chr() {
         self.Int.chr;
     }
-    method chrs(Cool:D:) {
-        self>>.chr.join;
-    }
+    method chrs(Cool:D:) { chrs(self.list) }
     method ords(Cool:D:) { self.Str.ords }
 
 
@@ -347,6 +345,14 @@ multi sub wordcase(Str:D $x) {$x.wordcase }
 multi sub wordcase(Cool $x)  {$x.Str.wordcase }
 
 sub sprintf(Cool $format, *@args) {
+    CATCH {
+        when X::Cannot::Lazy {
+            X::Cannot::Lazy.new(:action('(s)printf')).throw
+        }
+        default {
+            Rakudo::Internals.HANDLE-NQP-SPRINTF-ERRORS($_).throw
+        }
+    }
     Rakudo::Internals.initialize-sprintf-handler;
     @args.elems;
     nqp::p6box_s(

@@ -22,13 +22,15 @@ my constant OpaquePointer is export(:types, :DEFAULT) = NativeCall::Types::Point
 my class native_callsite is repr('NativeCall') { }
 
 # Maps a chosen string encoding to a type recognized by the native call engine.
-sub string_encoding_to_nci_type($enc) {
-    given $enc {
-        when 'utf8'  { 'utf8str'  }
-        when 'utf16' { 'utf16str' }
-        when 'ascii' { 'asciistr' }
-        default      { die "Unknown string encoding for native call: $enc"; }
-    }
+sub string_encoding_to_nci_type(\encoding) {
+    my str $enc = encoding;
+    nqp::iseq_s($enc,"utf8")
+      ?? "utf8str"
+      !! nqp::iseq_s($enc,"ascii")
+        ?? "asciistr"
+        !! nqp::iseq_s($enc,"utf16")
+          ?? "utf16str"
+          !! die "Unknown string encoding for native call: $enc"
 }
 
 # Builds a hash of type information for the specified parameter.
@@ -43,34 +45,43 @@ sub param_hash_for(Parameter $p, :$with-typeobj) {
         nqp::bindkey($result, 'free_str', nqp::unbox_i(1));
     }
     elsif $type ~~ Callable {
-        nqp::bindkey($result, 'type', nqp::unbox_s(type_code_for($p.type)));
+        nqp::bindkey($result, 'type', nqp::unbox_s(type_code_for($type)));
         my $info := param_list_for($p.sub_signature, :with-typeobj);
         nqp::unshift($info, return_hash_for($p.sub_signature, :with-typeobj));
         nqp::bindkey($result, 'callback_args', $info);
     }
     else {
-        nqp::bindkey($result, 'type', nqp::unbox_s(type_code_for($p.type)));
+        nqp::bindkey($result, 'type', nqp::unbox_s(type_code_for($type)));
     }
     $result
 }
 
 # Builds the list of parameter information for a callback argument.
 sub param_list_for(Signature $sig, &r?, :$with-typeobj) {
-    my Mu $arg_info := nqp::list();
-    my @params = $sig.params;
-    @params.pop if &r ~~ Method && @params[*-1].name eq '%_';
-    for @params -> $p {
-        nqp::push($arg_info, param_hash_for($p, :with-typeobj($with-typeobj)))
-    }
+    my $params   := nqp::getattr($sig.params,List,'$!reified');
+    my int $elems = nqp::elems($params);
 
-    $arg_info;
+    # not sending Method's default slurpy *%_ (which is always last)
+    --$elems
+      if nqp::istype(&r,Method)
+      && nqp::iseq_s(nqp::atpos($params,$elems - 1).name,'%_');
+
+    # build list
+    my $result := nqp::setelems(nqp::list,$elems);
+    my int $i   = -1;
+    nqp::bindpos($result,$i,
+      param_hash_for(nqp::atpos($params,$i),:$with-typeobj)
+    ) while nqp::islt_i($i = nqp::add_i($i,1),$elems);
+
+    $result
 }
 
 # Builds a hash of type information for the specified return type.
-sub return_hash_for(Signature $s, &r?, :$with-typeobj) {
+sub return_hash_for(Signature $s, &r?, :$with-typeobj, :$entry-point) {
     my Mu $result := nqp::hash();
     my $returns := $s.returns;
-    nqp::bindkey($result, 'typeobj', nqp::decont($returns)) if $with-typeobj;
+    nqp::bindkey($result, 'typeobj',     nqp::decont($returns))     if $with-typeobj;
+    nqp::bindkey($result, 'entry_point', nqp::decont($entry-point)) if $entry-point;
     if $returns ~~ Str {
         my $enc := &r.?native_call_encoded() || 'utf8';
         nqp::bindkey($result, 'type', nqp::unbox_s(string_encoding_to_nci_type($enc)));
@@ -85,63 +96,69 @@ sub return_hash_for(Signature $s, &r?, :$with-typeobj) {
     $result
 }
 
-my %signed_ints_by_size =
-    1 => 'char',
-    2 => 'short',
-    4 => 'int',
-    8 => 'longlong',
-;
+my $signed_ints_by_size :=
+  nqp::list_s( "", "char", "short", "", "int", "", "", "", "longlong" );
 
 # Gets the NCI type code to use based on a given Perl 6 type.
-my %type_map =
-    'int8'     => 'char',
-    'bool'     => %signed_ints_by_size{nativesizeof(bool)},
-    'Bool'     => %signed_ints_by_size{nativesizeof(bool)},
-    'int16'    => 'short',
-    'int32'    => 'int',
-    'int64'    => 'longlong',
-    'long'     => 'long',
-    'int'      => 'long',
-    'longlong' => 'longlong',
-    'Int'      => 'longlong',
-    'uint8'    => 'uchar',
-    'uint16'   => 'ushort',
-    'uint32'   => 'uint',
-    'uint64'   => 'ulonglong',
-    'ulonglong' => 'ulonglong',
-    'ulong'    => 'ulong',
-    'uint'     => 'ulong',
-    'size_t'   => %signed_ints_by_size{nativesizeof(size_t)},
-    'num32'    => 'float',
-    'num64'    => 'double',
-    'longdouble' => 'longdouble',
-    'num'      => 'double',
-    'Num'      => 'double',
-    'Callable' => 'callback';
+my $type_map := nqp::hash(
+  "Bool",       nqp::atpos_s($signed_ints_by_size,nativesizeof(bool)),
+  "bool",       nqp::atpos_s($signed_ints_by_size,nativesizeof(bool)),
+  "Callable",   "callback",
+  "Int",        "longlong",
+  "int",        "long",
+  "int16",      "short",
+  "int32",      "int",
+  "int64",      "longlong",
+  "int8",       "char",
+  "long",       "long",
+  "longdouble", "longdouble",
+  "longlong",   "longlong",
+  "Num",        "double",
+  "num",        "double",
+  "num32",      "float",
+  "num64",      "double",
+  "size_t",     nqp::atpos_s($signed_ints_by_size,nativesizeof(size_t)),
+  "uint",       "ulong",
+  "uint16",     "ushort",
+  "uint32",     "uint",
+  "uint64",     "ulonglong",
+  "uint8",      "uchar",
+  "ulong",      "ulong",
+  "ulonglong",  "ulonglong",
+);
 
-my %repr_map =
-    'CStruct'   => 'cstruct',
-    'CPPStruct' => 'cppstruct',
-    'CPointer'  => 'cpointer',
-    'CArray'    => 'carray',
-    'CUnion'    => 'cunion',
-    'VMArray'   => 'vmarray',
-    ;
+my $repr_map := nqp::hash(
+  "CArray",    "carray",
+  "CPPStruct", "cppstruct",
+  "CPointer",  "cpointer",
+  "CStruct",   "cstruct",
+  "CUnion",    "cunion",
+  "VMArray",   "vmarray",
+);
+
 sub type_code_for(Mu ::T) {
-    my $shortname = T.^shortname;
-    return %type_map{$shortname}
-        if %type_map{$shortname}:exists;
-    if %repr_map{T.REPR} -> $mapped {
-        return $mapped;
+    if nqp::atkey($type_map,T.^shortname) -> $type {
+        $type
+    }
+    elsif nqp::atkey($repr_map,T.REPR) -> $type {
+        $type
     }
     # the REPR of a Buf or Blob type object is Uninstantiable, so
     # needs an extra special case here that isn't covered in the
     # hash lookup above.
-    return 'vmarray'  if T ~~ Blob;
-    return 'cpointer' if T ~~ Pointer;
-    die "Unknown type {T.^name} used in native call.\n" ~
-        "If you want to pass a struct, be sure to use the CStruct or CPPStruct representation.\n" ~
-        "If you want to pass an array, be sure to use the CArray type.";
+    elsif nqp::istype(T,Blob) {
+        "vmarray"
+    }
+    elsif nqp::istype(T,Pointer) {
+        "cpointer"
+    }
+    else {
+        die
+"Unknown type {T.^name} used in native call.\n" ~
+"If you want to pass a struct, be sure to use the CStruct or\n" ~
+"CPPStruct representation.\n" ~
+"If you want to pass an array, be sure to use the CArray type.";
+    }
 }
 
 sub gen_native_symbol(Routine $r, :$cpp-name-mangler) {
@@ -191,7 +208,7 @@ sub guess_library_name($lib) is export(:TEST) {
 sub check_routine_sanity(Routine $r) is export(:TEST) {
     #Maybe this should use the hash already existing?
     sub validnctype (Mu ::T) {
-      return True if %repr_map{T.REPR}:exists and T.REPR ne 'CArray' | 'CPointer';
+      return True if nqp::existskey($repr_map,T.REPR) && T.REPR ne 'CArray' | 'CPointer';
       return True if T.^name eq 'Str' | 'str' | 'Bool';
       return False if T.REPR eq 'P6opaque';
       return False if T.HOW.^can("nativesize") && T.^nativesize == 0; #to disting int and int32 for example
@@ -251,19 +268,20 @@ my role Native[Routine $r, $libname where Str|Callable|List] {
     has native_callsite $!call is box_target;
     has Mu $!rettype;
     has $!cpp-name-mangler;
+    has Pointer $!entry-point;
 
     method !setup() {
         my $guessed_libname = guess_library_name($libname);
         $!cpp-name-mangler  = %lib{$guessed_libname} //
             (%lib{$guessed_libname} = guess-name-mangler($r, $guessed_libname));
         my Mu $arg_info := param_list_for($r.signature, $r);
-        my str $conv = self.?native_call_convention || '';
+        my $conv = self.?native_call_convention || '';
         nqp::buildnativecall(self,
             nqp::unbox_s($guessed_libname),                           # library name
             nqp::unbox_s(gen_native_symbol($r, :$!cpp-name-mangler)), # symbol to call
             nqp::unbox_s($conv),        # calling convention
             $arg_info,
-            return_hash_for($r.signature, $r));
+            return_hash_for($r.signature, $r, :$!entry-point));
         $!setup = 1;
         $!rettype := nqp::decont(map_return_type($r.returns));
     }
@@ -364,8 +382,17 @@ multi refresh($obj) is export(:DEFAULT, :utils) {
 }
 
 sub nativecast($target-type, $source) is export(:DEFAULT) {
-    nqp::nativecallcast(nqp::decont($target-type),
-        nqp::decont(map_return_type($target-type)), nqp::decont($source));
+    if $target-type ~~ Signature {
+        my $r := sub { };
+        $r does Native[$r, Str];
+        nqp::bindattr($r, Code, '$!signature', nqp::decont($target-type));
+        nqp::bindattr($r, $r.WHAT, '$!entry-point', $source);
+        $r
+    }
+    else {
+        nqp::nativecallcast(nqp::decont($target-type),
+            nqp::decont(map_return_type($target-type)), nqp::decont($source));
+    }
 }
 
 sub nativesizeof($obj) is export(:DEFAULT) {

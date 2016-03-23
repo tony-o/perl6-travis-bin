@@ -98,8 +98,9 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                     if !$!did-init && nqp::can(&!block, 'fire_phasers') {
                         $!did-init         = 1;
                         $!CAN_FIRE_PHASERS = 1;
-                        $!NEXT             = +&!block.phasers('NEXT');
-                        nqp::p6setfirstflag(&!block) if &!block.phasers('FIRST');
+                        $!NEXT             = &!block.has-phaser('NEXT');
+                        nqp::p6setfirstflag(&!block)
+                          if &!block.has-phaser('FIRST');
                     }
 
                     if $!slipping && !(($result := self.slip-one()) =:= IterationEnd) {
@@ -162,8 +163,9 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                     if !$!did-init && nqp::can(&!block, 'fire_phasers') {
                         $!did-init         = 1;
                         $!CAN_FIRE_PHASERS = 1;
-                        $!NEXT             = +&!block.phasers('NEXT');
-                        nqp::p6setfirstflag(&!block) if &!block.phasers('FIRST');
+                        $!NEXT             = &!block.has-phaser('NEXT');
+                        nqp::p6setfirstflag(&!block)
+                          if &!block.has-phaser('FIRST');
                     }
                     my $result;
                     my int $redo;
@@ -230,8 +232,9 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                     if !$!did-init && nqp::can(&!block, 'fire_phasers') {
                         $!did-init         = 1;
                         $!CAN_FIRE_PHASERS = 1;
-                        $!NEXT             = +&!block.phasers('NEXT');
-                        nqp::p6setfirstflag(&!block) if &!block.phasers('FIRST');
+                        $!NEXT             = &!block.has-phaser('NEXT');
+                        nqp::p6setfirstflag(&!block)
+                          if &!block.has-phaser('FIRST');
                     }
 
                     if $!slipping && !(($result := self.slip-one()) =:= IterationEnd) {
@@ -307,32 +310,19 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
             has  Mu $!iter;
             has  Mu $!test;
             has int $!index;
-            method BUILD(\list,Mu \test) {
+            method !SET-SELF(\list,Mu \test) {
                 $!iter  = list.iterator;
                 $!test := test;
                 $!index = -1;
                 self
             }
-            method new(\list,Mu \test) { nqp::create(self).BUILD(list,test) }
+            method new(\list,Mu \test) { nqp::create(self)!SET-SELF(list,test) }
             method pull-one() is raw {
                 $!index = $!index + 1
                   until ($_ := $!iter.pull-one) =:= IterationEnd || $!test($_);
                 $_ =:= IterationEnd
                   ?? IterationEnd
                   !! nqp::p6box_i($!index = $!index + 1)
-            }
-            method push-exactly($target, int $n) {
-                my int $done;
-                while $done < $n {
-                    return IterationEnd
-                      if IterationEnd =:= ($_ := $!iter.pull-one);
-                    $!index = $!index + 1;
-                    if $!test($_) {
-                        $target.push(nqp::p6box_i($!index));
-                        $done = $done + 1;
-                    }
-                }
-                $done
             }
             method push-all($target) {
                 until ($_ := $!iter.pull-one) =:= IterationEnd {
@@ -349,13 +339,13 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
             has  Mu $!test;
             has int $!index;
             has Mu $!value;
-            method BUILD(\list,Mu \test) {
+            method !SET-SELF(\list,Mu \test) {
                 $!iter  = list.iterator;
                 $!test := test;
                 $!index = -1;
                 self
             }
-            method new(\list,Mu \test) { nqp::create(self).BUILD(list,test) }
+            method new(\list,Mu \test) { nqp::create(self)!SET-SELF(list,test) }
             method pull-one() is raw {
                 if $!value.DEFINITE {
                     my \tmp  = $!value;
@@ -375,31 +365,6 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                     }
                 }
             }
-            method push-exactly($target, int $n) {
-                my int $done;
-                my $no-sink;
-                if $!value.DEFINITE {
-                    $no-sink := $target.push($!value);
-                    $!value  := Mu;
-                    $done = $done + 1;
-                }
-                while $done < $n {
-                    return IterationEnd
-                      if IterationEnd =:= ($_ := $!iter.pull-one);
-                    $!index = $!index + 1;
-                    if $!test($_) {
-                        $target.push(nqp::p6box_i($!index));
-                        if ($done = $done + 1) < $n {
-                            $no-sink := $target.push($_);
-                            $done = $done + 1;
-                        }
-                        else {
-                            $!value := $_;
-                        }
-                    }
-                }
-                $done
-            }
             method push-all($target) {
                 my $no-sink;
                 until ($_ := $!iter.pull-one) =:= IterationEnd {
@@ -418,32 +383,19 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
             has  Mu $!iter;
             has  Mu $!test;
             has int $!index;
-            method BUILD(\list,Mu \test) {
+            method !SET-SELF(\list,Mu \test) {
                 $!iter  = list.iterator;
                 $!test := test;
                 $!index = -1;
                 self
             }
-            method new(\list,Mu \test) { nqp::create(self).BUILD(list,test) }
+            method new(\list,Mu \test) { nqp::create(self)!SET-SELF(list,test) }
             method pull-one() is raw {
                 $!index = $!index + 1
                   until ($_ := $!iter.pull-one) =:= IterationEnd || $!test($_);
                 $_ =:= IterationEnd
                   ?? IterationEnd
                   !! Pair.new($!index = $!index + 1,$_)
-            }
-            method push-exactly($target, int $n) {
-                my int $done;
-                while $done < $n {
-                    return IterationEnd
-                      if IterationEnd =:= ($_ := $!iter.pull-one);
-                    $!index = $!index + 1;
-                    if $!test($_) {
-                        $target.push(Pair.new($!index,$_));
-                        $done = $done + 1;
-                    }
-                }
-                $done
             }
             method push-all($target) {
                 until ($_ := $!iter.pull-one) =:= IterationEnd {
@@ -458,12 +410,12 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
     role Grepper does Iterator {
         has Mu $!iter;
         has Mu $!test;
-        method BUILD(\list,Mu \test) {
+        method !SET-SELF(\list,Mu \test) {
             $!iter  = list.iterator;
             $!test := test;
             self
         }
-        method new(\list,Mu \test) { nqp::create(self).BUILD(list,test) }
+        method new(\list,Mu \test) { nqp::create(self)!SET-SELF(list,test) }
     }
     method !grep-regex(Regex:D $test) {
         Seq.new(class :: does Grepper {
@@ -471,19 +423,6 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                 Nil until ($_ := $!iter.pull-one) =:= IterationEnd
                   || $_.match($!test);
                 $_
-            }
-            method push-exactly($target, int $n) {
-                my int $done;
-                my $no-sink;
-                while $done < $n {
-                    return IterationEnd
-                      if IterationEnd =:= ($_ := $!iter.pull-one);
-                    if $_.match($!test) {
-                        $no-sink := $target.push($_);
-                        $done = $done + 1;
-                    }
-                }
-                $done
             }
             method push-all($target) {
                 my $no-sink;
@@ -502,19 +441,6 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                          Nil until ($_ := $!iter.pull-one) =:= IterationEnd
                            || $!test($_);
                          $_
-                     }
-                     method push-exactly($target, int $n) {
-                         my int $done;
-                         my $no-sink;
-                         while $done < $n {
-                             return IterationEnd
-                               if IterationEnd =:= ($_ := $!iter.pull-one);
-                             if $!test($_) {
-                                 $no-sink := $target.push($_);
-                                 $done = $done + 1;
-                             }
-                         }
-                         $done
                      }
                      method push-all($target) {
                          my $no-sink;
@@ -559,19 +485,6 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                 Nil until ($_ := $!iter.pull-one) =:= IterationEnd
                   || $!test.ACCEPTS($_);
                 $_
-            }
-            method push-exactly($target, int $n) {
-                my int $done;
-                my $no-sink;
-                while $done < $n {
-                    return IterationEnd
-                      if IterationEnd =:= ($_ := $!iter.pull-one);
-                    if $!test.ACCEPTS($_) {
-                        $no-sink := $target.push($_);
-                        $done = $done + 1;
-                    }
-                }
-                $done
             }
             method push-all($target) {
                 my $no-sink;
@@ -695,7 +608,7 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
     proto method first(|) is nodal { * }
     multi method first(:$end) {
         $end
-          ?? ((my $elems = self.elems) ?? self.AT-POS($elems - 1) !! Nil)
+          ?? ((my $elems = +self) ?? self.AT-POS($elems - 1) !! Nil)
           !! ((my $x := self.iterator.pull-one) =:= IterationEnd ?? Nil !! $x)
     }
     multi method first(Bool:D $t) {
@@ -703,7 +616,7 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
     }
     multi method first(Regex:D $test, :$end, *%a) is raw {
         if $end {
-            my $elems = self.elems;
+            my $elems = +self;
             if $elems && !($elems == Inf) {
                 my int $index = $elems;
                 return self!first-result($index,$_,'first :end',%a)
@@ -724,7 +637,7 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
     }
     multi method first(Callable:D $test, :$end, *%a is copy) is raw {
         if $end {
-            my $elems = self.elems;
+            my $elems = +self;
             if $elems && !($elems == Inf) {
                 my int $index = $elems;
                 return self!first-result($index,$_,'first :end',%a)
@@ -745,7 +658,7 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
     }
     multi method first(Mu $test, :$end, *%a) is raw {
         if $end {
-            my $elems = self.elems;
+            my $elems = +self;
             if $elems && !($elems == Inf) {
                 my int $index = $elems;
                 return self!first-result($index,$_,'first :end',%a)
@@ -969,12 +882,12 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
         Seq.new(class :: does Iterator {
             has Mu $!iter;
             has $!seen;
-            method BUILD(\list) {
+            method !SET-SELF(\list) {
                 $!iter = list.iterator;
                 $!seen := nqp::hash();
                 self
             }
-            method new(\list) { nqp::create(self).BUILD(list) }
+            method new(\list) { nqp::create(self)!SET-SELF(list) }
             method pull-one() {
                 my Mu $value;
                 my str $needle;
@@ -986,23 +899,6 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                     }
                 }
                 IterationEnd
-            }
-            method push-exactly($target, int $n) {
-                my Mu $value;
-                my str $needle;
-                my int $done;
-                my $no-sink;
-                while $done < $n {
-                    return IterationEnd
-                      if IterationEnd =:= ($value := $!iter.pull-one);
-                    $needle = nqp::unbox_s($value.WHICH);
-                    unless nqp::existskey($!seen, $needle) {
-                        nqp::bindkey($!seen, $needle, 1);
-                        $no-sink := $target.push($value);
-                        $done = $done + 1;
-                    }
-                }
-                $done
             }
             method push-all($target) {
                 my Mu $value;
@@ -1035,12 +931,12 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
             has Mu $!iter;
             has &!as;
             has $!seen;
-            method BUILD(\list, &!as) {
+            method !SET-SELF(\list, &!as) {
                 $!iter  = list.iterator;
                 $!seen := nqp::hash();
                 self
             }
-            method new(\list, &as) { nqp::create(self).BUILD(list, &as) }
+            method new(\list, &as) { nqp::create(self)!SET-SELF(list, &as) }
             method pull-one() {
                 my Mu $value;
                 my str $needle;
@@ -1052,23 +948,6 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                     }
                 }
                 IterationEnd
-            }
-            method push-exactly($target, int $n) {
-                my Mu $value;
-                my str $needle;
-                my int $done;
-                my $no-sink;
-                while $done < $n {
-                    return IterationEnd
-                      if IterationEnd =:= ($value := $!iter.pull-one);
-                    $needle = nqp::unbox_s(&!as($value).WHICH);
-                    unless nqp::existskey($!seen, $needle) {
-                        nqp::bindkey($!seen, $needle, 1);
-                        $no-sink := $target.push($value);
-                        $done = $done + 1;
-                    }
-                }
-                $done
             }
             method push-all($target) {
                 my Mu $value;
@@ -1104,12 +983,12 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
         Seq.new(class :: does Iterator {
             has Mu $!iter;
             has $!seen;
-            method BUILD(\list) {
+            method !SET-SELF(\list) {
                 $!iter = list.iterator;
                 $!seen := nqp::hash();
                 self
             }
-            method new(\list) { nqp::create(self).BUILD(list) }
+            method new(\list) { nqp::create(self)!SET-SELF(list) }
             method pull-one() {
                 my Mu $value;
                 my str $needle;
@@ -1120,25 +999,6 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                       !! nqp::bindkey($!seen, $needle, 1);
                 }
                 IterationEnd
-            }
-            method push-exactly($target, int $n) {
-                my Mu $value;
-                my str $needle;
-                my int $done;
-                my $no-sink;
-                while $done < $n {
-                    return IterationEnd
-                      if IterationEnd =:= ($value := $!iter.pull-one);
-                    $needle = nqp::unbox_s($value.WHICH);
-                    if nqp::existskey($!seen, $needle) {
-                        $no-sink := $target.push($value);
-                        $done = $done + 1;
-                    }
-                    else {
-                        nqp::bindkey($!seen, $needle, 1);
-                    }
-                }
-                $done
             }
             method push-all($target) {
                 my Mu $value;
@@ -1169,12 +1029,12 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
             has Mu $!iter;
             has &!as;
             has $!seen;
-            method BUILD(\list, &!as) {
+            method !SET-SELF(\list, &!as) {
                 $!iter  = list.iterator;
                 $!seen := nqp::hash();
                 self
             }
-            method new(\list, &as) { nqp::create(self).BUILD(list, &as) }
+            method new(\list, &as) { nqp::create(self)!SET-SELF(list, &as) }
             method pull-one() {
                 my Mu $value;
                 my str $needle;
@@ -1185,25 +1045,6 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                       !! nqp::bindkey($!seen, $needle, 1);
                 }
                 IterationEnd
-            }
-            method push-exactly($target, int $n) {
-                my Mu $value;
-                my str $needle;
-                my int $done;
-                my $no-sink;
-                while $done < $n {
-                    return IterationEnd
-                      if IterationEnd =:= ($value := $!iter.pull-one);
-                    $needle = nqp::unbox_s(&!as($value).WHICH);
-                    if nqp::existskey($!seen, $needle) {
-                        $no-sink := $target.push($value);
-                        $done = $done + 1;
-                    }
-                    else {
-                        nqp::bindkey($!seen, $needle, 1);
-                    }
-                }
-                $done
             }
             method push-all($target) {
                 my Mu $value;
@@ -1240,13 +1081,13 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
             has &!with;
             has $!last;
             has int $!first;
-            method BUILD(\list, &!as, &!with) {
+            method !SET-SELF(\list, &!as, &!with) {
                 $!iter  = list.iterator;
                 $!first = 1;
                 self
             }
             method new(\list, &as, &with) {
-                nqp::create(self).BUILD(list, &as, &with)
+                nqp::create(self)!SET-SELF(list, &as, &with)
             }
             method pull-one() {
                 my Mu $value := $!iter.pull-one;
@@ -1293,12 +1134,12 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
             has &!with;
             has Mu $!last;
             has int $!first;
-            method BUILD(\list, &!with) {
+            method !SET-SELF(\list, &!with) {
                 $!iter  = list.iterator;
                 $!first = 1;
                 self
             }
-            method new(\list, &with) { nqp::create(self).BUILD(list, &with) }
+            method new(\list, &with) { nqp::create(self)!SET-SELF(list, &with) }
             method pull-one() {
                 my Mu $value := $!iter.pull-one;
                 if $!first {
@@ -1367,12 +1208,12 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
         Seq.new( class :: does Iterator {
             has Mu  $!iter;
             has int $!todo;
-            method BUILD(\list,\todo) {
+            method !SET-SELF(\list,\todo) {
                 $!iter = list.iterator;
                 $!todo = todo;
                 self
             }
-            method new(\list,\todo) { nqp::create(self).BUILD(list,todo) }
+            method new(\list,\todo) { nqp::create(self)!SET-SELF(list,todo) }
             method pull-one() is raw {
                 $!todo-- ?? $!iter.pull-one !! IterationEnd
             }
@@ -1389,7 +1230,7 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
             has int $!size;
             has int $!todo;
             has int $!index;
-            method BUILD(\list,\size) {
+            method !SET-SELF(\list,\size) {
                 $!iter = list.iterator;
                 X::Cannot::Lazy.new(:action<tail>).throw if $!iter.is-lazy;
 
@@ -1399,7 +1240,7 @@ Did you mean to add a stub (\{...\}) or did you mean to .classify?"
                 nqp::setelems($!lastn,0);
                 self
             }
-            method new(\list,\size) { nqp::create(self).BUILD(list,size) }
+            method new(\list,\size) { nqp::create(self)!SET-SELF(list,size) }
             method !next() is raw {
                 my int $index = $!index;
                 $!index = ($!index + 1) % $!size;

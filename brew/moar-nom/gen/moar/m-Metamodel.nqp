@@ -99,6 +99,7 @@ role Perl6::Metamodel::Naming {
     method set_name($obj, $name) {
         $!name := $name;
         my @parts := nqp::split('::', $name);
+        nqp::setdebugtypename($obj, $name);
         $!shortname := @parts ?? @parts[nqp::elems(@parts) - 1] !! '';
     }
     method name($obj) {
@@ -247,8 +248,8 @@ class Perl6::Metamodel::PackageHOW
         $metaclass.set_name($obj, $name);
         self.add_stash($obj);
     }
-    
-    method compose($obj) {
+
+    method compose($obj, :$compiler_services) {
         $!composed := 1;
     }
     
@@ -287,10 +288,10 @@ class Perl6::Metamodel::ModuleHOW
         self.add_stash($obj);
     }
 
-    method compose($obj) {
+    method compose($obj, :$compiler_services) {
         $!composed := 1;
     }
-    
+
     method is_composed($obj) {
         $!composed
     }
@@ -357,9 +358,9 @@ role Perl6::Metamodel::AttributeContainer {
         @!attributes[+@!attributes] := $meta_attr;
         %!attribute_lookup{$name}   := $meta_attr;
     }
-    
+
     # Composes all attributes.
-    method compose_attributes($obj) {
+    method compose_attributes($obj, :$compiler_services) {
         my %seen_with_accessor;
         my %meths := self.method_table($obj);
         my %orig_meths;
@@ -374,7 +375,12 @@ role Perl6::Metamodel::AttributeContainer {
                     if %seen_with_accessor{$acc_name} && !nqp::existskey(%orig_meths, $acc_name);
                 %seen_with_accessor{$acc_name} := 1;
             }
-            $_.compose($obj);
+
+            # Heuristic to pass along compiler_services only to Perl 6 MOP,
+            # not to NQP one.
+            nqp::isconcrete($compiler_services) && nqp::can($_, 'gist')
+                ?? $_.compose($obj, :$compiler_services)
+                !! $_.compose($obj)
         }
     }
     
@@ -1317,8 +1323,11 @@ role Perl6::Metamodel::Mixins {
         }
         $new_type.HOW.compose($new_type);
         $new_type.HOW.set_boolification_mode($new_type,
-            nqp::existskey($new_type.HOW.method_table($new_type), 'Bool') ?? 0 !!
-                self.get_boolification_mode($obj));
+            nqp::existskey($new_type.HOW.method_table($new_type), 'Bool')
+            || nqp::can($new_type.HOW, 'submethod_table')
+                && nqp::existskey($new_type.HOW.submethod_table($new_type), 'Bool')
+                ?? 0
+                !! self.get_boolification_mode($obj));
         $new_type.HOW.publish_boolification_spec($new_type);
 
         # Locate an attribute that can serve as the initialization attribute,
@@ -2339,8 +2348,8 @@ class Perl6::Metamodel::ParametricRoleHOW
     method group($obj) {
         $!in_group ?? $!group !! $obj
     }
-    
-    method compose($obj) {
+
+    method compose($obj, :$compiler_services) {
         my @rtl;
         if $!in_group {
             @rtl.push($!group);
@@ -2965,7 +2974,7 @@ class Perl6::Metamodel::ClassHOW
         @!fallbacks[+@!fallbacks] := %desc;
     }
 
-    method compose($obj) {
+    method compose($obj, :$compiler_services) {
         # Instantiate all of the roles we have (need to do this since
         # all roles are generic on ::?CLASS) and pass them to the
         # composer.
@@ -3011,18 +3020,18 @@ class Perl6::Metamodel::ClassHOW
         self.setup_finalization($obj);
 
         # Compose attributes.
-        self.compose_attributes($obj);
-        
+        self.compose_attributes($obj, :$compiler_services);
+
         # See if we have a Bool method other than the one in the top type.
         # If not, all it does is check if we have the type object.
         unless self.get_boolification_mode($obj) != 0 {
             my $i := 0;
             my @mro := self.mro($obj);
             while $i < +@mro {
-                my %meths := @mro[$i].HOW.method_table(@mro[$i]);
-                if nqp::existskey(%meths, 'Bool') {
-                    last;
-                }
+                my $ptype := @mro[$i];
+                last if nqp::existskey($ptype.HOW.method_table($ptype), 'Bool');
+                last if nqp::can($ptype.HOW, 'submethod_table') &&
+                    nqp::existskey($ptype.HOW.submethod_table($ptype), 'Bool');
                 $i := $i + 1;
             }
             if $i + 1 == +@mro {
@@ -3182,7 +3191,7 @@ class Perl6::Metamodel::NativeHOW
         self.add_stash($obj);
     }
 
-    method compose($obj) {
+    method compose($obj, :$compiler_services) {
         self.compute_mro($obj);
         self.publish_method_cache($obj);
         self.publish_type_cache($obj);
@@ -3298,7 +3307,7 @@ class Perl6::Metamodel::NativeRefHOW
         self.add_stash($obj);
     }
 
-    method compose($obj) {
+    method compose($obj, :$compiler_services) {
         self.compose_repr($obj);
         self.compute_mro($obj);
         self.publish_method_cache($obj);
@@ -3511,8 +3520,8 @@ class Perl6::Metamodel::EnumHOW
     method enum_value_list($obj) {
         @!enum_value_list
     }
-    
-    method compose($obj) {
+
+    method compose($obj, :$compiler_services) {
         # Instantiate all of the roles we have (need to do this since
         # all roles are generic on ::?CLASS) and pass them to the
         # composer.

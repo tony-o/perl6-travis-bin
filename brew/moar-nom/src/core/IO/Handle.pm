@@ -157,14 +157,14 @@ my class IO::Handle does IO {
             has Mu  $!size;
             has int $!close;
 
-            submethod BUILD(\handle, \size, \close) {
+            method !SET-SELF(\handle, \size, \close) {
                 $!handle := handle;
                 $!size    = size.Int;
                 $!close   = close;
                 self
             }
             method new(\handle, \size, \close) {
-                nqp::create(self).BUILD(handle, size, close);
+                nqp::create(self)!SET-SELF(handle, size, close);
             }
 
             method pull-one() {
@@ -215,7 +215,7 @@ my class IO::Handle does IO {
             has int $!elems;
             has int $!done;
 
-            submethod BUILD(\handle, \comber, \close) {
+            method !SET-SELF(\handle, \comber, \close) {
                 $!handle := handle;
                 nqp::istype(comber,Regex)
                   ?? ($!regex := comber)
@@ -226,7 +226,7 @@ my class IO::Handle does IO {
                 self
             }
             method new(\handle, \comber, \close) {
-                nqp::create(self).BUILD(handle, comber, close);
+                nqp::create(self)!SET-SELF(handle, comber, close);
             }
             method !next-chunk(--> Nil) {
                 my int $chars = nqp::chars($!left);
@@ -235,7 +235,7 @@ my class IO::Handle does IO {
                     $!done = 1;
                 }
                 else {
-                    $!strings := nqp::list();
+                    $!strings := nqp::list_s;
                     with $!regex {
                         my \matches   = $!str.match($!regex, :g);
                         $!elems = matches.elems;
@@ -248,7 +248,7 @@ my class IO::Handle does IO {
                             $match := matches[$i];
                             $from = $match.from;
                             $to   = $match.to;
-                            nqp::bindpos($!strings,$i,
+                            nqp::bindpos_s($!strings,$i,
                               nqp::substr($!str,$from,$to - $from));
                             $i = $i + 1;
                         }
@@ -259,7 +259,7 @@ my class IO::Handle does IO {
                         my int $found;
                         my int $extra = nqp::chars($!comber);
                         while ($found = nqp::index($!str,$!comber,$pos)) >= 0 {
-                            nqp::push($!strings,$!comber);
+                            nqp::push_s($!strings,$!comber);
                             $pos = $found + $extra;
                         }
                         $!left  = nqp::substr($!str,$pos);
@@ -271,13 +271,13 @@ my class IO::Handle does IO {
             method pull-one() {
                 if $!elems {
                     $!elems = $!elems - 1;
-                    nqp::p6box_s(nqp::shift($!strings));
+                    nqp::p6box_s(nqp::shift_s($!strings));
                 }
                 else {
                     self!next-chunk until $!elems || $!done;
                     if $!elems {
                         $!elems = $!elems - 1;
-                        nqp::p6box_s(nqp::shift($!strings));
+                        nqp::p6box_s(nqp::shift_s($!strings));
                     }
                     else {
                         $!handle.close if $!close;
@@ -288,7 +288,7 @@ my class IO::Handle does IO {
             method push-all($target) {
                 while $!elems {
                     while $!elems {
-                        $target.push(nqp::p6box_s(nqp::shift($!strings)));
+                        $target.push(nqp::p6box_s(nqp::shift_s($!strings)));
                         $!elems = $!elems - 1;
                     }
                     self!next-chunk until $!elems || $!done;
@@ -320,7 +320,7 @@ my class IO::Handle does IO {
             has int $index;
             has int $chars;
 
-            submethod BUILD(\handle, \close, \COMB) {
+            method !SET-SELF(\handle, \close, \COMB) {
                 $!handle := handle;
                 $!close   = close;
                 $!COMB    = ?COMB;
@@ -329,7 +329,7 @@ my class IO::Handle does IO {
                 self
             }
             method new(\handle, \close, \COMB) {
-                nqp::create(self).BUILD(handle, close, COMB);
+                nqp::create(self)!SET-SELF(handle, close, COMB);
             }
             method !next-chunk(--> Nil) {
                 $!str   = $!handle.readchars;
@@ -393,7 +393,7 @@ my class IO::Handle does IO {
             has int $!elems;
             has int $!done;
 
-            submethod BUILD(\handle, \splitter, \close) {
+            method !SET-SELF(\handle, \splitter, \close) {
                 $!handle := handle;
                 nqp::istype(splitter,Regex)
                   ?? ($!regex   := splitter)
@@ -404,7 +404,7 @@ my class IO::Handle does IO {
                 self
             }
             method new(\handle, \splitter, \close) {
-                nqp::create(self).BUILD(handle, splitter, close);
+                nqp::create(self)!SET-SELF(handle, splitter, close);
             }
             method !next-chunk(--> Nil) {
                 my int $chars = nqp::chars($!left);
@@ -496,7 +496,7 @@ my class IO::Handle does IO {
             has int $!pos;
             has int $!searching;
 
-            submethod BUILD(\handle, $!close) {
+            method !SET-SELF(\handle, $!close) {
                 $!handle   := handle;
                 $!searching = 1;
                 $!str       = ""; # RT #126492
@@ -504,7 +504,7 @@ my class IO::Handle does IO {
                 self
             }
             method new(\handle, \close) {
-                nqp::create(self).BUILD(handle, close);
+                nqp::create(self)!SET-SELF(handle, close);
             }
             method !next-chunk() {
                 my int $chars = nqp::chars($!str);
@@ -615,12 +615,12 @@ my class IO::Handle does IO {
             has $!handle;
             has $!close;
 
-            submethod BUILD(\handle, $!close) {
+            method !SET-SELF(\handle, $!close) {
                 $!handle := handle;
                 self
             }
             method new(\handle, \close) {
-                nqp::create(self).BUILD(handle, close);
+                nqp::create(self)!SET-SELF(handle, close);
             }
             method pull-one() is raw {
                 $!handle.get // do {
@@ -753,17 +753,16 @@ my class IO::Handle does IO {
     }
 
     proto method slurp-rest(|) { * }
-    multi method slurp-rest(IO::Handle:D: :$bin!) returns Buf {
-        my $Buf := buf8.new();
+    multi method slurp-rest(IO::Handle:D: :$bin! where *.so) returns Buf {
+        my $res := buf8.new();
         loop {
-            my $buf := buf8.new();
-            nqp::readfh($!PIO,$buf,65536);
-            last if $buf.bytes == 0;
-            $Buf := $Buf ~ $buf;
+            my $buf := nqp::readfh($!PIO,buf8.new,0x100000);
+            last unless nqp::elems($buf);
+            $res.push($buf);
         }
-        $Buf;
+        $res
     }
-    multi method slurp-rest(IO::Handle:D: :$enc) returns Str {
+    multi method slurp-rest(IO::Handle:D: :$enc, :$bin) returns Str {
         self.encoding($enc) if $enc.defined;
         nqp::p6box_s(nqp::readallfh($!PIO));
     }
@@ -775,12 +774,12 @@ my class IO::Handle does IO {
 
     multi method gist(IO::Handle:D:) {
         self.opened
-            ?? "IO::Handle<$!path>(opened, at octet {$.tell})"
-            !! "IO::Handle<$!path>(closed)"
+            ?? self.^name ~ "<$!path.gist()>(opened, at octet {$.tell})"
+            !! self.^name ~ "<$!path.gist()>(closed)"
     }
 
     multi method perl(IO::Handle:D:) {
-        "IO::Handle.new({:$!path.perl},{$!chomp ?? :$!chomp.perl !! ''})"
+        self.^name ~ ".new({:$!path.perl},{$!chomp ?? :$!chomp.perl !! ''})"
     }
 
 

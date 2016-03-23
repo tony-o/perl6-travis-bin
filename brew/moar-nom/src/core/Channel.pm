@@ -32,7 +32,7 @@ my class Channel {
     my class CHANNEL_CLOSE { }
     my class CHANNEL_FAIL  { has $.error }
 
-    submethod BUILD() {
+    submethod BUILD(--> Nil) {
         $!queue := nqp::create(Queue);
         $!closed_promise = Promise.new;
         $!closed_promise_vow = $!closed_promise.vow;
@@ -107,11 +107,19 @@ my class Channel {
                 emit got;
             }
             self!peek();
-            done() if $!closed_promise;
+            if $!closed_promise {
+                $!closed_promise.status == Kept
+                    ?? done()
+                    !! die $!closed_promise.cause
+            }
             whenever $!async-notify.unsanitized-supply.schedule-on($*SCHEDULER) {
                 my Mu \got = self.poll;
                 if nqp::eqaddr(got, Nil) {
-                    done() if $!closed_promise;
+                    if $!closed_promise {
+                        $!closed_promise.status == Kept
+                            ?? done()
+                            !! die $!closed_promise.cause
+                    }
                 }
                 else {
                     emit got;

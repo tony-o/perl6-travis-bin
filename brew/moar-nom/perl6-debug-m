@@ -1,2 +1,2 @@
 #!/bin/sh
-exec /home/travis/brew/moar-nom/install/bin/moar  --execname="$0" --libpath="/home/travis/brew/moar-nom/install/share/nqp/lib" --libpath="." /home/travis/brew/moar-nom/perl6-debug.moarvm "$@"
+exec /home/travis/.rakudobrew/moar-nom/install/bin/moar  --execname="$0" --libpath="/home/travis/.rakudobrew/moar-nom/install/share/nqp/lib" --libpath="." /home/travis/.rakudobrew/moar-nom/perl6-debug.moarvm "$@"

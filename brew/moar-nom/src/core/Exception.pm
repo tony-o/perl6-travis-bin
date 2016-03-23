@@ -80,9 +80,9 @@ my class Exception {
     method fail(Exception:D:) {
         try self.throw;
         my $fail := Failure.new($!);
-        my Mu $return := nqp::getlexcaller('RETURN');
+        my Mu $return := nqp::getlexrel(nqp::ctxcallerskipthunks(nqp::ctx()), 'RETURN');
         $return($fail) unless nqp::isnull($return);
-        $fail
+        $fail.exception.throw
     }
 
     method is-compile-time { False }
@@ -321,6 +321,9 @@ do {
                    nqp::printfh($err, "\n");
                 }
             }
+            elsif Rakudo::Internals.VERBATIM-EXCEPTION(0) {
+                nqp::printfh($err, $e.Str);
+            }
             else {
                 nqp::printfh($err, "===SORRY!===\n");
                 nqp::printfh($err, $e.Str);
@@ -525,6 +528,7 @@ my class X::IO::Chmod does X::IO {
 
 my role X::Comp is Exception {
     has $.filename;
+    has $.pos;
     has $.line;
     has $.column;
     has @.modules;
@@ -644,6 +648,15 @@ my class X::Comp::BeginTime does X::Comp {
 # XXX a hack for getting line numbers from exceptions from the metamodel
 my class X::Comp::AdHoc is X::AdHoc does X::Comp {
     method is-compile-time() { True }
+}
+
+my class X::Comp::FailGoal does X::Comp {
+    has $.dba;
+    has $.goal;
+
+    method is-compile-time() { True }
+
+    method message { "Unable to parse expression in $.dba; couldn't find final $.goal" }
 }
 
 my role X::Syntax does X::Comp { }
@@ -1664,6 +1677,9 @@ my class X::Match::Bool is Exception {
     method message() { "Cannot use Bool as Matcher with '" ~ $.type ~ "'.  Did you mean to use \$_ inside a block?" }
 }
 
+my class X::LibNone does X::Comp {
+    method message { q/Must specify at least one repository.  Did you mean 'use lib "lib"' ?/ }
+}
 my class X::Package::UseLib does X::Comp {
     has $.what;
     method message { "Cannot 'use lib' inside a $.what" }
@@ -1730,6 +1746,36 @@ my class X::Str::Trans::InvalidArg is Exception {
     has $.got is default(Nil);
     method message() {
         "Only Pair objects are allowed as arguments to Str.trans, got {$.got.^name}";
+    }
+}
+
+my class X::Str::Sprintf::Directives::Count is Exception {
+    has $.args-used;
+    has $.args-have;
+    method message() {
+        "Your printf-style directives specify "
+        ~ ($.args-used == 1 ?? "1 argument, but "
+                            !! "$.args-used arguments, but ")
+        ~ ($.args-have < 1      ?? "no argument was"
+            !! $.args-have == 1 ?? "1 argument was"
+                                !! "$.args-have arguments were")
+        ~ " supplied";
+    }
+}
+
+my class X::Str::Sprintf::Directives::Unsupported is Exception {
+    has $.directive;
+    has $.sequence;
+    method message() {
+        "Directive $.directive is not valid in sprintf format sequence $.sequence"
+    }
+}
+
+my class X::Str::Sprintf::Directives::BadType is Exception {
+    has $.type;
+    has $.directive;
+    method message() {
+        "Directive $.directive not applicable for type $.type"
     }
 }
 
@@ -1809,8 +1855,20 @@ my class X::TypeCheck is Exception {
     has $.operation;
     has $.got is default(Nil);
     has $.expected is default(Nil);
-    method gotn()      { (try $!got.^name eq $!expected.^name ?? $!got.perl      !! $!got.^name)      // "?" }
-    method expectedn() { (try $!got.^name eq $!expected.^name ?? $!expected.perl !! $!expected.^name) // "?" }
+    method gotn() {
+        my $perl = (try $!got.perl) // "?";
+        $perl = "$perl.substr(0,21)..." if $perl.chars > 24;
+        (try $!got.^name eq $!expected.^name
+          ?? $perl
+          !! "$!got.^name() ($perl)"
+        ) // "?"
+    }
+    method expectedn() {
+        (try $!got.^name eq $!expected.^name
+          ?? $!expected.perl
+          !! $!expected.^name
+        ) // "?"
+    }
     method priors() {
         my $prior = do if nqp::isconcrete($!got) && $!got ~~ Failure {
             "Earlier failure:\n " ~ $!got.mess ~ "\nFinal error:\n ";
@@ -2218,6 +2276,10 @@ nqp::bindcurhllsym('P6EX', nqp::hash(
   sub ($redispatcher) {
       X::NoDispatcher.new(:$redispatcher).throw;
   },
+  'X::Method::NotFound',
+  sub ($invocant, $method, $typename, $private = False) {
+      X::Method::NotFound.new(:$invocant, :$method, :$typename, :$private).throw
+  },
   'X::Multi::Ambiguous',
   sub ($dispatcher, @ambiguous, $capture) {
       X::Multi::Ambiguous.new(:$dispatcher, :@ambiguous, :$capture).throw
@@ -2305,6 +2367,12 @@ my class X::TooLateForREPR is X::Comp  {
     }
 }
 
+my class X::MustBeParametric is Exception {
+    has $.type;
+    method message() {
+        "$!type.^name() *must* be parameterized";
+    }
+}
 my class X::NotParametric is Exception {
     has $.type;
     method message() {
