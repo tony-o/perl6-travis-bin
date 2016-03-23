@@ -15,7 +15,7 @@ SHELL   = sh
 
 SYSROOT= 
 SDKROOT= 
-PREFIX = /home/travis/.rakudobrew/moar-nom/install
+PREFIX = /home/travis/brew/moar-nom/install
 PERL6_LANG_DIR = $(PREFIX)/share/perl6
 
 BOOTSTRAP_SOURCES = \
@@ -117,7 +117,7 @@ distclean: realclean
 M_CC      = gcc
 M_LD      = gcc
 M_CFLAGS  = -Wdeclaration-after-statement -Werror=declaration-after-statement -O3 -DNDEBUG  -D_REENTRANT -D_FILE_OFFSET_BITS=64 -fPIC -Wdeclaration-after-statement -Werror=declaration-after-statement -O3 -DNDEBUG 
-M_LDFLAGS =  -O3 -DNDEBUG -Wl,-rpath,/home/travis/.rakudobrew/moar-nom/install/lib -Wl,-rpath,/home/travis/.rakudobrew/moar-nom/install/share/perl6/site/lib  -O3 -DNDEBUG -lm -lpthread -lrt -ldl
+M_LDFLAGS =  -O3 -DNDEBUG -Wl,-rpath,/home/travis/brew/moar-nom/install/lib -Wl,-rpath,/home/travis/brew/moar-nom/install/share/perl6/site/lib  -O3 -DNDEBUG -lm -lpthread -lrt -ldl
 
 M_GEN_CAT = tools/build/gen-cat.nqp moar
 
@@ -376,7 +376,7 @@ $(M_PERL6_OPS_DLL): $(M_PERL6_OPS_SRC) $(M_PERL6_CONT_SRC) Makefile
 	    -I$(PREFIX)/include/dyncall -I$(PREFIX)/include/moar \
 	    -I$(PREFIX)/include/sha1 -I$(PREFIX)/include/tinymt  -I$(PREFIX)/include/libtommath \
 	    -I$(PREFIX)/include/libuv -I$(PREFIX)/include -o $(M_PERL6_CONT_OBJ) $(M_PERL6_CONT_SRC)
-	$(M_LD)  -L/home/travis/.rakudobrew/moar-nom/install/lib -shared -fPIC $(M_LDFLAGS) -o $(M_PERL6_OPS_DLL) $(M_PERL6_OPS_OBJ) $(M_PERL6_CONT_OBJ) -lmoar 
+	$(M_LD)  -L/home/travis/brew/moar-nom/install/lib -shared -fPIC $(M_LDFLAGS) -o $(M_PERL6_OPS_DLL) $(M_PERL6_OPS_OBJ) $(M_PERL6_CONT_OBJ) -lmoar 
 
 $(PERL6_ML_MOAR): src/Perl6/ModuleLoader.nqp src/vm/moar/ModuleLoaderVMConfig.nqp
 	$(M_NQP) $(M_GEN_CAT) src/vm/moar/ModuleLoaderVMConfig.nqp src/Perl6/ModuleLoader.nqp > $(M_BUILD_DIR)/m-ModuleLoader.nqp

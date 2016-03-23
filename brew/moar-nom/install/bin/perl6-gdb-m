@@ -1,5 +1,5 @@
 #!/bin/sh
-/home/travis/.rakudobrew/moar-nom/install/bin/moar --execname="$0" --libpath="/home/travis/.rakudobrew/moar-nom/install/share/nqp/lib" --libpath="/home/travis/.rakudobrew/moar-nom/install/share/perl6/lib" --libpath="/home/travis/.rakudobrew/moar-nom/install/share/perl6/runtime" /home/travis/.rakudobrew/moar-nom/install/share/perl6/runtime/perl6.moarvm -e '
+/home/travis/brew/moar-nom/install/bin/moar --execname="$0" --libpath="/home/travis/brew/moar-nom/install/share/nqp/lib" --libpath="/home/travis/brew/moar-nom/install/share/perl6/lib" --libpath="/home/travis/brew/moar-nom/install/share/perl6/runtime" /home/travis/brew/moar-nom/install/share/perl6/runtime/perl6.moarvm -e '
 say "=" x 96;
 
 say "This is Rakudo Perl 6 running in the GNU debugger, which often allows the user to generate useful back-\ntraces to debug or report issues in Rakudo, the MoarVM backend or the currently running code.\n";
@@ -12,4 +12,4 @@ say "running on $*DISTRO.gist() / $*KERNEL.gist()\n";
 say "Type `bt full` to generate a backtrace if applicable, type `q` to quite or `help` for help.";
 
 say "-" x 96;'
-gdb --quiet --ex=run --args /home/travis/.rakudobrew/moar-nom/install/bin/moar --execname="$0" --libpath="/home/travis/.rakudobrew/moar-nom/install/share/nqp/lib" --libpath="/home/travis/.rakudobrew/moar-nom/install/share/perl6/lib" --libpath="/home/travis/.rakudobrew/moar-nom/install/share/perl6/runtime" /home/travis/.rakudobrew/moar-nom/install/share/perl6/runtime/perl6.moarvm "$@"
+gdb --quiet --ex=run --args /home/travis/brew/moar-nom/install/bin/moar --execname="$0" --libpath="/home/travis/brew/moar-nom/install/share/nqp/lib" --libpath="/home/travis/brew/moar-nom/install/share/perl6/lib" --libpath="/home/travis/brew/moar-nom/install/share/perl6/runtime" /home/travis/brew/moar-nom/install/share/perl6/runtime/perl6.moarvm "$@"
