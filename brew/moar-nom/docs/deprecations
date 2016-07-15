@@ -1,0 +1,78 @@
+Deprecations in 2013.12
+    
+    eval is now spelled EVAL
+
+Deprecations in 2013.11
+
+    Order::Increase and Order::Decrease are now called Order::Less and
+    Order::More.  Using "Increase" or "Decrease" will now generate
+    "is DEPRECATED" warnings at the end of execution.
+
+Deprecations in 2012.12
+
+    'for'-loops will be lazy (just like map), and only be automatically
+    run in sink (void) or list context. This causes problems if the last
+    statement in a block is a for-loop that either calls return(), or
+    is inside a try { } block. Since such code is now run after the block
+    exits, it is not in the dynamic scope of the routine or the try block.
+    As a fix, you can force eager execution of the for-loop by adding
+    another statement after it, or by writing 'eager do for LIST BLOCK'.
+    This change will take effect in 2013.01.
+    
+    Warnings will start being issued for unused parameters to pointy blocks
+    and routines. At present, they do not warn at all. Planned for 2013.01.
+    
+    Constructs like "my $a; { $a; my $a; }", where the meaning of the first
+    mention of $a in the block would create confusion as to what was being
+    referred to, will become an error as in STD. This change will take
+    effect in 2013.01.
+
+Deprecations in 2012.11
+
+    At present, a reference to an &foo that does not exist evaluates to
+    Nil. This will become a CHECK-time failure, in line with STD.
+    Planned for the 2012.12 release.
+
+Deprecations in 2012.10
+
+    Protos for built-in routines are now mostly as generic as possible,
+    and will be changed to be specific to the arity of the routine.
+    For example 'proto sub chr(|) {*}' will become 'proto sub chr($) {*}'
+    This affects everybody who adds multis with unusual arity to built-in
+    subs.
+    Planned for the 2012.11 release.
+
+    Unary hyper ops currently descend into nested arrays and hashes.
+    This will change to make them equivalent to a one-level map.
+    Planned for the 2012.11 release.
+
+    ~/.perl6/lib will go away from the default include path (@*INC).
+    Instead %*CUSTOM_LIB now holds paths to four library locations:
+        perl    Rakudo installs its core modules here
+        vendor  OS-level package managers should install their modules here
+        site    for local module installations (e.g. with panda or ufo)
+        home    like site, but always under the user's home directory.
+                fallback if site isn't writable.
+    Removal of ~/.perl6/lib from @*INC planned for the 2012.11 release
+
+
+Deprecations in 2012.09
+
+    Str.capitalize and &capitalize are deprecated in favor
+    of the Str.wordcase and &wordcase routines.
+    They will uncondtionally warn in 2012.10, and be removed in 2012.11.
+
+Deprecations in 2012.08
+
+    Parameters preceded by a | or \ may not have a sigil anymore.
+        sub f(\$x) { say $x }
+    must be changed to 
+        sub f(\x) { say x }
+    Usage of \$x will unconditionally warn in 2012.09 and be removed in 2012.10
+
+    IO::Path.dir (which returns the directory part of the path)
+    has been renamed to IO::Path.directory.
+    IO::Path.dir will be removed or re-purposed in 2012.09
+
+    The LAZY statement prefix will be removed in 2012.09. It was a non-specced
+    experiment and did not work out well.

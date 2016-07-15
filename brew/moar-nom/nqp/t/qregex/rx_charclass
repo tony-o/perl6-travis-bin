@@ -1,0 +1,116 @@
+##   Enumerated character lists
+<[c]>			abcdef		y	character class
+# todo :pugs<feature>
+<[ z ]>			abc def		n	character class ignores ws
+# todo :pugs<feature>
+<[dcb]>**3		abcdef		y	repeated character class
+^<[a]>			abcdef		y	anchored character class
+<-[e]>			abcdef		y	negated character class
+^<[a]>?			abcdef		y	anchored optional character class
+<-[e]>?			abcdef		y	negated optional character class
+<-[dcb]>**3		abcdef		n	repeated negated character class
+^<-[e]>			abcdef		y	anchored negated character class
+^<-[a]>			abcdef		n	anchored negated character class
+<[b..d]>		abcdef		y	character range
+# todo :pugs<feature>
+<[b .. d]>		c		y	character range ignores ws
+<[b..d]>		abxxef		y	character range
+<[b..d]>		axcxef		y	character range
+<[b..d]>		axxdef		y	character range
+<[b..d]>		axxxef		n	character range
+<-[b..d]>		abcdef		y	negated character range
+# todo :pugs<feature>
+<- [b..d]>		abcdef		y	negated allows ws
+<-[b..d]>		bbccdd		n	negated character range
+# todo :pge<reversed character range>
+<-[d..b]>		bbccdd		/parse error/	illegal character range
+<[x-z]>			ab-def		<Unsupported>	perl5 range
+<[-]>			ab-def		y	unescaped hyphen, the only thing
+<[ - ]>			ab-def		y	unescaped hyphen, the only thing w spaces
+<[x-]>			ab-def		y	unescaped hyphen, at the end
+<[x - ]>		ab-def		y	unescaped hyphen, at the end w spaces
+<[-x]>			ab-def		y	unescaped hyphen, at the beginning
+<[ -x]>			ab-def		y	unescaped hyphen, at the beginning w spaces
+<[\-]>			ab-def		y	escaped hyphen
+<[\-]>			abcdef		n	escaped hyphen
+<-[\-]>			---x--		y	negated escaped hyphen
+<-[\-]>			------		n	negated escaped hyphen
+<[\-+]>			ab-def		y	escaped hyphen in range
+<[\-+]>			ab+def		y	escaped hyphen in range
+<[\-+]>			abcdef		n	escaped hyphen in range
+<[+\-]>			ab-def		y	escaped hyphen in range
+<[+\-]>			ab+def		y	escaped hyphen in range
+<[+\-]>			abcdef		n	escaped hyphen in range
+<-[\-+]>		---x--		y	negated escaped hyphen in range
+<-[\-+]>		------		n	negated escaped hyphen in range
+<-[+\-]>		---x--		y	negated escaped hyphen in range
+<-[+\-]>		------		n	negated escaped hyphen in range
+<["\\]>			\\			y	escaped backslash
+<[\]]>			]			y	escaped close bracket
+# todo :pge<backslash escapes in char classes>
+<[\]>			\\]]		/error/	unescaped backslash (or no closing brace)
+^\><[<]>		><		y	lt character class
+^<[>]>\<		><		y	gt character class
+# todo :pugs<feature>
+^<[><]>**2		><		y	gt, lt character class
+# todo :pugs<feature>
+^<[<>]>**2		><		y	lt, gt  character class
+^<-[><]>		><		n	not gt, lt character class
+^<-[<>]>		><		n	not lt, gt  character class
+'... --- ...'		... --- ...	y	literal match (\')
+'... --- ...'		...---...	n	literal match (\')
+# todo :pugs<feature>
+'ab\'>cd'		ab'>cd		y	literal match with quote
+'ab\\yz'		ab\x005cyz	y	literal match with backslash
+'ab"cd'			ab"cd		y	literal match with quote
+# todo :pugs<feature>
+'ab\\yz'		ab\x005cyz	y	literal match with backslash
+# todo :pugs<feature>
+"... --- ..."		... --- ...	y	literal match (\")
+# todo :pugs<feature>
+"... --- ..."		...---...	n	literal match (\")
+# todo :pugs<feature>
+"ab<\">cd"		ab<">cd		y	literal match with quote
+# todo :pugs<feature>
+"ab<'>cd"		ab<'>cd		y	literal match with quote
+# todo :pugs<feature>
+"ab\\cd"		ab\x005ccd	y	literal match with backslash
+# todo :pugs<feature> :pge<feature>
+(ab)x"$0"		abxab		y	literal match with interpolation
+# todo :pugs<feature> :pge<feature>
+(ab)"x$0"		abxab		y	literal match with interpolation
+'?'			ab<?		y	literal match with question mark
+'<'			ab<?		y	literal match with lt
+'<?'			ab<?		y	literal match with lt and question mark
+'<?'			ab<x?		n	non-matching literal match
+<[A..Z0..9]>		abcdef		n	two enumerated ranges
+<[A..Z0..9]>		abcDef		y	two enumerated ranges
+
+abc <![d]>		abc		y	negated charclass at end of string (issue 9)
+
+<[abc]-[a]>		abc		<b>		character class substraction 1
+<[abc]-[a]>+	abc		<bc>	character class substraction 2
+<[abc]-[\w]>	abc		n		character class substraction 3
+<[abc]-[a\w]>	abc		n		character class substraction 4
+<[abc]-[\W]>	abc		<a>		character class substraction 5
+<[abc]-[\W]>+	abc		<abc>	character class substraction 6
+<[abc]-[a\W]>	abc		<b>		character class substraction 7
+<[abc]-[a\W]>+	abc		<bc>	character class substraction 8
+<[abc]-[ab\Wc]>	abc		n		character class substraction 9
+<[ab1]-[\w\d]>	ab1		n		character class substraction 10
+<[ab1]-[\w1]>	ab1		n		character class substraction 11
+<[ab1]-[ab1]>	ab1		n		character class substraction 12
+<[ab1]-[a\d]>	ab1		<b>		character class substraction 13
+<[ab1]-[a\d]>+	ab1		<b>		character class substraction 14
+<[abc]-[a\d]>	ab123c	<b>		character class substraction 15
+<[abc]-[a\d]>+	ab123c	<b>		character class substraction 16
+<[\w]-[\d]>		a		<b>		character class substraction 17
+<[\w]-[\d]>+	ab		<b>		character class substraction 18
+<[\w]-[\D]>		1		<b>		character class substraction 19
+<[\w]-[\D]>+	123		<b>		character class substraction 20
+
+<[\ ]>			a b		y		space in character class escaped with backslash
+
+<[\«]>			«		y		test for regression introduced with parrot 6.9.0
+
+## vim: noexpandtab tabstop=4 shiftwidth=4
