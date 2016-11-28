@@ -1,0 +1,1 @@
+/usr/bin/perl Configure.pl "--prefix=/home/travis/brew/moar-nom/install" "--backends=moar" "--make-install" "--git-protocol=https" "--git-reference=/home/travis/brew/bin/../git_reference" "--gen-moar" $*

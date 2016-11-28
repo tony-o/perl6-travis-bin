@@ -1,0 +1,3 @@
+sub hash(*%new) {
+    %new
+}
