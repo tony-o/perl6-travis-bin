@@ -1,2 +1,0 @@
-    MoarVM does not come with its own test suite
-    Build NQP with the Moar backend and test from there.
