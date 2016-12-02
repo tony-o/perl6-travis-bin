@@ -1,0 +1,87 @@
+=head1 release_guide.pod - guide to NQP releases
+
+NQP's development release cycle is intimately tied to Rakudo's release
+cycle.  There is no separate, independent release cycle for NQP; NQP
+must be tagged for release immediately prior to the Rakudo release.
+
+=head2 Steps to create an NQP release
+
+=over 4
+
+=item 1.
+
+MoarVM tries to have a synchronised release schedule with NQP
+and Rakudo, so there's most probably a release tag for MoarVM
+that you can bump F<tools/build/MOAR_REVISION> to. Release tags
+for MoarVM have the format C<2014.02>. Find all of the tags with
+C<git tag> in an up-to-date MoarVM checkout.
+
+=item 2.
+
+Change the C<VERSION> file in nqp:
+
+  $ echo '2012.12' > VERSION
+  $ git commit -m 'bump VERSION to 2012.12' VERSION
+  $ git push
+
+=item 3.
+
+Make sure everything compiles and runs from a known clean state. This step
+is especially important if C<MOAR_REVISION> was changed in step 1 above.
+
+  $ make realclean
+  $ perl Configure.pl --gen-moar --backend=moar,jvm
+  $ make
+  $ make m-test
+  $ make j-test
+
+Resolve any problems that may still exist. Issues that impact backends
+other than MoarVM may potentially be ignored for a release for now.
+Check on the IRC channel if you have any questions.
+
+=item 4.
+
+Create a release tarball (needed for the Rakudo Star release)
+by entering C<make release VERSION=YYYY.MM>, where YYYY.MM is
+the month for which the release is being made.  This will
+create a tarball file named C<nqp-YYYY.MM.tar.gz>.
+
+=item 5.
+
+Unpack the tar file into another area, and test that it
+builds and runs properly using the same process in step 3
+above.  If there are any problems, fix them and go back to
+step 3.
+
+=item 6.
+
+Tag NQP by its release month ("YYYY.MM")
+
+  $ git tag -u <email address> -s -a -m"tag release YYYY.MM" YYYY.MM    # e.g., 2012.12
+  $ git push --tags
+
+The C<-s> tells git to sign the tag with your GPG key. Please see Rakudo's
+release guide for links on how to create GPG keys, should it be necessary.
+
+=item 7.
+
+Sign the tarball:
+
+    $ gpg -b --armor nqp-YYYY.MM.tar.gz
+
+=item 8
+
+Upload the release tarball and signature to L<http://rakudo.org/downloads/rakudo>:
+
+  $ scp nqp-2013.12.tar.gz nqp-2013.12.tar.gz.asc \
+        rakudo@rakudo.org:public_html/downloads/nqp/
+
+If you do not have permissions for that, ask one of (pmichaud, jnthn, FROGGS,
+masak, tadzik, moritz, PerlJam, [Coke], lizmat, timotimo, fsergot) on #perl6 to do it for you.
+
+=item 9.
+
+If creating the NQP release as part of a Rakudo release,
+continue with the Rakudo release process.
+
+=back

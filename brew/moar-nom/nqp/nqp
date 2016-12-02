@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /home/travis/brew/moar-nom/install/bin/moar nqp.moarvm "$@"
