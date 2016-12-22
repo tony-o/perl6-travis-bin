@@ -1,0 +1,14 @@
+src/gen/config.c
+build/config.c.in
+
+src/gen/config.h
+build/config.h.in
+
+Makefile
+build/Makefile.in
+
+tools/check.mk
+build/check.mk.in
+
+build/mk-moar-pc.pl
+build/mk-moar-pc.in

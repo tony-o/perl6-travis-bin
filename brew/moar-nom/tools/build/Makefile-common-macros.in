@@ -1,0 +1,24 @@
+# Copyright (C) 2015 The Perl Foundation
+
+PERL    = @perl@
+PROVE   = prove
+MKPATH  = $(PERL) -MExtUtils::Command -e mkpath
+CHMOD   = $(PERL) -MExtUtils::Command -e chmod
+CP      = $(PERL) -MExtUtils::Command -e cp
+RM_F    = $(PERL) -MExtUtils::Command -e rm_f
+RM_RF   = $(PERL) -MExtUtils::Command -e rm_rf
+SHELL   = @shell@
+
+SYSROOT= @sysroot@
+SDKROOT= @sdkroot@
+PREFIX = @prefix@
+PERL6_LANG_DIR = $(PREFIX)/share/perl6
+
+BOOTSTRAP_SOURCES = \
+  src/Perl6/Metamodel/BOOTSTRAP.nqp \
+  src/Perl6/Metamodel/EXPORTHOW.nqp \
+
+COMMON_BOOTSTRAP_SOURCES = \
+	@common_bootstrap_sources@
+
+R_SETTING_SRC = src/RESTRICTED.setting
