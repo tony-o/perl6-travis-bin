@@ -1,1 +1,0 @@
-/usr/bin/perl Configure.pl "--backends=moar" "--gen-moar" "--git-reference=/home/travis/brew/bin/../git_reference" "--make-install" $*
