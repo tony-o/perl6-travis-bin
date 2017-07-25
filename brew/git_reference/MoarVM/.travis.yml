@@ -1,0 +1,39 @@
+language: "perl"
+perl:
+    - "5.10"
+install: "echo"
+before_script:
+    - gcc --version
+    - clang --version
+    - sudo apt-get update -qq
+    - sudo apt-get install -y libffi-dev
+    - git fetch --unshallow
+    - git clone --depth 1 git://github.com/perl6/nqp
+
+script: "perl Configure.pl --prefix=/tmp/moar $MVM_OPTIONS --debug --optimize --cc=\"$CC\"; make install; cd nqp; perl Configure.pl --prefix=/tmp/moar --backends=moar; make; make test"
+
+branches:
+   only:
+     - master
+     - /smoke-me/
+
+notifications:
+  irc:
+    channels:
+    - "irc.freenode.net#moarvm"
+    on_success: change
+    on_failure: always
+    template:
+      - "MoarVM build %{result}. %{author} '%{commit_message}'"
+      - "%{build_url} %{compare_url}"
+
+env:
+  matrix:
+    - MVM_OPTIONS="--no-jit"  CC="gcc"
+    - MVM_OPTIONS=""          CC="gcc"
+    - MVM_OPTIONS="--no-jit"  CC="clang"
+    - MVM_OPTIONS=""          CC="clang"
+    - MVM_OPTIONS="--has-libffi --no-jit"  CC="gcc"
+    - MVM_OPTIONS="--has-libffi"           CC="gcc"
+    - MVM_OPTIONS="--has-libffi --no-jit"  CC="clang"
+    - MVM_OPTIONS="--has-libffi"           CC="clang"
