@@ -1,0 +1,58 @@
+/* !!!
+ * If you're looking at config.h and thinking of editing - this is a
+ * generated file. See build/config.h.in, unless you're just twiddling
+ * to get things to work on your platform before updating Configure,
+ * in which case go right ahead. :-)
+ * !!!
+ */
+
+/* Version information. */
+#define MVM_VERSION "@version@"
+#define MVM_VERSION_MAJOR @versionmajor@
+#define MVM_VERSION_MINOR @versionminor@
+#define MVM_VERSION_PATCH @versionpatch@
+
+/* Various compiler-specific pragmii. */
+#define MVM_NO_RETURN @noreturnspecifier@
+#define MVM_NO_RETURN_GCC @noreturnattribute@
+#define MVM_FORMAT(X, Y, Z) @formatattribute@
+
+/* DLL interface definitions. */
+#define MVM_DLL_IMPORT @dllimport@
+#define MVM_DLL_EXPORT @dllexport@
+#define MVM_DLL_LOCAL  @dlllocal@
+
+/* Set in case of big-endian sytems.
+ * The default byte order is little-endian. */
+#if @be@
+#define MVM_BIGENDIAN @be@
+#endif
+
+/* pthread_yield() detection */
+#if @has_pthread_yield@
+#define MVM_HAS_PTHREAD_YIELD @has_pthread_yield@
+#endif
+
+/* How this compiler does static inline functions. */
+#define MVM_STATIC_INLINE @static_inline@
+
+#if @can_unaligned_int32@
+#define MVM_CAN_UNALIGNED_INT32
+#endif
+
+#if @can_unaligned_int64@
+#define MVM_CAN_UNALIGNED_INT64
+#endif
+
+#if @can_unaligned_num64@
+#define MVM_CAN_UNALIGNED_NUM64
+#endif
+
+#define MVM_PTR_SIZE @ptr_size@
+
+#if @havebooltype@
+#define MVM_BOOL @booltype@
+#endif
+
+/* Should we translate \n to \r\n on output? */
+#define MVM_TRANSLATE_NEWLINE_OUTPUT @translate_newline_output@
