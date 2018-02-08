@@ -1,0 +1,74 @@
+=encoding utf-8
+
+=head1 NAME
+
+Guide to the C<src/core> setting.
+
+=head1 DESCRIPTION
+
+Notes about writing code to go in Rakudo's setting.
+
+=over 4
+
+=item Think of laziness
+
+Avoid anything that forces eager evaluation of arrays, like querying their
+length.
+
+This is bad:
+
+    while $i < self.elems { ... }
+
+Better use a C<for> loop, which will respect laziness
+
+    for self.list { ...  }
+
+If you assemble multiple items into a potentially lazy list,
+C<gather/take> is a very good construct to remember.
+
+=item Take care with type constraints
+
+Some of the Synopsis documents list type constraints for some of the
+arguments, including the invocant. They are not always correct,
+when in doubt leave them out.
+
+=item When adding a new file in src/core/
+
+... remember to add it to L<build/Makefile.in> to the C<SETTING>
+variable and re-generate the Makefile using L<Configure.pl>.
+
+=item Prefer C<self> to explicit invocant variables.
+
+Many of the method specifications in the synopses list explicit
+invocant variables.  Using them often makes the code less clear,
+and can sometimes be incorrect (for example, an invocant of C<@values>
+will restrict the method to invocants that have the C<Positional>
+role).  Better is to use C<self>, or if invoking a method on C<self>
+then you can use C<$.foo> or C<@.bar> directly.
+
+=item All subs and methods are really multis
+
+All built-in methods or subroutines should be declared as C<multi>. 
+
+=item Use explicit empty signatures
+
+If a method doesn't take any arguments, give it an explicit empty
+signature C<()>. That's very different from omitting the signature
+altogether (which would be an implicit catch-all signature).
+
+=item Use implicit return at the end of routines
+
+If no C<return> statement is executed in a routine, the value of the
+last evaluated expression is returned.
+
+So if a C<return EXPR> is the last statement in a routine, omit the
+C<return> - currently explicit returns take much more time
+than implicit ones.
+
+=back
+
+=head1 SEE ALSO
+
+L<http://perlgeek.de/blog-en/perl-6/tidings-2009-03.html>
+
+=for editor vim: ft=pod tw=70

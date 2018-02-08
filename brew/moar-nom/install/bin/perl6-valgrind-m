@@ -1,0 +1,11 @@
+#!/bin/sh
+/home/travis/brew/moar-nom/install/bin/moar --execname="$0" --libpath="/home/travis/brew/moar-nom/install/share/nqp/lib" --libpath="/home/travis/brew/moar-nom/install/share/perl6/lib" --libpath="/home/travis/brew/moar-nom/install/share/perl6/runtime" /home/travis/brew/moar-nom/install/share/perl6/runtime/perl6.moarvm -e '
+say "=" x 96;
+
+say "This is Rakudo Perl 6 running in valgrind, a tool for debugging and profiling programs.\nRunning a program in valgrind usually takes *a lot* more time than running it directly,\nso please be patient.";
+
+say "This Rakudo version is $*PERL.compiler.version() built on MoarVM version $*VM.version(),";
+say "running on $*DISTRO.gist() / $*KERNEL.gist()";
+
+say "-" x 96;'
+valgrind /home/travis/brew/moar-nom/install/bin/moar --execname="$0" --libpath="/home/travis/brew/moar-nom/install/share/nqp/lib" --libpath="/home/travis/brew/moar-nom/install/share/perl6/lib" --libpath="/home/travis/brew/moar-nom/install/share/perl6/runtime" /home/travis/brew/moar-nom/install/share/perl6/runtime/perl6.moarvm "$@"
