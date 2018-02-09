@@ -1,3 +1,0 @@
-sub hash(*%new) {
-    %new
-}
