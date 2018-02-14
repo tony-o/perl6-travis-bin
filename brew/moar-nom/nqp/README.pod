@@ -1,0 +1,123 @@
+=head1 NQP - Not Quite Perl (6)
+
+NQP is Copyright (C) 2009-2016 by The Perl Foundation.  See F<LICENSE>
+for licensing details.
+
+This is "Not Quite Perl" -- a lightweight Perl 6-like environment for
+virtual machines.  The key feature of NQP is that it's designed to be a very
+small environment (as compared with, say, perl6 or Rakudo) and is focused on
+being a high-level way to create compilers and libraries for virtual
+machines (MoarVM [1], the JVM, and the Parrot Virtual Machine [2]).
+Unlike a full-fledged implementation of Perl 6, NQP strives to have as small
+a runtime footprint as it can, while still providing a Perl 6 object model
+and regular expression engine for the virtual machine.
+
+    [1] https://github.com/MoarVM/MoarVM
+    [2] http://parrot.org/
+
+=head2 Building from source
+
+=for HTML <a href="https://travis-ci.org/perl6/nqp"><img src="https://travis-ci.org/perl6/nqp.svg?branch=master"></a>
+
+To build NQP from source, you'll just need a C<make> utility and Perl 5.8 or
+newer.  To automatically obtain and build MoarVM or Parrot you may also need
+a git client.
+
+To obtain NQP directly from its repository:
+
+    $ git clone git://github.com/perl6/nqp.git
+
+If you don't have git installed, you can get a tarball or zip of NQP from
+github by visiting http://github.com/perl6/nqp/tree/master and clicking
+"Download".  Then unpack the tarball or zip.
+
+NQP can run on three different backends: MoarVM, the JVM, and Parrot. Decide
+on which backends you want it to run, and configure and build it as follows:
+
+Once you have a copy of NQP, build it as follows:
+
+    $ cd nqp
+    $ perl Configure.pl --backends=moar,parrot,jvm
+    $ make
+
+If you don't have an installed MoarVM (or Parrot), you can have
+Configure.pl build one for you by passing the C<--gen-moar> (or
+C<--gen-parrot>) option to it as well.
+
+The C<make> step will create a "nqp" or "nqp.exe" executable in the current
+directory.  Programs can then be run from the build directory using a
+command like:
+
+    $ ./nqp hello.nqp
+
+By default, NQP searches for the parrot executable and installs to the
+directory C<./install>. You can change that with the C<--prefix> option to
+Configure.pl.
+
+Once built, NQP's C<make install> target will install NQP and its libraries
+into the same location as the MoarVM or Parrot installation
+that was used to create it.  Until this step is
+performed, the "nqp" executable created by C<make> above can only be
+reliably run from the root of NQP's build directory.  After C<make install>
+is performed the executable can be run from any directory.
+
+If the NQP compiler is invoked without an explicit script to run, it enters
+a small interactive mode that allows statements to be executed from the
+command line.  Each line entered is treated as a separate compilation unit,
+however (which means that subroutines are preserved after they are defined,
+but variables are not).
+
+=head2 Troubleshooting
+
+=head3 OS X
+
+On OS X, it appears that configuration fails in some configurations:
+
+  3rdparty/libuv/include/uv-darwin.h:26:11: fatal error: 'mach/mach.h' file not found
+
+Should this happen to you, then a solution might be the following:
+
+    $ cd MoarVM/3rdparty/libuv/include
+    $ ln -s /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.9.sdk/usr/include/mach
+    $ cd ../../../..
+    $ # run the Configure again
+
+Note that the 10.9 in the above, represents the major version of OS X being
+used.  On Mavericks use 10.9 (like above), on Yosemite use 10.10.
+
+=head2 Using NQP
+
+The L<examples directory|https://github.com/perl6/nqp/tree/master/examples> is a good place to start, with the
+L<loops|https://github.com/perl6/nqp/blob/master/examples/loops.nqp> and other files. Opcodes are listed in
+L<the docs directory|https://github.com/perl6/nqp/blob/master/docs/ops.markdown>. You can use NQP from this
+release, it will be already installed if you have built Perl6 from
+scratch. 
+
+
+=head2 Differences from nqp-rx
+
+NQP is the successor implementation of "nqp-rx" [2].  Unlike nqp-rx, which
+aimed to have almost no runtime component whatsoever, this new version of
+NQP accepts that a minimal Perl 6 object metamodel, multidispatcher, and
+regular expression engine are needed on top of the underlying virtual
+machine.  Also, nqp-rx only ran on Parrot, whereas NQP also runs on the JVM
+and MoarVM and is designed to be portable to more.
+
+    [2] http://github.com/perl6/nqp-rx
+
+=head2 JavaScript backend
+
+The JavaScript backend is currently undergoing a refactor/rewrite of parts to generate decently performing javascript, add source maps and remove some old hack as well as clean up the code. 
+As a result of that it's in a really rough state so the best thing before playing with it/hacking on it is to contact pmurias via irc at #perl6 on irc.freenode.org.
+
+Building the JavaScript backend currently requires building the moar backend.
+
+perl Configure.pl --backends=moar,js
+make
+
+Currently it needs to be run like:
+
+    ./nqp-js file.nqp
+
+To run the tests 
+   make js-test

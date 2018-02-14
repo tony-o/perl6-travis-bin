@@ -1,0 +1,18 @@
+* repr's:
+** ConcBlockingQueue
+** AsyncTask
+** Uninstantiable
+* nqp::op's:
+** Threads:    	  threadyield (current tests are flaky)
+** ConcQueues:    queuepoll
+** Timers:     	  timer
+** Cancellations: cancel
+** Signals:       signal
+** Watches:       watchfile
+** AsyncIO:       asyncconnect, asynclisten, asyncwritestr,
+                  asyncwritebytes, asyncreadchars, asyncreadbytes
+** AsyncProcs:    spawnprocasync, killprocasync
+* Situations:
+** Serialization / precompilation
+** Signal interaction with locks/condvars/semaphores/timers/etc.
+** Stress testing

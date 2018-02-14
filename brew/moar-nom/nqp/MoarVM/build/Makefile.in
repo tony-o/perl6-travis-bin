@@ -1,0 +1,598 @@
+CC     = @cc@
+LD     = @ld@
+AR     = @ar@
+MAKE   = @make@ @mkflags@
+PERL   = @perl@
+RM     = @rm@
+CAT    = @cat@
+SHELL  = @sh@
+LUA    = @lua@
+CP     = $(PERL) -MExtUtils::Command -e cp
+MKPATH = $(PERL) -MExtUtils::Command -e mkpath
+CHMOD  = $(PERL) -MExtUtils::Command -e chmod
+RM_RF  = $(PERL) -MExtUtils::Command -e rm_rf
+DYNASM = $(LUA) @dynasmlua@
+
+
+
+CONFIG    = @config@
+ADDCONFIG =
+
+TRACING = 0
+CGOTO = @cancgoto@
+NOISY = 0
+
+MSG = @:
+CMD =
+NOOUT =
+NOERR =
+
+@mknoisy@
+
+PREFIX    = @prefix@
+BINDIR    = @bindir@
+LIBDIR    = @libdir@
+MASTDIR   = @mastdir@
+
+PKGCONFIGDIR = @prefix@/share/pkgconfig
+
+CFLAGS    = @cflags@ @ccdef@MVM_TRACING=$(TRACING) @ccdef@MVM_CGOTO=$(CGOTO)
+CINCLUDES = @cincludes@ \
+            @ccinc@@shaincludedir@ \
+            @ccinc@3rdparty/tinymt \
+            @ccinc@3rdparty \
+            @ccinc@src
+LDFLAGS   = @ldflags@
+LDLIBS    = @ldlibs@
+MAIN_LIBS = @mainlibs@
+DLL_LIBS  = @thirdpartylibs@ $(LDLIBS)
+ARFLAGS   = @arflags@
+
+PLATFORM_WIN32 = src/platform/win32/mmap@obj@ \
+                 src/platform/win32/time@obj@ \
+                 src/platform/win32/io@obj@ \
+                 src/platform/win32/sys@obj@
+
+PLATFORM_POSIX = src/platform/posix/mmap@obj@ \
+                 src/platform/posix/time@obj@ \
+                 src/platform/posix/sys@obj@
+
+DASM_FLAGS_WIN32 = -D WIN32=1
+DASM_FLAGS_POSIX = -D POSIX=1
+JIT_WIN32_X64 = src/jit/emit_win32_x64@obj@
+JIT_POSIX_X64 = src/jit/emit_posix_x64@obj@
+JIT_STUB = src/jit/stub@obj@
+
+
+MAIN_OBJECTS = src/main@obj@
+
+OBJECTS = src/core/callsite@obj@ \
+          src/core/args@obj@ \
+          src/core/exceptions@obj@ \
+          src/core/interp@obj@ \
+          src/core/threadcontext@obj@ \
+          src/core/compunit@obj@ \
+          src/core/bytecode@obj@ \
+          src/core/frame@obj@ \
+          src/core/validation@obj@ \
+          src/core/bytecodedump@obj@ \
+          src/core/threads@obj@ \
+          src/core/ops@obj@ \
+          src/core/hll@obj@ \
+          src/core/loadbytecode@obj@ \
+          src/math/num@obj@ \
+          src/core/coerce@obj@ \
+          src/core/dll@obj@ \
+          src/core/ext@obj@ \
+          src/core/nativecall@obj@ \
+          src/core/nativecall_@nativecall_backend@@obj@ \
+          src/core/continuation@obj@ \
+          src/core/intcache@obj@ \
+          src/core/fixedsizealloc@obj@ \
+          src/gen/config@obj@ \
+          src/gc/orchestrate@obj@ \
+          src/gc/allocation@obj@ \
+          src/gc/worklist@obj@ \
+          src/gc/roots@obj@ \
+          src/gc/collect@obj@ \
+          src/gc/gen2@obj@ \
+          src/gc/wb@obj@ \
+          src/gc/objectid@obj@ \
+          src/gc/finalize@obj@ \
+          src/io/io@obj@ \
+          src/io/eventloop@obj@ \
+          src/io/syncfile@obj@ \
+          src/io/syncstream@obj@ \
+          src/io/syncpipe@obj@ \
+          src/io/syncsocket@obj@ \
+          src/io/fileops@obj@ \
+          src/io/dirops@obj@ \
+          src/io/procops@obj@ \
+          src/io/timers@obj@ \
+          src/io/filewatchers@obj@ \
+          src/io/signals@obj@ \
+          src/io/asyncsocket@obj@ \
+          src/io/asyncsocketudp@obj@ \
+          src/6model/reprs@obj@ \
+          src/6model/reprconv@obj@ \
+          src/6model/containers@obj@ \
+          src/6model/parametric@obj@ \
+          src/6model/reprs/MVMString@obj@ \
+          src/6model/reprs/MVMArray@obj@ \
+          src/6model/reprs/MVMHash@obj@ \
+          src/6model/reprs/MVMCFunction@obj@ \
+          src/6model/reprs/KnowHOWREPR@obj@ \
+          src/6model/reprs/KnowHOWAttributeREPR@obj@ \
+          src/6model/reprs/P6str@obj@ \
+          src/6model/reprs/P6opaque@obj@ \
+          src/6model/reprs/MVMCode@obj@ \
+          src/6model/reprs/MVMOSHandle@obj@ \
+          src/6model/reprs/MVMCompUnit@obj@ \
+          src/6model/reprs/MVMStaticFrame@obj@ \
+          src/6model/reprs/P6int@obj@ \
+          src/6model/reprs/P6num@obj@ \
+          src/6model/reprs/Uninstantiable@obj@ \
+          src/6model/reprs/HashAttrStore@obj@ \
+          src/6model/reprs/MVMThread@obj@ \
+          src/6model/reprs/MVMIter@obj@ \
+          src/6model/reprs/MVMContext@obj@ \
+          src/6model/reprs/SCRef@obj@ \
+          src/6model/reprs/Lexotic@obj@ \
+          src/6model/reprs/MVMCallCapture@obj@ \
+          src/6model/reprs/P6bigint@obj@ \
+          src/6model/reprs/NFA@obj@ \
+          src/6model/reprs/MVMException@obj@ \
+          src/6model/reprs/MVMDLLSym@obj@ \
+          src/6model/reprs/MVMMultiCache@obj@ \
+          src/6model/reprs/MVMContinuation@obj@ \
+          src/6model/reprs/NativeCall@obj@ \
+          src/6model/reprs/CPointer@obj@ \
+          src/6model/reprs/CStr@obj@ \
+          src/6model/reprs/CArray@obj@ \
+          src/6model/reprs/CStruct@obj@ \
+          src/6model/reprs/CUnion@obj@ \
+          src/6model/reprs/ReentrantMutex@obj@ \
+          src/6model/reprs/ConditionVariable@obj@ \
+          src/6model/reprs/Semaphore@obj@ \
+          src/6model/reprs/ConcBlockingQueue@obj@ \
+          src/6model/reprs/MVMAsyncTask@obj@ \
+          src/6model/reprs/MVMNull@obj@ \
+          src/6model/reprs/CPPStruct@obj@ \
+          src/6model/reprs/NativeRef@obj@ \
+          src/6model/reprs/MultiDimArray@obj@ \
+          src/6model/6model@obj@ \
+          src/6model/bootstrap@obj@ \
+          src/6model/sc@obj@ \
+          src/6model/serialization@obj@ \
+          src/mast/compiler@obj@ \
+          src/mast/driver@obj@ \
+          src/spesh/dump@obj@ \
+          src/spesh/graph@obj@ \
+          src/spesh/codegen@obj@ \
+          src/spesh/candidate@obj@ \
+          src/spesh/manipulate@obj@ \
+          src/spesh/args@obj@ \
+          src/spesh/facts@obj@ \
+          src/spesh/optimize@obj@ \
+          src/spesh/deopt@obj@ \
+          src/spesh/log@obj@ \
+          src/spesh/threshold@obj@ \
+          src/spesh/inline@obj@ \
+          src/spesh/osr@obj@ \
+          src/jit/graph@obj@ \
+          src/jit/compile@obj@ \
+          src/jit/log@obj@ \
+          src/strings/decode_stream@obj@ \
+          src/strings/ascii@obj@ \
+          src/strings/utf8@obj@ \
+          src/strings/utf8_c8@obj@ \
+          src/strings/nfg@obj@ \
+          src/strings/ops@obj@ \
+          src/strings/unicode@obj@ \
+          src/strings/normalize@obj@ \
+          src/strings/latin1@obj@ \
+          src/strings/utf16@obj@ \
+          src/strings/windows1252@obj@ \
+          src/math/bigintops@obj@ \
+          src/profiler/instrument@obj@ \
+          src/profiler/log@obj@ \
+          src/profiler/profile@obj@ \
+          src/instrument/crossthreadwrite@obj@ \
+          src/moar@obj@ \
+          @platform@ \
+          @jit@
+
+
+HEADERS = src/moar.h \
+          src/types.h \
+          src/bithacks.h \
+          src/6model/6model.h \
+          src/core/instance.h \
+          src/core/threadcontext.h \
+          src/core/callsite.h \
+          src/core/args.h \
+          src/core/exceptions.h \
+          src/core/interp.h \
+          src/core/alloc.h \
+          src/core/frame.h \
+          src/core/compunit.h \
+          src/core/bytecode.h \
+          src/core/ops.h \
+          src/core/validation.h \
+          src/core/bytecodedump.h \
+          src/core/threads.h \
+          src/core/hll.h \
+          src/core/loadbytecode.h \
+          src/math/num.h \
+          src/core/coerce.h \
+          src/core/dll.h \
+          src/core/ext.h \
+          src/core/nativecall.h \
+          src/core/continuation.h \
+          src/core/intcache.h \
+          src/core/fixedsizealloc.h \
+          src/io/io.h \
+          src/io/eventloop.h \
+          src/io/syncfile.h \
+          src/io/syncstream.h \
+          src/io/syncpipe.h \
+          src/io/syncsocket.h \
+          src/io/fileops.h \
+          src/io/dirops.h \
+          src/io/procops.h \
+          src/io/timers.h \
+          src/io/filewatchers.h \
+          src/io/signals.h \
+          src/io/asyncsocket.h \
+          src/io/asyncsocketudp.h \
+          src/gc/orchestrate.h \
+          src/gc/allocation.h \
+          src/gc/worklist.h \
+          src/gc/collect.h \
+          src/gc/roots.h \
+          src/gc/gen2.h \
+          src/gc/wb.h \
+          src/gc/objectid.h \
+          src/gc/finalize.h \
+          src/6model/reprs.h \
+          src/6model/reprconv.h \
+          src/6model/bootstrap.h \
+          src/6model/serialization.h \
+          src/6model/containers.h \
+          src/6model/parametric.h \
+          src/6model/reprs/MVMString.h \
+          src/6model/reprs/MVMArray.h \
+          src/6model/reprs/MVMHash.h \
+          src/6model/reprs/MVMCFunction.h \
+          src/6model/reprs/KnowHOWREPR.h \
+          src/6model/reprs/KnowHOWAttributeREPR.h \
+          src/6model/reprs/P6opaque.h \
+          src/6model/reprs/MVMCode.h \
+          src/6model/reprs/P6str.h \
+          src/6model/reprs/MVMOSHandle.h \
+          src/6model/reprs/P6int.h \
+          src/6model/reprs/P6num.h \
+          src/6model/reprs/Uninstantiable.h \
+          src/6model/reprs/HashAttrStore.h \
+          src/6model/reprs/MVMThread.h \
+          src/6model/reprs/MVMIter.h \
+          src/6model/reprs/MVMContext.h \
+          src/6model/reprs/SCRef.h \
+          src/6model/reprs/Lexotic.h \
+          src/6model/reprs/MVMCallCapture.h \
+          src/6model/reprs/P6bigint.h \
+          src/6model/reprs/NFA.h \
+          src/6model/reprs/MVMException.h \
+          src/6model/reprs/MVMCompUnit.h \
+          src/6model/reprs/MVMDLLSym.h \
+          src/6model/reprs/MVMMultiCache.h \
+          src/6model/reprs/MVMContinuation.h \
+          src/6model/reprs/NativeCall.h \
+          src/6model/reprs/CPointer.h \
+          src/6model/reprs/CStr.h \
+          src/6model/reprs/CArray.h \
+          src/6model/reprs/CStruct.h \
+          src/6model/reprs/CUnion.h \
+          src/6model/reprs/ReentrantMutex.h \
+          src/6model/reprs/ConditionVariable.h \
+          src/6model/reprs/Semaphore.h \
+          src/6model/reprs/ConcBlockingQueue.h \
+          src/6model/reprs/MVMAsyncTask.h \
+          src/6model/reprs/MVMNull.h \
+          src/6model/reprs/CPPStruct.h \
+          src/6model/reprs/NativeRef.h \
+          src/6model/reprs/MultiDimArray.h \
+          src/6model/sc.h \
+          src/mast/compiler.h \
+          src/mast/driver.h \
+          src/mast/nodes.h \
+          src/spesh/dump.h \
+          src/spesh/graph.h \
+          src/spesh/codegen.h \
+          src/spesh/candidate.h \
+          src/spesh/manipulate.h \
+          src/spesh/args.h \
+          src/spesh/facts.h \
+          src/spesh/optimize.h \
+          src/spesh/deopt.h \
+          src/spesh/log.h \
+          src/spesh/threshold.h \
+          src/spesh/inline.h \
+          src/spesh/osr.h \
+          src/strings/unicode_gen.h \
+          src/strings/normalize.h \
+          src/strings/decode_stream.h \
+          src/strings/ascii.h \
+          src/strings/utf8.h \
+          src/strings/utf8_c8.h \
+          src/strings/iter.h \
+          src/strings/nfg.h \
+          src/strings/ops.h \
+          src/strings/unicode.h \
+          src/strings/latin1.h \
+          src/strings/utf16.h \
+          src/strings/windows1252.h \
+          src/math/bigintops.h \
+          src/profiler/instrument.h \
+          src/profiler/log.h \
+          src/profiler/profile.h \
+          src/platform/mmap.h \
+          src/platform/time.h \
+          src/platform/threads.h \
+          src/platform/io.h \
+          src/platform/sys.h \
+          src/platform/setjmp.h \
+          src/jit/graph.h \
+          src/jit/compile.h \
+          src/jit/log.h \
+          src/instrument/crossthreadwrite.h \
+          src/gen/config.h \
+          3rdparty/uthash.h
+
+UV_UNIX = 3rdparty/libuv/src/fs-poll@obj@ \
+          3rdparty/libuv/src/inet@obj@ \
+          3rdparty/libuv/src/uv-common@obj@ \
+          3rdparty/libuv/src/version@obj@ \
+          3rdparty/libuv/src/unix/async@obj@ \
+          3rdparty/libuv/src/unix/core@obj@ \
+          3rdparty/libuv/src/unix/dl@obj@ \
+          3rdparty/libuv/src/unix/fs@obj@ \
+          3rdparty/libuv/src/unix/getaddrinfo@obj@ \
+          3rdparty/libuv/src/unix/loop-watcher@obj@ \
+          3rdparty/libuv/src/unix/loop@obj@ \
+          3rdparty/libuv/src/unix/pipe@obj@ \
+          3rdparty/libuv/src/unix/poll@obj@ \
+          3rdparty/libuv/src/unix/process@obj@ \
+          3rdparty/libuv/src/unix/signal@obj@ \
+          3rdparty/libuv/src/unix/stream@obj@ \
+          3rdparty/libuv/src/unix/tcp@obj@ \
+          3rdparty/libuv/src/unix/thread@obj@ \
+          3rdparty/libuv/src/threadpool@obj@ \
+          3rdparty/libuv/src/unix/timer@obj@ \
+          3rdparty/libuv/src/unix/tty@obj@ \
+          3rdparty/libuv/src/unix/udp@obj@
+
+UV_LINUX = 3rdparty/libuv/src/unix/linux-core@obj@ \
+           3rdparty/libuv/src/unix/linux-inotify@obj@ \
+           3rdparty/libuv/src/unix/linux-syscalls@obj@ \
+           3rdparty/libuv/src/unix/proctitle@obj@ \
+           $(UV_UNIX)
+
+UV_OPENBSD = 3rdparty/libuv/src/unix/openbsd@obj@ \
+             3rdparty/libuv/src/unix/kqueue@obj@ \
+             $(UV_UNIX)
+
+UV_NETBSD = 3rdparty/libuv/src/unix/netbsd@obj@ \
+            3rdparty/libuv/src/unix/kqueue@obj@ \
+            $(UV_UNIX)
+
+UV_FREEBSD = 3rdparty/libuv/src/unix/freebsd@obj@ \
+             3rdparty/libuv/src/unix/kqueue@obj@ \
+             $(UV_UNIX)
+
+UV_DARWIN = 3rdparty/libuv/src/unix/darwin@obj@ \
+            3rdparty/libuv/src/unix/darwin-proctitle@obj@ \
+            3rdparty/libuv/src/unix/fsevents@obj@ \
+            3rdparty/libuv/src/unix/kqueue@obj@ \
+            3rdparty/libuv/src/unix/proctitle@obj@ \
+            $(UV_UNIX)
+
+UV_SOLARIS = 3rdparty/libuv/src/unix/sunos@obj@ \
+            $(UV_UNIX)
+
+UV_OBJECTS = @uvobjects@
+
+TOM_OBJECTS = @tomobjects@
+
+THIRDPARTY = @thirdpartylibs@
+
+.SUFFIXES: .c @obj@ .i @asm@
+
+all: moar@exe@ pkgconfig/moar.pc
+
+install: all
+	$(MKPATH) $(DESTDIR)$(BINDIR)
+	$(CP) moar@exe@ $(DESTDIR)$(BINDIR)
+	$(CHMOD) 755 $(DESTDIR)$(BINDIR)/moar@exe@
+	$(MKPATH) $(DESTDIR)$(LIBDIR)
+	$(CP) @moar@ @impinst@ $(DESTDIR)$(LIBDIR)
+	$(MKPATH) $(DESTDIR)$(MASTDIR)
+	$(CP) lib/MAST/Nodes.nqp $(DESTDIR)$(MASTDIR)
+	$(CP) lib/MAST/Ops.nqp $(DESTDIR)$(MASTDIR)
+	$(MKPATH) $(DESTDIR)$(PKGCONFIGDIR)
+	$(CP) pkgconfig/moar.pc $(DESTDIR)$(PKGCONFIGDIR)
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar
+	$(CP) src/gen/config.h $(DESTDIR)$(PREFIX)/include/moar
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/6model/reprs
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/core
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/gc
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/gen
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/io
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/mast
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/math
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/platform
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/profiler
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/spesh
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/strings
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/jit
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/moar/instrument
+	$(CP) 3rdparty/*.h $(DESTDIR)$(PREFIX)/include/moar
+	$(CP) src/*.h $(DESTDIR)$(PREFIX)/include/moar
+	$(CP) src/6model/*.h $(DESTDIR)$(PREFIX)/include/moar/6model
+	$(CP) src/6model/reprs/*.h $(DESTDIR)$(PREFIX)/include/moar/6model/reprs
+	$(CP) src/core/*.h $(DESTDIR)$(PREFIX)/include/moar/core
+	$(CP) src/gc/*.h $(DESTDIR)$(PREFIX)/include/moar/gc
+	$(CP) src/gen/*.h $(DESTDIR)$(PREFIX)/include/moar/gen
+	$(CP) src/io/*.h $(DESTDIR)$(PREFIX)/include/moar/io
+	$(CP) src/mast/*.h $(DESTDIR)$(PREFIX)/include/moar/mast
+	$(CP) src/math/*.h $(DESTDIR)$(PREFIX)/include/moar/math
+	$(CP) src/platform/*.h $(DESTDIR)$(PREFIX)/include/moar/platform
+	$(CP) src/profiler/*.h $(DESTDIR)$(PREFIX)/include/moar/profiler
+	$(CP) src/spesh/*.h $(DESTDIR)$(PREFIX)/include/moar/spesh
+	$(CP) src/strings/*.h $(DESTDIR)$(PREFIX)/include/moar/strings
+	$(CP) src/jit/*.h $(DESTDIR)$(PREFIX)/include/moar/jit
+	$(CP) src/instrument/*.h $(DESTDIR)$(PREFIX)/include/moar/instrument
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/libuv
+	$(MKPATH) $(DESTDIR)$(PREFIX)/include/libtommath
+	$(CP) 3rdparty/libuv/include/*.h $(DESTDIR)$(PREFIX)/include/libuv
+@install@
+
+lib: @moar@
+
+help:
+	@$(CAT) build/help.txt
+
+test:
+	@$(CAT) build/test.txt
+
+reconfig: realclean
+	$(MSG) reconfiguring with [ $(CONFIG) $(ADDCONFIG) ]
+	$(CMD)$(PERL) Configure.pl $(CONFIG) $(ADDCONFIG)
+
+clangcheck gcccheck:
+	@$(MAKE) --no-print-directory -f tools/check.mk $@
+
+moar@exe@: $(MAIN_OBJECTS) @moar@
+	$(MSG) linking $@
+	$(CMD)$(LD) @ldout@$@ $(LDFLAGS) $(MAIN_OBJECTS) $(MAIN_LIBS)
+
+@moarlib@: $(OBJECTS) $(THIRDPARTY)
+	$(MSG) linking $@
+	$(CMD)$(AR) $(ARFLAGS) @arout@$@ $(OBJECTS) $(NOOUT)
+
+@moardll@: $(OBJECTS) $(THIRDPARTY)
+	$(MSG) linking $@
+	$(CMD)$(LD) @ldout@$@ $(LDFLAGS) @ldshared@ @moarshared@ $(OBJECTS) $(DLL_LIBS)
+
+libuv: @uvlib@
+
+$(MAIN_OBJECTS) $(OBJECTS): $(HEADERS)
+
+tracing:
+	$(MSG) enable tracing dispatch
+	-$(CMD)$(RM) src/main@obj@ src/core/interp@obj@
+	$(CMD)$(MAKE) TRACING=1 CGOTO=0 NOISY="$(NOISY)"
+
+cgoto:
+	$(MSG) enable computed-goto dispatch
+	-$(CMD)$(RM) src/main@obj@ src/core/interp@obj@
+	$(CMD)$(MAKE) TRACING=0 CGOTO=1 NOISY="$(NOISY)"
+
+switch no-tracing no-cgoto:
+	$(MSG) enable regular dispatch
+	-$(CMD)$(RM) src/main@obj@ src/core/interp@obj@
+	$(CMD)$(MAKE) TRACING=0 CGOTO=0 NOISY="$(NOISY)"
+
+# objflags can include -DMVM_BUILD_SHARED which affects pre-processed source
+.c.i:
+	$(MSG) pre-processing $@
+	$(CMD)$(CC) @cppswitch@ $(CFLAGS) @objflags@ $(CINCLUDES) @cppout@$@ $*.c
+
+.c@asm@:
+	$(MSG) generating assembler for $@
+	$(CMD)$(CC) @asmswitch@ $(CFLAGS) @objflags@ $(CINCLUDES) @asmout@$@ $*.c
+
+.c@obj@:
+	$(MSG) compiling $@
+	$(CMD)$(CC) @ccswitch@ $(CFLAGS) @objflags@ $(CINCLUDES) @ccout@$@ $*.c
+
+
+src/main@obj@: src/main.c
+	$(MSG) compiling $@
+	$(CMD)$(CC) @ccswitch@ $(CFLAGS) @mainflags@ $(CINCLUDES) @ccout@$@ $*.c
+
+src/strings/unicode.c: src/strings/unicode_db.c src/strings/unicode_ops.c
+	$(MSG) generating $@
+	$(CMD)$(CAT) src/strings/unicode_db.c src/strings/unicode_ops.c > $@ $(NOERR)
+
+3rdparty/dynasm/minilua@exe@: 3rdparty/dynasm/minilua.c
+	$(CC) $(CFLAGS) $(LDFLAGS) 3rdparty/dynasm/minilua.c -o $@ $(LDLIBS)
+
+src/jit/emit_posix_x64.c: $(LUA) src/jit/emit_x64.dasc
+	$(DYNASM) $(DASM_FLAGS_POSIX) -o $@ src/jit/emit_x64.dasc
+
+src/jit/emit_win32_x64.c: $(LUA) src/jit/emit_x64.dasc
+	$(DYNASM) $(DASM_FLAGS_WIN32) -o $@ src/jit/emit_x64.dasc
+
+dasm_all: src/jit/emit_win32_x64.c src/jit/emit_posix_x64.c
+
+@uvlib@: $(UV_OBJECTS)
+	$(MSG) linking $@
+	$(CMD)@uvrule@ $(NOOUT)
+
+@laolib@:
+	$(MSG) linking $@
+	$(CMD)@laorule@ $(NOOUT)
+
+@tomlib@: $(TOM_OBJECTS)
+	$(MSG) linking $@
+	$(CMD)@tomrule@ $(NOOUT)
+
+@shalib@: @shaobjects@
+	$(MSG) linking $@
+	$(CMD)@sharule@ $(NOOUT)
+
+@mtlib@: @mtobjects@
+	$(MSG) linking $@
+	$(CMD)@mtrule@ $(NOOUT)
+
+@dclib@:
+	$(MSG) building dyncall...
+	$(CMD)@dcrule@ $(NOOUT)
+	$(MSG) done.
+
+@dcblib@ @dllib@: @dclib@
+
+pkgconfig/moar.pc: build/mk-moar-pc.pl
+	$(PERL) build/mk-moar-pc.pl $@
+
+clean:
+	$(MSG) remove build files
+	-$(CMD)$(RM) $(MAIN_OBJECTS) $(OBJECTS) $(NOOUT) $(NOERR)
+
+realclean: clean
+	$(MSG) remove auxiliary files
+	-$(CMD)@auxclean@ $(NOOUT) $(NOERR)
+	$(MSG) remove 3rdparty files
+	-$(CMD)@uvclean@ $(NOOUT) $(NOERR)
+	-$(CMD)@laoclean@ $(NOOUT) $(NOERR)
+	-$(CMD)@tomclean@ $(NOOUT) $(NOERR)
+	-$(CMD)@shaclean@ $(NOOUT) $(NOERR)
+	-$(CMD)@mtclean@ $(NOOUT) $(NOERR)
+	-$(CMD)@dcclean@ $(NOOUT) $(NOERR)
+
+distclean: realclean
+	$(MSG) remove executable and libraries
+	-$(CMD)$(RM) moar@exe@ @moarlib@ @moardll@ $(NOOUT) $(NOERR)
+	$(MSG) remove configuration and generated files
+	-$(CMD)$(RM) Makefile src/gen/config.h src/gen/config.c src/strings/unicode.c \
+	    tools/check.mk 3rdparty/libatomic_ops/config.log 3rdparty/libatomic_ops/config.status $(NOOUT) $(NOERR)
+	-$(CMD)$(RM_RF) src/jit/emit_posix_x64.c build/mk-moar-pc.pl pkgconfig/ $(NOOUT) $(NOERR)
+
+release:
+	[ -n "$(VERSION)" ] || ( echo "\nTry 'make release VERSION=yyyy.mm'\n\n"; exit 1 )
+	./tools/release.sh $(VERSION)
+
+
+sandwich:
+	@echo What? Make it yourself.
