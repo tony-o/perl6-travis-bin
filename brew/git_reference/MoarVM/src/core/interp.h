@@ -31,9 +31,10 @@ union MVMRegister {
 #define MVM_MAX_OPERANDS 8
 
 /* Kind of de-opt mark. */
-#define MVM_DEOPT_MARK_ONE 1
-#define MVM_DEOPT_MARK_ALL 2
-#define MVM_DEOPT_MARK_OSR 4
+#define MVM_DEOPT_MARK_ONE      1
+#define MVM_DEOPT_MARK_ALL      2
+#define MVM_DEOPT_MARK_OSR      4
+#define MVM_DEOPT_MARK_ONE_PRE  8
 
 /* Information about an opcode. */
 struct MVMOpInfo {
@@ -43,8 +44,10 @@ struct MVMOpInfo {
     MVMuint16   num_operands;
     MVMuint8    pure;
     MVMuint8    deopt_point;
+    MVMuint8    logged;
     MVMuint8    no_inline;
     MVMuint8    jittivity;
+    MVMuint8    uses_hll;
     MVMuint8    operands[MVM_MAX_OPERANDS];
 };
 
@@ -114,4 +117,35 @@ MVM_STATIC_INLINE MVMnum64 MVM_BC_get_N64(const MVMuint8 *cur_op, int offset) {
     memmove(&temp, cur_op + offset, sizeof(MVMnum64));
     return temp;
 #endif
+}
+/* For MVM_reg_* types */
+static char * MVM_reg_get_debug_name(MVMThreadContext *tc, MVMuint16 type) {
+    switch (type) {
+        case MVM_reg_int8:
+            return "int8";
+        case MVM_reg_int16:
+            return "int16";
+        case MVM_reg_int32:
+            return "int32";
+        case MVM_reg_int64:
+            return "int64";
+        case MVM_reg_num32:
+            return "num32";
+        case MVM_reg_num64:
+            return "num64";
+        case MVM_reg_str:
+            return "str";
+        case MVM_reg_obj:
+            return "obj";
+        case MVM_reg_uint8:
+            return "uint8";
+        case MVM_reg_uint16:
+            return "uint16";
+        case MVM_reg_uint32:
+            return "uint32";
+        case MVM_reg_uint64:
+            return "uint64";
+        default:
+            return "unknown";
+    }
 }

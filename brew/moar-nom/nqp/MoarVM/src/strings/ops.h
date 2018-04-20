@@ -38,14 +38,32 @@ MVM_STATIC_INLINE MVMuint32 MVM_string_graphs(MVMThreadContext *tc, MVMString *s
     MVM_string_check_arg(tc, s, "chars");
     return s->body.num_graphs;
 }
+MVM_STATIC_INLINE MVMuint32 MVM_string_graphs_nocheck(MVMThreadContext *tc, MVMString *s) {
+    return s->body.num_graphs;
+}
 MVM_STATIC_INLINE MVMuint32 MVM_string_codes(MVMThreadContext *tc, MVMString *s) {
+    MVMGraphemeIter gi;
+    MVMint64 codes = 0;
     MVM_string_check_arg(tc, s, "codes");
-    return s->body.num_graphs; /* Don't do NFG yet; this will do us. */
+    if (MVM_string_graphs_nocheck(tc, s) == 0)
+        return 0;
+    MVM_string_gi_init(tc, &gi, s);
+
+    while(MVM_string_gi_has_more(tc, &gi)) {
+        MVMGrapheme32 g = MVM_string_gi_get_grapheme(tc, &gi);
+        codes += g < 0 ?
+            MVM_nfg_get_synthetic_info(tc, g)->num_codes
+            : 1;
+    }
+    return codes;
 }
 
 MVMGrapheme32 MVM_string_get_grapheme_at_nocheck(MVMThreadContext *tc, MVMString *a, MVMint64 index);
 MVMint64 MVM_string_equal(MVMThreadContext *tc, MVMString *a, MVMString *b);
 MVMint64 MVM_string_index(MVMThreadContext *tc, MVMString *haystack, MVMString *needle, MVMint64 start);
+MVMint64 MVM_string_index_ignore_case(MVMThreadContext *tc, MVMString *haystack, MVMString *needle, MVMint64 start);
+MVMint64 MVM_string_index_ignore_mark(MVMThreadContext *tc, MVMString *Haystack, MVMString *needle, MVMint64 start);
+MVMint64 MVM_string_index_ignore_case_ignore_mark(MVMThreadContext *tc, MVMString *haystack, MVMString *needle, MVMint64 start);
 MVMint64 MVM_string_index_from_end(MVMThreadContext *tc, MVMString *haystack, MVMString *needle, MVMint64 start);
 MVMString * MVM_string_concatenate(MVMThreadContext *tc, MVMString *a, MVMString *b);
 MVMString * MVM_string_repeat(MVMThreadContext *tc, MVMString *a, MVMint64 count);
@@ -55,6 +73,8 @@ void MVM_string_say(MVMThreadContext *tc, MVMString *a);
 void MVM_string_print(MVMThreadContext *tc, MVMString *a);
 MVMint64 MVM_string_equal_at(MVMThreadContext *tc, MVMString *a, MVMString *b, MVMint64 offset);
 MVMint64 MVM_string_equal_at_ignore_case(MVMThreadContext *tc, MVMString *a, MVMString *b, MVMint64 offset);
+MVMint64 MVM_string_equal_at_ignore_mark(MVMThreadContext *tc, MVMString *Haystack, MVMString *needle, MVMint64 H_offset);
+MVMint64 MVM_string_equal_at_ignore_case_ignore_mark(MVMThreadContext *tc, MVMString *a, MVMString *b, MVMint64 offset);
 MVMGrapheme32 MVM_string_ord_basechar_at(MVMThreadContext *tc, MVMString *s, MVMint64 offset);
 MVMGrapheme32 MVM_string_ord_at(MVMThreadContext *tc, MVMString *s, MVMint64 offset);
 MVMint64 MVM_string_have_at(MVMThreadContext *tc, MVMString *a, MVMint64 starta, MVMint64 length, MVMString *b, MVMint64 startb);
@@ -66,19 +86,19 @@ MVMString * MVM_string_tc(MVMThreadContext *tc, MVMString *s);
 MVMString * MVM_string_fc(MVMThreadContext *tc, MVMString *s);
 MVMString * MVM_string_decode(MVMThreadContext *tc, const MVMObject *type_object, char *Cbuf, MVMint64 byte_length, MVMint64 encoding_flag);
 char * MVM_string_encode(MVMThreadContext *tc, MVMString *s, MVMint64 start, MVMint64 length, MVMuint64 *output_size, MVMint64 encoding_flag, MVMString *replacement, MVMint32 translate_newlines);
-void MVM_string_encode_to_buf(MVMThreadContext *tc, MVMString *s, MVMString *enc_name, MVMObject *buf, MVMString *replacement);
+MVMObject * MVM_string_encode_to_buf(MVMThreadContext *tc, MVMString *s, MVMString *enc_name, MVMObject *buf, MVMString *replacement);
 MVMString * MVM_string_decode_from_buf(MVMThreadContext *tc, MVMObject *buf, MVMString *enc_name);
 MVMObject * MVM_string_split(MVMThreadContext *tc, MVMString *separator, MVMString *input);
 MVMString * MVM_string_join(MVMThreadContext *tc, MVMString *separator, MVMObject *input);
 MVMint64 MVM_string_char_at_in_string(MVMThreadContext *tc, MVMString *a, MVMint64 offset, MVMString *b);
 MVMint64 MVM_string_offset_has_unicode_property_value(MVMThreadContext *tc, MVMString *s, MVMint64 offset, MVMint64 property_code, MVMint64 property_value_code);
-MVMint64 MVM_unicode_codepoint_has_property_value(MVMThreadContext *tc, MVMGrapheme32 grapheme, MVMint64 property_code, MVMint64 property_value_code);
-MVMString * MVM_unicode_codepoint_get_property_str(MVMThreadContext *tc, MVMGrapheme32 grapheme, MVMint64 property_code);
-const char * MVM_unicode_codepoint_get_property_cstr(MVMThreadContext *tc, MVMGrapheme32 grapheme, MVMint64 property_code);
-MVMint64 MVM_unicode_codepoint_get_property_int(MVMThreadContext *tc, MVMGrapheme32 grapheme, MVMint64 property_code);
-MVMint64 MVM_unicode_codepoint_get_property_bool(MVMThreadContext *tc, MVMGrapheme32 grapheme, MVMint64 property_code);
+MVMint64 MVM_unicode_codepoint_has_property_value(MVMThreadContext *tc, MVMint64 grapheme, MVMint64 property_code, MVMint64 property_value_code);
+MVMString * MVM_unicode_codepoint_get_property_str(MVMThreadContext *tc, MVMint64 grapheme, MVMint64 property_code);
+const char * MVM_unicode_codepoint_get_property_cstr(MVMThreadContext *tc, MVMint64 grapheme, MVMint64 property_code);
+MVMint64 MVM_unicode_codepoint_get_property_int(MVMThreadContext *tc, MVMint64 grapheme, MVMint64 property_code);
+MVMint64 MVM_unicode_codepoint_get_property_bool(MVMThreadContext *tc, MVMint64 grapheme, MVMint64 property_code);
 MVMString * MVM_unicode_get_name(MVMThreadContext *tc, MVMint64 grapheme);
-void MVM_string_flatten(MVMThreadContext *tc, MVMString *s);
+MVMString * MVM_string_indexing_optimized(MVMThreadContext *tc, MVMString *s);
 MVMString * MVM_string_escape(MVMThreadContext *tc, MVMString *s);
 MVMString * MVM_string_flip(MVMThreadContext *tc, MVMString *s);
 MVMint64 MVM_string_compare(MVMThreadContext *tc, MVMString *a, MVMString *b);
@@ -90,4 +110,21 @@ MVMint64 MVM_string_is_cclass(MVMThreadContext *tc, MVMint64 cclass, MVMString *
 MVMint64 MVM_string_find_cclass(MVMThreadContext *tc, MVMint64 cclass, MVMString *s, MVMint64 offset, MVMint64 count);
 MVMint64 MVM_string_find_not_cclass(MVMThreadContext *tc, MVMint64 cclass, MVMString *s, MVMint64 offset, MVMint64 count);
 MVMuint8 MVM_string_find_encoding(MVMThreadContext *tc, MVMString *name);
-MVMString * MVM_string_chr(MVMThreadContext *tc, MVMCodepoint cp);
+MVMString * MVM_string_chr(MVMThreadContext *tc, MVMint64 cp);
+void MVM_string_compute_hash_code(MVMThreadContext *tc, MVMString *s);
+/* If MVM_DEBUG_NFG is 1, calls to NFG_CHECK will re_nfg the given string
+ * and compare num_graphs before and after the normalization.
+ * If it is different debug information will be printed out.
+#define MVM_DEBUG_NFG 1 */
+/* MVM_DEBUG_NFG_STRICT does as above but does not only rely on num_graphs. It
+ * always checks every grapheme manually. Slower. (requires MVM_DEBUG_NFG)
+#define MVM_DEBUG_NFG_STRICT 0 */
+#if MVM_DEBUG_NFG
+void NFG_check (MVMThreadContext *tc, MVMString *orig, char *varname);
+void NFG_check_concat (MVMThreadContext *tc, MVMString *result, MVMString *a, MVMString *b, char *varname);
+#define NFG_CHECK(tc, s, varname)              NFG_check(tc, s, varname);
+#define NFG_CHECK_CONCAT(tc, s, a, b, varname) NFG_check_concat(tc, s, a, b, varname);
+#else
+#define NFG_CHECK(tc, s, varname)
+#define NFG_CHECK_CONCAT(tc, s, a, b, varname)
+#endif

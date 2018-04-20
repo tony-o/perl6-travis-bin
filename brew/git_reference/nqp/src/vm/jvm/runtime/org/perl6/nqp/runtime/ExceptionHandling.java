@@ -15,19 +15,21 @@ public class ExceptionHandling {
     public static final int EX_CAT_NEXT = 4;
     public static final int EX_CAT_REDO = 8;
     public static final int EX_CAT_LAST = 16;
-    public static final int EX_CAT_TAKE = 32;
-    public static final int EX_CAT_WARN = 64;
-    public static final int EX_CAT_SUCCEED = 128;
+    public static final int EX_CAT_RETURN = 32;
+    public static final int EX_CAT_TAKE = 128;
+    public static final int EX_CAT_WARN = 256;
+    public static final int EX_CAT_SUCCEED = 512;
+    public static final int EX_CAT_PROCEED = 1024;
     public static final int EX_CAT_LABELED = 4096;
     public static final int EX_CAT_AWAIT = 8192;
     public static final int EX_CAT_EMIT = 16384;
     public static final int EX_CAT_DONE = 32768;
-    
+
     /* Exception handler kinds. */
     public static final int EX_UNWIND_SIMPLE = 0;
     public static final int EX_UNWIND_OBJECT = 1;
     public static final int EX_BLOCK = 2;
-    
+
     /* Throws a simple string exception for some internal error, using our own
      * handler model. Note the exception is not resumable. */
     private static RuntimeException stooge = new RuntimeException("Stooge exception leaked");
@@ -64,7 +66,7 @@ public class ExceptionHandling {
     public static RuntimeException dieInternal(ThreadContext tc, String msg) {
         return dieInternal(tc, msg, null);
     }
-    
+
     /* Finds and executes a handler, using dynamic scope to find it. */
     /* die_s_return causes handlerDynamic to return the exception message instead of the exception object. */
     public static void handlerDynamic(ThreadContext tc, long category,
@@ -77,7 +79,7 @@ public class ExceptionHandling {
 all:
         while (f != null) {
             if (f.curHandler != 0) {
-                long tryHandler = f.curHandler;                
+                long tryHandler = f.curHandler;
                 long[][] handlers = f.codeRef.staticInfo.handlers;
                 while (tryHandler != 0) {
                     for (int i = 0; i < handlers.length; i++) {
@@ -97,7 +99,7 @@ all:
                                     break all;
                                 }
                             }
-                            
+
                             // If not, try outer one.
                             tryHandler = handlers[i][1];
                             break;
@@ -109,6 +111,62 @@ all:
         }
         if (handler != null)
             invokeHandler(tc, handler, category, f, die_s_return, exObj, null);
+        else
+            panic(tc, category, exObj);
+    }
+
+    /* Finds and executes a handler, using lexical scope to find it. */
+    public static void handlerLexical(ThreadContext tc, long category,
+            VMExceptionInstance exObj, boolean skipCaller) {
+        if (tc.gc.shuttingDown)
+            throw death;
+
+        CallFrame f = tc.curFrame;
+        if (skipCaller) {
+            f = f.caller;
+            while (f != null && (f.codeRef.staticInfo.isThunk || f.codeRef.isCompilerStub))
+                f = f.caller;
+        }
+        long[] handler = null;
+    all:
+        while (f != null) {
+            if (f.curHandler != 0) {
+                long tryHandler = f.curHandler;
+                long[][] handlers = f.codeRef.staticInfo.handlers;
+                while (tryHandler != 0) {
+                    for (int i = 0; i < handlers.length; i++) {
+                        if (handlers[i][0] == tryHandler) {
+                            // Found an active one, but is it the right category?
+                            if ((handlers[i][2] & category) != 0) {
+                                // Correct category, but ensure we aren't already in it.
+                                boolean valid = true;
+                                for (int j = 0; j < tc.handlers.size(); j++) {
+                                    if (tc.handlers.get(j).handlerInfo == handlers[i]) {
+                                        valid = false;
+                                        break;
+                                    }
+                                }
+                                if (valid) {
+                                    handler = handlers[i];
+                                    break all;
+                                }
+                            }
+
+                            // If not, try outer one.
+                            tryHandler = handlers[i][1];
+                            break;
+                        }
+                    }
+                }
+            }
+            f = f.outer;
+        }
+        if (handler != null)
+            invokeHandler(tc, handler, category, f, false, exObj, null);
+        else if (tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.lexicalHandlerNotFoundError != null) {
+            Ops.invokeDirect(tc, tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.lexicalHandlerNotFoundError,
+                Ops.intIntCallSite, false, new Object[] { category, 0L });
+        }
         else
             panic(tc, category, exObj);
     }
@@ -210,17 +268,17 @@ all:
             message.append(line);
             message.append("\n");
         }
-        
+
         tc.gc.err.println(message.toString());
         tc.gc.exit(1);
         return exObj;
     }
-    
+
     public static List<String> backtraceStrings(VMExceptionInstance ex) {
         List<String> result = new ArrayList<String>();
         for (TraceElement e : backtrace(ex)) {
             String name = e.frame.codeRef.name;
-            if (name == null || name == "")
+            if (name == null || name.equals(""))
                 name = "<anon>";
 
             result.add("  in " + name + (e.file == null ? "" : " (" + e.file + (e.line >= 0 ? ":" + e.line : "") + ")"));
@@ -251,11 +309,11 @@ all:
             String kls = info.compUnit.getClass().getName();
             String method = info.methodName;
 
-            while (jcursor < ex.nativeTrace.length && !kls.equals(ex.nativeTrace[jcursor].getClassName()) &&
+            while (ex.nativeTrace != null && jcursor < ex.nativeTrace.length && !kls.equals(ex.nativeTrace[jcursor].getClassName()) &&
                         (method == null || !method.equals(ex.nativeTrace[jcursor].getMethodName())))
                 jcursor++;
 
-            StackTraceElement el = jcursor < ex.nativeTrace.length ? ex.nativeTrace[jcursor++] : null;
+            StackTraceElement el = ex.nativeTrace != null && jcursor < ex.nativeTrace.length ? ex.nativeTrace[jcursor++] : null;
 
             result.add(new TraceElement(ncursor, el != null ? el.getFileName() : null, el != null ? el.getLineNumber() : -1));
             ncursor = ncursor.caller;

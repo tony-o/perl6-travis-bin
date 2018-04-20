@@ -57,6 +57,11 @@ public class ThreadContext {
      * The current unwind exception.
      */
     public UnwindException unwinder;
+
+    /**
+     * The last exception payload.
+     */
+    public SixModelObject lastPayload;
     
     /**
      * Stack of handlers we're currently in.
@@ -64,19 +69,16 @@ public class ThreadContext {
     public ArrayList<HandlerInfo> handlers;
     
     /**
-     * The current lexotic we're throwing.
-     */
-    public LexoticException theLexotic;
-    
-    /**
      * The currently saved capture for custom processing.
      */
     public CallCaptureInstance savedCC;
     
     /**
-     * The currently set dispatcher, for the next interested call to take.
+     * The currently set dispatcher, for the next interested call (or the
+     * one matching currentDispatcherFor, if set) to take.
      */
     public SixModelObject currentDispatcher;
+    public SixModelObject currentDispatcherFor;
     
     /**
      * Serialization context write barrier disabled depth (anything non-zero
@@ -116,7 +118,6 @@ public class ThreadContext {
 
     public ThreadContext(GlobalContext gc) {
         this.gc = gc;
-        this.theLexotic = new LexoticException();
         this.unwinder = new UnwindException();
         this.handlers = new ArrayList<HandlerInfo>();
         this.hllThreadAll = new HashMap<ContextKey<?,?>, Object>();

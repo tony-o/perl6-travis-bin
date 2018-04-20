@@ -67,12 +67,41 @@ MVMCompUnit * MVM_cu_map_from_file(MVMThreadContext *tc, const char *filename) {
     return cu;
 }
 
+/* Loads a compilation unit from a bytecode file handle, mapping it into memory. */
+MVMCompUnit * MVM_cu_map_from_file_handle(MVMThreadContext *tc, uv_file fd, MVMuint64 pos) {
+    MVMCompUnit *cu          = NULL;
+    void        *block       = NULL;
+    void        *handle      = NULL;
+    MVMuint64    size;
+    uv_fs_t req;
+
+    /* Ensure the file exists, and get its size. */
+    if (uv_fs_fstat(tc->loop, &req, fd, NULL) < 0) {
+        MVM_exception_throw_adhoc(tc, "Trying to stat: %s", uv_strerror(req.result));
+    }
+
+    size = req.statbuf.st_size;
+
+    if ((block = MVM_platform_map_file(fd, &handle, (size_t)size, 0)) == NULL) {
+        /* FIXME: check errno or GetLastError() */
+        MVM_exception_throw_adhoc(tc, "Could not map file into memory: %s", "FIXME");
+    }
+
+    block = ((char*)block) + pos;
+
+    /* Turn it into a compilation unit. */
+    cu = MVM_cu_from_bytes(tc, (MVMuint8 *)block, (MVMuint32)size);
+    cu->body.handle = handle;
+    cu->body.deallocate = MVM_DEALLOCATE_UNMAP;
+    return cu;
+}
+
 /* Adds an extra callsite, needed due to an inlining, and returns its index. */
 MVMuint16 MVM_cu_callsite_add(MVMThreadContext *tc, MVMCompUnit *cu, MVMCallsite *cs) {
     MVMuint16 found = 0;
     MVMuint16 idx;
 
-    MVM_reentrantmutex_lock(tc, (MVMReentrantMutex *)cu->body.update_mutex);
+    uv_mutex_lock(cu->body.inline_tweak_mutex);
 
     /* See if we already know this callsite. */
     for (idx = 0; idx < cu->body.num_callsites; idx++)
@@ -82,14 +111,20 @@ MVMuint16 MVM_cu_callsite_add(MVMThreadContext *tc, MVMCompUnit *cu, MVMCallsite
         }
     if (!found) {
         /* Not known; let's add it. */
+        size_t orig_size = cu->body.num_callsites * sizeof(MVMCallsite *);
+        size_t new_size = (cu->body.num_callsites + 1) * sizeof(MVMCallsite *);
+        MVMCallsite **new_callsites = MVM_fixed_size_alloc(tc, tc->instance->fsa, new_size);
+        memcpy(new_callsites, cu->body.callsites, orig_size);
         idx = cu->body.num_callsites;
-        cu->body.callsites = MVM_realloc(cu->body.callsites,
-            (idx + 1) * sizeof(MVMCallsite *));
-        cu->body.callsites[idx] = MVM_callsite_copy(tc, cs);
+        new_callsites[idx] = MVM_callsite_copy(tc, cs);
+        if (cu->body.callsites)
+            MVM_fixed_size_free_at_safepoint(tc, tc->instance->fsa, orig_size,
+                cu->body.callsites);
+        cu->body.callsites = new_callsites;
         cu->body.num_callsites++;
     }
 
-    MVM_reentrantmutex_unlock(tc, (MVMReentrantMutex *)cu->body.update_mutex);
+    uv_mutex_unlock(cu->body.inline_tweak_mutex);
 
     return idx;
 }
@@ -99,7 +134,7 @@ MVMuint32 MVM_cu_string_add(MVMThreadContext *tc, MVMCompUnit *cu, MVMString *st
     MVMuint32 found = 0;
     MVMuint32 idx;
 
-    MVM_reentrantmutex_lock(tc, (MVMReentrantMutex *)cu->body.update_mutex);
+    uv_mutex_lock(cu->body.inline_tweak_mutex);
 
     /* See if we already know this string; only consider those added already by
      * inline, since we don't intern and don't want this to be costly to hunt. */
@@ -110,14 +145,20 @@ MVMuint32 MVM_cu_string_add(MVMThreadContext *tc, MVMCompUnit *cu, MVMString *st
         }
     if (!found) {
         /* Not known; let's add it. */
+        size_t orig_size = cu->body.num_strings * sizeof(MVMString *);
+        size_t new_size = (cu->body.num_strings + 1) * sizeof(MVMString *);
+        MVMString **new_strings = MVM_fixed_size_alloc(tc, tc->instance->fsa, new_size);
+        memcpy(new_strings, cu->body.strings, orig_size);
         idx = cu->body.num_strings;
-        cu->body.strings = MVM_realloc(cu->body.strings,
-            (idx + 1) * sizeof(MVMString *));
-        cu->body.strings[idx] = str;
+        new_strings[idx] = str;
+        if (cu->body.strings)
+            MVM_fixed_size_free_at_safepoint(tc, tc->instance->fsa, orig_size,
+                cu->body.strings);
+        cu->body.strings = new_strings;
         cu->body.num_strings++;
     }
 
-    MVM_reentrantmutex_unlock(tc, (MVMReentrantMutex *)cu->body.update_mutex);
+    uv_mutex_unlock(cu->body.inline_tweak_mutex);
 
     return idx;
 }

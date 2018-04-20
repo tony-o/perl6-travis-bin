@@ -1,1013 +1,2429 @@
-var sixmodel = require('./sixmodel.js');
-var Hash = require('./hash.js');
-var NQPInt = require('./nqp-int.js');
-var NQPException = require('./nqp-exception.js');
-var NQPArray = require('./array.js');
+'use strict';
+const sixmodel = require('./sixmodel.js');
+const Hash = require('./hash.js');
+const NQPInt = require('./nqp-int.js');
+const NQPNum = require('./nqp-num.js');
+const NQPException = require('./nqp-exception.js');
+const Null = require('./null.js');
+const nullStr = require('./null_s.js');
+const iter = require('./iter.js');
+const BOOT = require('./BOOT.js');
+const core = require('./core.js');
+const nqp = require('nqp-runtime');
 
-function basic_type_object_for(HOW) {
-  var st = new sixmodel.STable(this, HOW);
+const bignum = require('bignum-browserify');
+// disable for eval
+const ZERO = bignum(0); // eslint-disable-line no-unused-vars
+
+const constants = require('./constants.js');
+
+const ref = require('ref');
+
+const Union = require('ref-union');
+const StructType = require('ref-struct');
+
+const codecs = require('./codecs.js');
+
+const graphemeRegexp = require('./graphemes').regexp;
+
+const nativeArgs = require('./native-args.js');
+
+const NativeIntArg = nativeArgs.NativeIntArg;
+const NativeNumArg = nativeArgs.NativeNumArg;
+const NativeStrArg = nativeArgs.NativeStrArg;
+
+const EDGE_FATE = 0;
+const EDGE_EPSILON = 1;
+const EDGE_CODEPOINT = 2;
+const EDGE_CODEPOINT_NEG = 3;
+const EDGE_CHARCLASS = 4;
+const EDGE_CHARCLASS_NEG = 5;
+const EDGE_CHARLIST = 6;
+const EDGE_CHARLIST_NEG = 7;
+const EDGE_CODEPOINT_I = 9;
+const EDGE_CODEPOINT_I_NEG = 10;
+const EDGE_CHARRANGE = 12;
+const EDGE_CHARRANGE_NEG = 13;
+const EDGE_CODEPOINT_LL = 14;
+const EDGE_CODEPOINT_I_LL = 15;
+
+const reprs = {};
+const reprById = [];
+
+function basicTypeObjectFor(HOW) {
+  const st = new sixmodel.STable(this, HOW);
   this._STable = st;
 
-  var obj = st.createTypeObject();
+  const obj = st.createTypeObject();
   this._STable.WHAT = obj;
 
   return obj;
 }
 
-function basic_allocate(STable) {
-  return new STable.obj_constructor();
+function basicAllocate(STable) {
+  return new STable.ObjConstructor();
 }
 
-function noop_compose(obj, repr_info) {
+function noopCompose(obj, reprInfo) {
 }
 
-
-function basic_constructor(STable) {
-  var obj_constructor = function() {};
-  obj_constructor.prototype._STable = STable;
-  return obj_constructor;
+function methodNotFoundError(ctx, obj, name) {
+  const handler = ctx ? ctx.$$getHLL().get('method_not_found_error') : undefined;
+  if (handler === undefined) {
+    throw new NQPException(`Cannot find method '${name}' on object of type ${obj._STable.debugName}`);
+  } else {
+    handler.$$call(ctx, null, obj, new NativeStrArg(name));
+  }
 }
 
-function P6opaque() {
+function basicConstructor(STable) {
+  const ObjConstructor = function() {};
+  const handler = {};
+  handler.get = function(target, name) {
+    if (STable.lazyMethodCache) {
+      STable.setMethodCache(STable.methodCache);
+      const method = STable.methodCache.get(name);
+      if (method !== undefined) {
+        return STable.ObjConstructor.prototype[name];
+      }
+    }
+
+    /* are we trying to access an internal property? */
+    if (name.substr(0, 2) === '$$') {
+      return undefined;
+    }
+
+    if (STable.modeFlags & constants.METHOD_CACHE_AUTHORITATIVE) {
+      return function(ctx, _NAMED, obj) {
+        methodNotFoundError(ctx, obj, name);
+      };
+    }
+
+
+    return function() {
+      const how = this._STable.HOW;
+
+      const method = how.find_method(null, null, how, this, new NativeStrArg(name));
+
+      if (method === Null) {
+        methodNotFoundError(arguments[0], arguments[2], name);
+      }
+
+      const args = [];
+      for (let i = 0; i < arguments.length; i++) {
+        args.push(arguments[i]);
+      }
+      return method.$$apply(args);
+    };
+  };
+
+
+  ObjConstructor.prototype = Object.create(new Proxy({}, handler));
+  ObjConstructor.prototype._STable = STable;
+
+  ObjConstructor.prototype._SC = undefined;
+  ObjConstructor.prototype._WHERE = undefined;
+
+  return ObjConstructor;
 }
 
-P6opaque.prototype.create_obj_constructor = basic_constructor;
+function slotToAttr(slot) {
+  return 'attr$' + slot;
+}
 
-P6opaque.prototype.allocate = function(STable) {
-  var obj = new STable.obj_constructor();
-
-  Object.assign(obj, this.template);
-
-  return obj;
+class REPR {
 };
+REPR.prototype.allocate = basicAllocate;
+REPR.prototype.typeObjectFor = basicTypeObjectFor;
+REPR.prototype.compose = noopCompose;
+REPR.prototype.createObjConstructor = basicConstructor;
 
-P6opaque.prototype.precalculate = function() {
-  var autovived = {};
-  if (this.auto_viv_values) {
-    for (var i in this.name_to_index_mapping) {
-      for (var j in this.name_to_index_mapping[i].slots) {
-        var name = this.name_to_index_mapping[i].names[j];
-        var slot = this.name_to_index_mapping[i].slots[j];
-        if (this.auto_viv_values[slot]) {
-          if (!this.auto_viv_values[slot].type_object_) {
-            console.log('autoviv', name, slot, this.auto_viv_values[slot]);
-            throw 'We currently only implement autoviv with type object values';
-          }
-          /* TODO autoviving things that aren't typeobjects */
-          /* TODO we need to store attributes better */
-          autovived[name] = this.auto_viv_values[slot];
-        } else if (this.flattened_stables[slot]) {
-          if (this.flattened_stables[slot].REPR.flattened_default !== undefined) {
-            autovived[name] = this.flattened_stables[slot].REPR.flattened_default;
-          }
-        }
+class REPRWithAttributes extends REPR {
+  deserializeNameToIndexMapping(cursor) {
+    const numClasses = cursor.varint();
+    this.nameToIndexMapping = [];
+
+    const slots = [];
+
+    for (let i = 0; i < numClasses; i++) {
+      this.nameToIndexMapping[i] = {slots: [], names: [], classKey: cursor.variant()};
+
+      const numAttrs = cursor.varint();
+
+      for (let j = 0; j < numAttrs; j++) {
+        const name = cursor.str();
+        const slot = cursor.varint();
+
+        this.nameToIndexMapping[i].names[j] = name;
+        this.nameToIndexMapping[i].slots[j] = slot;
+
+
+        slots[slot] = name;
       }
     }
   }
 
-  if (Object.keys(autovived).length != 0) {
-    this.autovived = autovived;
-  }
+  serializeNameToIndexMapping(cursor) {
+    cursor.varint(this.nameToIndexMapping.length);
+    for (let i = 0; i < this.nameToIndexMapping.length; i++) {
+      cursor.ref(this.nameToIndexMapping[i].classKey);
 
-  this.template = {};
-  /* TODO take classes into account when storing attributes */
-  for (var i in this.name_to_index_mapping) {
-    for (var j in this.name_to_index_mapping[i].slots) {
-      var name = this.name_to_index_mapping[i].names[j];
-      this.template[name] = null;
+      const numAttrs = this.nameToIndexMapping[i].names.length;
+
+      cursor.varint(numAttrs);
+
+      for (let j = 0; j < numAttrs; j++) {
+        cursor.str(this.nameToIndexMapping[i].names[j]);
+        cursor.varint(this.nameToIndexMapping[i].slots[j]);
+      }
     }
   }
 
-  if (this.autovived) {
-    for (var attr in this.autovived) {
-      this.template[attr] = this.autovived[attr];
+  generateUniversalAccessor(STable, name, action, extraSig, scwb, actionDescription) {
+    let code = 'function(classHandle, attrName' + extraSig + ') {\n' +
+        (scwb ? 'if (this._SC !== undefined) this.$$scwb();\n' : '') +
+        'switch (classHandle) {\n';
+    let classKeyIndex = 0;
+    let setup = '';
+    if (this.nameToIndexMapping) {
+      for (let i = 0; i < this.nameToIndexMapping.length; i++) {
+        const classKey = 'classKey' + classKeyIndex;
+        setup += 'var ' + classKey + ' = STable.REPR.nameToIndexMapping[' + i + '].classKey;\n';
+        code += 'case ' + classKey + ': switch (attrName) {\n';
+        for (let j = 0; j < this.nameToIndexMapping[i].slots.length; j++) {
+          const slot = this.nameToIndexMapping[i].slots[j];
+          code += 'case \'' + this.nameToIndexMapping[i].names[j] + '\':' + action(slot) + ';\n';
+        }
+        code += '}\n';
+        classKeyIndex++;
+      }
     }
+    code += `default: throw new NQPException('P6opaque: no such attribute \\'' + attrName + '\\' in type ' + classHandle._STable.debugName + ' when trying to ${actionDescription}')`;
+    code += '}\n}\n';
+    STable.compileAccessor(name, code, setup);
   }
+
 };
 
-P6opaque.prototype.deserialize_repr_data = function(cursor, STable) {
-  this.deserialized = 1;
-  var num_attributes = cursor.varint();
-  this.flattened_stables = [];
-  for (var i = 0; i < num_attributes; i++) {
-    var not_null = cursor.varint();
-    this.flattened_stables.push(not_null != 0 ? cursor.locate_thing('root_stables') : null);
+class P6opaque extends REPRWithAttributes {
+  allocate(STable) {
+    const obj = new STable.ObjConstructor();
+    obj.$$setDefaults();
+    return obj;
   }
-  this.mi = cursor.varint();
-  var has_auto_viv_values = cursor.varint();
-  if (has_auto_viv_values != 0) {
-    this.auto_viv_values = [];
-    for (var i = 0; i < num_attributes; i++) {
-      this.auto_viv_values.push(cursor.variant());
+
+  deserializeReprData(cursor, STable) {
+    this.deserialized = 1;
+    const numAttributes = cursor.varint();
+    this.flattenedSTables = [];
+    for (let i = 0; i < numAttributes; i++) {
+      const notNull = cursor.varint();
+      this.flattenedSTables.push(notNull != 0 ? cursor.locateThing('rootSTables') : null);
+    }
+    this.mi = cursor.varint();
+    const hasAutoVivValues = cursor.varint();
+    if (hasAutoVivValues != 0) {
+      this.autoVivValues = [];
+      for (let i = 0; i < numAttributes; i++) {
+        this.autoVivValues.push(cursor.variant());
+      }
+    }
+
+    this.unboxIntSlot = cursor.varint();
+    this.unboxNumSlot = cursor.varint();
+    this.unboxStrSlot = cursor.varint();
+
+    const hasUnboxSlots = cursor.varint();
+    if (hasUnboxSlots != 0) {
+      this.unboxSlots = [];
+      for (let i = 0; i < numAttributes; i++) {
+        const reprId = cursor.varint();
+        const slot = cursor.varint();
+        if (reprId != 0) {
+          this.unboxSlots.push({slot: slot, reprId: reprId});
+        }
+      }
+    }
+
+    this.deserializeNameToIndexMapping(cursor);
+
+    this.positionalDelegateSlot = cursor.varint();
+    this.associativeDelegateSlot = cursor.varint();
+
+    if (this.positionalDelegateSlot != -1) {
+      STable.setPositionalDelegate(slotToAttr(this.positionalDelegateSlot));
+    }
+    if (this.associativeDelegateSlot != -1) {
+      STable.setAssociativeDelegate(slotToAttr(this.associativeDelegateSlot));
+    }
+
+    if (this.unboxSlots) {
+      for (let i = 0; i < this.unboxSlots.length; i++) {
+        const slot = this.unboxSlots[i].slot;
+        (new reprById[this.unboxSlots[i].reprId]).generateBoxingMethods(STable, slotToAttr(slot), this.flattenedSTables[slot]);
+      }
+    }
+
+    this.generateAccessors(STable);
+  }
+
+  hintfor(classHandle, attrName) {
+    if (!this.nameToIndexMapping) {
+      return -1;
+    }
+    for (let i = 0; i < this.nameToIndexMapping.length; i++) {
+      if (this.nameToIndexMapping[i].classKey === classHandle) {
+        for (let j = 0; j < this.nameToIndexMapping[i].slots.length; j++) {
+          if (this.nameToIndexMapping[i].names[j] === attrName) {
+            return this.nameToIndexMapping[i].slots[j];
+          }
+        }
+      }
+    }
+    return -1;
+  }
+
+  getHint(classHandle, attrName) {
+    const hint = this.hintfor(classHandle, attrName);
+    if (hint == -1) {
+      throw new NQPException(`Can't find: ${attrName}`);
+    } else {
+      return hint;
     }
   }
 
-  this.unbox_int_slot = cursor.varint();
-  this.unbox_num_slot = cursor.varint();
-  this.unbox_str_slot = cursor.varint();
+  getterForAttr(classHandle, attrName) {
+    return '$$getattr$' + this.getHint(classHandle, attrName);
+  }
 
+  serializeReprData(st, cursor) {
+    const numAttrs = st.REPR.flattenedSTables.length;
+    cursor.varint(numAttrs);
 
-
-  var has_unbox_slots = cursor.varint();
-
-  if (has_unbox_slots != 0) {
-    this.unbox_slots = [];
-    for (var i = 0; i < num_attributes; i++) {
-      var repr_id = cursor.varint();
-      var slot = cursor.varint();
-      this.unbox_slots.push({slot: slot, repr_id: repr_id});
+    for (let i = 0; i < numAttrs; i++) {
+      if (st.REPR.flattenedSTables[i] == null) {
+        cursor.varint(0);
+      } else {
+        cursor.varint(1);
+        cursor.stableRef(st.REPR.flattenedSTables[i]);
+      }
     }
-  }
 
-  var num_classes = cursor.varint();
-  this.name_to_index_mapping = [];
-
-  var slots = [];
-
-  for (var i = 0; i < num_classes; i++) {
-    this.name_to_index_mapping[i] = {slots: [], names: [], class_key: cursor.variant()};
-
-    var num_attrs = cursor.varint();
-
-    for (var j = 0; j < num_attrs; j++) {
-      var name = cursor.str();
-      var slot = cursor.varint();
-
-      this.name_to_index_mapping[i].names[j] = name;
-      this.name_to_index_mapping[i].slots[j] = slot;
+    cursor.varint(st.REPR.mi ? 1 : 0);
 
 
-      slots[slot] = name;
-    }
-  }
-
-
-  this.precalculate();
-
-  this.positional_delegate_slot = cursor.varint();
-  this.associative_delegate_slot = cursor.varint();
-
-  if (this.positional_delegate_slot != -1) {
-    STable.setPositionalDelegate(slots[this.positional_delegate_slot]);
-  }
-  if (this.associative_delegate_slot != -1) {
-    STable.setAssociativeDelegate(slots[this.associative_delegate_slot]);
-  }
-
-  /* TODO make auto viv values work */
-};
-
-P6opaque.prototype.serialize_repr_data = function(st, cursor) {
-  var numAttrs = st.REPR.flattened_stables.length;
-  cursor.varint(numAttrs);
-
-  STARTING_OFFSET = cursor.offset;
-
-  for (var i = 0; i < numAttrs; i++) {
-    if (st.REPR.flattened_stables[i] == null) {
+    if (st.REPR.autoVivValues) {
+      cursor.varint(1);
+      for (let i = 0; i < numAttrs; i++) {
+        cursor.ref(st.REPR.autoVivValues[i]);
+      }
+    } else {
       cursor.varint(0);
     }
-    else {
+
+
+    cursor.varint(st.REPR.unboxIntSlot);
+    cursor.varint(st.REPR.unboxNumSlot);
+    cursor.varint(st.REPR.unboxStrSlot);
+
+    if (this.unboxSlots) {
       cursor.varint(1);
-      throw 'NYI';
-      cursor.STableRef(st.REPR.flattened_stables[i]);
-    }
-  }
-
-  cursor.varint(st.REPR.mi ? 1 : 0);
-
-
-  //TODO
-  //  if (st.REPR.auto_viv_values != null) {
-  //  }
-  //  else {
-  //  }
-
-  if (st.REPR.auto_viv_values) {
-    cursor.varint(1);
-    for (var i = 0; i < numAttrs; i++) {
-      cursor.ref(st.REPR.auto_viv_values[i]);
-    }
-  } else {
-    cursor.varint(0);
-  }
-
-
-  cursor.varint(st.REPR.unbox_int_slot);
-  cursor.varint(st.REPR.unbox_str_slot);
-  cursor.varint(st.REPR.unbox_str_slot);
-
-  // TODO: Unbox slots
-  cursor.varint(0);
-
-  cursor.varint(this.name_to_index_mapping.length);
-  for (var i = 0; i < this.name_to_index_mapping.length; i++) {
-    cursor.ref(this.name_to_index_mapping[i].class_key);
-
-    var num_attrs = this.name_to_index_mapping[i].names.length;
-
-    cursor.varint(num_attrs);
-
-    for (var j = 0; j < num_attrs; j++) {
-      cursor.str(this.name_to_index_mapping[i].names[j]);
-      cursor.varint(this.name_to_index_mapping[i].slots[j]);
-    }
-  }
-
-  cursor.varint(this.positional_delegate_slot);
-  cursor.varint(this.associative_delegate_slot);
-};
-
-P6opaque.prototype.deserialize_finish = function(obj, data) {
-  var attrs = [];
-
-  var names = {};
-
-  for (var i in this.name_to_index_mapping) {
-    for (var j in this.name_to_index_mapping[i].slots) {
-      var name = this.name_to_index_mapping[i].names[j];
-      var slot = this.name_to_index_mapping[i].slots[j];
-      // TODO take class key into account with attribute storage
-      names[slot] = name;
-    }
-  }
-
-  for (var i = 0; i < this.flattened_stables.length; i++) {
-    if (this.flattened_stables[i]) {
-      var STable = this.flattened_stables[i];
-      var flattened_object = STable.REPR.allocate(STable);
-      STable.REPR.deserialize_finish(flattened_object, data);
-
-      attrs.push(flattened_object);
-    } else {
-      attrs.push(data.variant());
-    }
-  }
-
-  for (var i in this.name_to_index_mapping) {
-    for (var j in this.name_to_index_mapping[i].slots) {
-      var name = this.name_to_index_mapping[i].names[j];
-      var slot = this.name_to_index_mapping[i].slots[j];
-      // TODO take class key into account with attribute storage
-      obj[name] = attrs[slot];
-    }
-  }
-};
-
-P6opaque.prototype.serialize = function(cursor, obj) {
-  var flattened = obj._STable.REPR.flattened_stables;
-  var nqp = require('nqp-runtime');
-  if (!flattened) {
-    throw 'Representation must be composed before it can be serialized';
-  }
-
-  var attrs = [];
-
-  var names = [];
-
-  for (var i in this.name_to_index_mapping) {
-    for (var j in this.name_to_index_mapping[i].slots) {
-      var name = this.name_to_index_mapping[i].names[j];
-      var slot = this.name_to_index_mapping[i].slots[j];
-
-      // TODO take class key into account with attribute storage
-      attrs[slot] = obj[name];
-      names[slot] = name;
-    }
-  }
-
-  for (var i = 0; i < flattened.length; i++) {
-    if (flattened[i] == null || !flattened[i]) {
-      // TODO - think about what happens when we get an undefined value here
-      cursor.ref(attrs[i]);
-    }
-    else {
-      // HACK different kinds of numbers etc.
-      var attr = typeof attrs[i] == 'object' ? attrs[i] : {value: attrs[i]}; // HACK - think if that's a correct way of serializing a native attribute
-      this.flattened_stables[i].REPR.serialize(cursor, attr);
-    }
-  }
-};
-
-P6opaque.prototype.type_object_for = basic_type_object_for;
-
-
-P6opaque.prototype.change_type = function(obj, new_type) {
-  // TODO some sanity checks for the new mro being a subset and new_type being also a P6opaque
-  // HACK usage of __proto__ which is not fully portable and might interfere with the optimizer
-  obj.__proto__ = new_type._STable.obj_constructor.prototype;
-};
-
-
-P6opaque.prototype.compose = function(STable, repr_info_hash) {
-  // TODO
-
-  /* Get attribute part of the protocol from the hash. */
-  var repr_info = repr_info_hash.content.get('attribute').array;
-
-  /* Go through MRO and find all classes with attributes and build up
-   * mapping info hashes. Note, reverse order so indexes will match
-   * those in parent types. */
-
-  this.unbox_int_slot = -1;
-  this.unbox_num_slot = -1;
-  this.unbox_str_slot = -1;
-
-  this.positional_delegate_slot = -1;
-  this.associative_delegate_slot = -1;
-
-  var curAttr = 0;
-  /*
-  List<SixModelObject> autoVivs = new ArrayList<SixModelObject>();
-  List<AttrInfo> attrInfoList = new ArrayList<AttrInfo>();
-  long mroLength = repr_info.elems(tc);
-  */
-  this.name_to_index_mapping = [];
-  this.flattened_stables = [];
-  var mi = false;
-
-  this.auto_viv_values = [];
-
-  for (var i = repr_info.length - 1; i >= 0; i--) {
-    var entry = repr_info[i].array;
-    var type = entry[0];
-    var attrs = entry[1].array;
-    var parents = entry[2].array;
-
-    /* If it has any attributes, give them each indexes and put them
-       * in the list to add to the layout. */
-    var numAttrs = attrs.length;
-    if (numAttrs > 0) {
-      var names = [];
-      var slots = [];
-
-      for (var j = 0; j < numAttrs; j++) {
-        var attr = attrs[j].content;
-
-        /* old boxing method generation */
-        if (attr.get('box_target')) {
-          attr.get('type')._STable.REPR.generateBoxingMethods(this, attr);
+      for (let i = 0; i < numAttrs; i++) {
+        if (this.unboxSlots[i]) {
+          cursor.varint(this.unboxSlots[i].reprId);
+          cursor.varint(this.unboxSlots[i].slot);
+        } else {
+          cursor.varint(0);
+          cursor.varint(0);
         }
-
-        /* TODO */
-        //              if (attrType == Null)
-        //                  attrType = tc.gc.KnowHOW;
-
-        slots.push(curAttr);
-        names.push(attr.get('name'));
-
-        /*              AttrInfo info = new AttrInfo();
-
-              info.st = attrType.st;*/
-
-        this.flattened_stables.push(null);
-
-        if (attr.get('positional_delegate')) {
-          this.positional_delegate_slot = curAttr;
-          this._STable.setPositionalDelegate(attr.get('name'));
-        }
-
-        if (attr.get('associative_delegate')) {
-          this.associative_delegate_slot = curAttr;
-          this._STable.setAssociativeDelegate(attr.get('name'));
-        }
-
-        /* TODO think if we want to flatten some things */
-        /*if (attrType.st.REPR.get_storage_spec(tc, attrType.st).inlineable == StorageSpec.INLINED)
-                  flattenedSTables.add(attrType.st);
-              else
-                  flattenedSTables.add(null);*/
-
-        if (attr.get('auto_viv_container')) {
-          this.auto_viv_values[curAttr] = attr.get('auto_viv_container');
-        }
-
-        /* info.boxTarget = attrHash.exists_key(tc, "box_target") != 0;
-              SixModelObject autoViv = attrHash.at_key_boxed(tc, "auto_viv_container");
-              autoVivs.add(autoViv);
-              if (autoViv != null)
-                  info.hasAutoVivContainer = true;
-              info.posDelegate = attrHash.exists_key(tc, "positional_delegate") != 0;
-              info.assDelegate = attrHash.exists_key(tc, "associative_delegate") != 0;
-              attrInfoList.add(info);*/
-
-        /* TODO
-              if (info.boxTarget) {
-                  switch (info.st.REPR.get_storage_spec(tc, info.st).boxed_primitive) {
-                  case StorageSpec.BP_INT:
-                      ((P6OpaqueREPRData)st.REPRData).unboxIntSlot = curAttr;
-                      break;
-                  case StorageSpec.BP_NUM:
-                      ((P6OpaqueREPRData)st.REPRData).unboxNumSlot = curAttr;
-                      break;
-                  case StorageSpec.BP_STR:
-                      ((P6OpaqueREPRData)st.REPRData).unboxStrSlot = curAttr;
-                      break;
-                  }
-              }*/
-        curAttr++;
       }
-      this.name_to_index_mapping.push({class_key: type, slots: slots, names: names});
-    }
-
-    /* Multiple parents means it's multiple inheritance. */
-    if (parents.length > 1) {
-      mi = true;
-    }
-  }
-
-  /* Populate some REPR data. */
-  /*((P6OpaqueREPRData)st.REPRData).classHandles = classHandles.toArray(new SixModelObject[0]);
-  ((P6OpaqueREPRData)st.REPRData).nameToHintMap = attrIndexes.toArray(new HashMap[0]);
-  ((P6OpaqueREPRData)st.REPRData).autoVivContainers = autoVivs.toArray(new SixModelObject[0]);
-  ((P6OpaqueREPRData)st.REPRData).flattenedSTables = flattenedSTables.toArray(new STable[0]);
-  ((P6OpaqueREPRData)st.REPRData).mi = mi;
-  */
-  this.mi = mi ? 1 : 0;
-
-  this.precalculate();
-
-
-};
-
-P6opaque.name = 'P6opaque';
-
-module.exports.P6opaque = P6opaque;
-
-function KnowHOWREPR() {
-}
-
-KnowHOWREPR.prototype.create_obj_constructor = basic_constructor;
-
-KnowHOWREPR.prototype.deserialize_finish = function(obj, data) {
-  obj.__name = data.str();
-  obj.__attributes = data.variant();
-  obj.__methods = data.variant();
-};
-
-KnowHOWREPR.prototype.serialize = function(data, obj) {
-  data.str(obj.__name);
-  data.ref(obj.__attributes);
-  data.ref(obj.__methods);
-};
-
-KnowHOWREPR.prototype.type_object_for = basic_type_object_for;
-
-KnowHOWREPR.prototype.allocate = function(STable) {
-  var obj = new STable.obj_constructor();
-  obj.__methods = new Hash();
-  obj.__attributes = new NQPArray([]);
-  obj.__name = '<anon>';
-  return obj;
-};
-
-
-KnowHOWREPR.name = 'KnowHOWREPR';
-module.exports.KnowHOWREPR = KnowHOWREPR;
-
-function KnowHOWAttribute() {
-}
-KnowHOWAttribute.prototype.create_obj_constructor = basic_constructor;
-
-KnowHOWAttribute.prototype.deserialize_finish = function(obj, data) {
-  obj.__name = data.str();
-};
-
-KnowHOWAttribute.prototype.serialize = function(data, obj) {
-  data.str(obj.__name);
-};
-
-KnowHOWAttribute.prototype.type_object_for = basic_type_object_for;
-KnowHOWAttribute.prototype.allocate = basic_allocate;
-KnowHOWAttribute.name = 'KnowHOWAttribute';
-module.exports.KnowHOWAttribute = KnowHOWAttribute;
-
-function Uninstantiable() {
-}
-Uninstantiable.prototype.create_obj_constructor = basic_constructor;
-Uninstantiable.prototype.type_object_for = basic_type_object_for;
-Uninstantiable.name = 'Uninstantiable';
-module.exports.Uninstantiable = Uninstantiable;
-
-/* Stubs */
-function P6int() {
-}
-
-P6int.prototype.flattened_default = 0;
-P6int.prototype.boxed_primitive = 1;
-
-P6int.prototype.basic_constructor = basic_constructor;
-P6int.prototype.basic_type_object_for = basic_type_object_for;
-
-P6int.prototype.create_obj_constructor = function(STable) {
-  var c = this.basic_constructor(STable);
-
-  STable.obj_constructor = c; // HACK it's set again later, we set it for addInternalMethod
-
-  STable.addInternalMethod('$$set_int', function(value) {
-    this.value = value;
-  });
-  STable.addInternalMethod('$$get_int', function() {
-    return this.value;
-  });
-  return c;
-};
-
-P6int.prototype.compose = function(STable, repr_info_hash) {
-  var integer = repr_info_hash.content.get('integer');
-  if (integer) {
-    var bits = integer.content.get('bits');
-    if (bits instanceof NQPInt) {
-      this.bits = bits.value;
     } else {
-      throw 'bits to P6int.compose must be a native int';
+      cursor.varint(0);
+    }
+
+    this.serializeNameToIndexMapping(cursor);
+
+    cursor.varint(this.positionalDelegateSlot);
+    cursor.varint(this.associativeDelegateSlot);
+  }
+
+  deserializeFinish(obj, data) {
+    for (let i = 0; i < this.flattenedSTables.length; i++) {
+      const attr = this.flattenedSTables[i] ? this.flattenedSTables[i].REPR.deserializeInline(data) : data.variantWithUndefined();
+      obj[slotToAttr(i)] = attr;
+    }
+  }
+
+  serialize(cursor, obj) {
+    const flattened = obj._STable.REPR.flattenedSTables;
+    if (!flattened) {
+      throw 'Representation must be composed before it can be serialized';
+    }
+
+    for (let i = 0; i < flattened.length; i++) {
+      const value = obj[slotToAttr(i)];
+
+      if (flattened[i] == null) {
+        cursor.ref(value);
+      } else {
+        flattened[i].REPR.serializeInline(cursor, value);
+      }
+    }
+  }
+
+  changeType(obj, newType) {
+    if (!(newType._STable.REPR instanceof P6opaque)) {
+      throw new NQPException(
+        `New type for ${obj._STable.debugName} must have a matching representation (P6opaque vs ${newType._STable.REPR.name})"`
+      );
+    }
+
+    const newREPR = newType._STable.REPR;
+
+    const newMapping = newREPR.nameToIndexMapping;
+    const currentMapping = obj._STable.REPR.nameToIndexMapping;
+
+    /* Ensure the MRO prefixes match up. */
+    let currentIndex = 0;
+    let newIndex = 0;
+
+    while (currentIndex < currentMapping.length
+      && currentMapping[currentIndex].slots.length == 0) currentIndex++;
+
+    while (newIndex < newMapping.length
+      && newMapping[newIndex].slots.length == 0) newIndex++;
+
+    while (currentIndex < currentMapping.length) {
+      if (newIndex >= newMapping.length
+        || newMapping[newIndex].classKey !== currentMapping[currentIndex].classKey) {
+        throw new NQPException(
+          `Incompatible MROs in P6opaque rebless for types %s and %s`
+        );
+      }
+      newIndex++;
+      currentIndex++;
+    }
+
+    for (let i = 0; i < newREPR.nameToIndexMapping.length; i++) {
+      for (let j = 0; j < newREPR.nameToIndexMapping[i].slots.length; j++) {
+        const slot = newREPR.nameToIndexMapping[i].slots[j];
+        const defaultValue = newREPR.flattenedSTables[slot] ?
+            newREPR.flattenedSTables[slot].REPR.flattenedDefaultObj :
+            undefined;
+        const attr = slotToAttr(slot);
+        if (!Object.prototype.hasOwnProperty.call(obj, attr)) {
+          obj[attr] = defaultValue;
+        }
+      }
+    }
+
+    Object.setPrototypeOf(obj, newType._STable.ObjConstructor.prototype);
+  }
+
+  compose(STable, reprInfoHash) {
+    /* Get attribute part of the protocol from the hash. */
+    const reprInfo = reprInfoHash.content.get('attribute').array;
+
+    /* Go through MRO and find all classes with attributes and build up
+     * mapping info hashes. Note, reverse order so indexes will match
+     * those in parent types. */
+
+    this.unboxIntSlot = -1;
+    this.unboxNumSlot = -1;
+    this.unboxStrSlot = -1;
+
+    this.positionalDelegateSlot = -1;
+    this.associativeDelegateSlot = -1;
+
+    let curAttr = 0;
+    this.nameToIndexMapping = [];
+    this.flattenedSTables = [];
+    let mi = false;
+
+    this.autoVivValues = [];
+
+    for (let i = reprInfo.length - 1; i >= 0; i--) {
+      const entry = reprInfo[i].array;
+      const type = entry[0];
+      const attrs = entry[1].array;
+      const parents = entry[2].array;
+
+      /* If it has any attributes, give them each indexes and put them
+         * in the list to add to the layout. */
+      const numAttrs = attrs.length;
+      if (numAttrs > 0) {
+        const names = [];
+        const slots = [];
+
+        for (let j = 0; j < numAttrs; j++) {
+          const attr = attrs[j].content;
+
+          const attrType = attr.get('type');
+          /* old boxing method generation */
+          if (attr.get('box_target')) {
+            const REPR = attrType._STable.REPR;
+            if (!this.unboxSlots) this.unboxSlots = [];
+            this.unboxSlots.push({slot: curAttr, reprId: REPR.ID});
+            if (!REPR.generateBoxingMethods) {
+              console.log('we do not have a generateBoxingMethods');
+              console.log(REPR.name);
+            }
+            REPR.generateBoxingMethods(STable, slotToAttr(curAttr), attrType._STable);
+          }
+
+          slots.push(curAttr);
+          names.push(attr.get('name').$$getStr());
+
+          if (attrType !== undefined && attrType !== Null && attrType._STable.REPR.flattenSTable) {
+            this.flattenedSTables.push(attrType._STable);
+          } else {
+            this.flattenedSTables.push(null);
+          }
+
+          if (attr.get('positional_delegate')) {
+            this.positionalDelegateSlot = curAttr;
+            this._STable.setPositionalDelegate(slotToAttr(this.positionalDelegateSlot));
+          }
+
+          if (attr.get('associative_delegate')) {
+            this.associativeDelegateSlot = curAttr;
+            this._STable.setAssociativeDelegate(slotToAttr(this.associativeDelegateSlot));
+          }
+
+          if (attr.get('auto_viv_container')) {
+            this.autoVivValues[curAttr] = attr.get('auto_viv_container');
+          } else {
+            this.autoVivValues[curAttr] = Null;
+          }
+
+          curAttr++;
+        }
+        this.nameToIndexMapping.push({classKey: type, slots: slots, names: names});
+      }
+
+      /* Multiple parents means it's multiple inheritance. */
+      if (parents.length > 1) {
+        mi = true;
+      }
+    }
+
+    /* Populate some REPR data. */
+    this.mi = mi ? 1 : 0;
+
+    this.generateAccessors(STable);
+  }
+
+  generateUniversalAccessors(STable) {
+    this.generateUniversalAccessor(STable, '$$getattr', function(slot) {
+      return 'return this.$$getattr$' + slot + '()';
+    }, '', false, 'get a value');
+
+    this.generateUniversalAccessor(STable, '$$bindattr', function(slot) {
+      return 'return this.$$bindattr$' + slot + '(value)';
+    }, ', value', false, 'bind a value');
+
+    const suffixes = ['_s', '_i', '_n'];
+    for (const suffix of suffixes) {
+      /* TODO only check attributes of proper type */
+      this.generateUniversalAccessor(STable, '$$getattr' + suffix, function(slot) {
+        return 'return this.' + slotToAttr(slot);
+      }, '', false, 'get a value');
+
+      this.generateUniversalAccessor(STable, '$$bindattr' + suffix, function(slot) {
+        return 'return (this.' + slotToAttr(slot) + ' = value)';
+      }, ', value', true, 'bind a value');
+    }
+  }
+
+  generateNormalAccessors(STable, slot) {
+    const attr = slotToAttr(slot);
+
+    STable.compileAccessor('$$bindattr$' + slot, 'function(value) {\n' +
+        'this.' + attr + ' = value;\n' +
+        'if (this._SC !== undefined) this.$$scwb();\n' +
+        'return value;\n' +
+        '}\n');
+
+    if (this.autoVivValues && this.autoVivValues[slot] !== Null) {
+      const isTypeObject = this.autoVivValues[slot].typeObject_;
+
+      STable.compileAccessor('$$getattr$' + slot, 'function(value) {\n' +
+          'var value = this.' + attr + ';\n' +
+          'if (value === undefined) {\n' +
+          'value = autoViv' + slot + (isTypeObject ? '' : '.$$clone()') + ';\n' +
+          'this.' + attr + ' =  value;\n' +
+          '}\n' +
+          'return value;\n' +
+          '}\n', 'var autoViv' + slot + ' = STable.REPR.autoVivValues[' + slot + '];\n');
+    } else {
+      STable.compileAccessor('$$getattr$' + slot, 'function(value) {\n' +
+          'var value = this.' + attr + ';\n' +
+          'if (value === undefined) {\n' +
+          'return Null;\n' +
+          '}\n' +
+          'return value;' +
+          '}\n'
+      );
+    }
+  }
+
+  generateDefaultsAndClone(STable) {
+    let defaults = '';
+    let clone = '';
+
+    for (let slot = 0; slot < this.flattenedSTables.length; slot++) {
+      const attr = slotToAttr(slot);
+      const defaultValue = this.flattenedSTables[slot] ?
+          this.flattenedSTables[slot].REPR.flattenedDefault :
+          'undefined';
+      defaults += 'this.' + attr + ' = ' + defaultValue + ';\n';
+      clone += 'cloned.' + attr + ' = this.' + attr + ';';
+    }
+
+    STable.compileAccessor('$$setDefaults', 'function() {\n' + defaults + '}');
+    STable.compileAccessor('$$clone', 'function() {var cloned = new this._STable.ObjConstructor();' + clone + 'return cloned}');
+    STable.evalGatheredCode();
+  }
+
+  generateAccessors(STable) {
+    for (let i = 0; i < this.nameToIndexMapping.length; i++) {
+      for (let j = 0; j < this.nameToIndexMapping[i].slots.length; j++) {
+        const slot = this.nameToIndexMapping[i].slots[j];
+        if (this.flattenedSTables[slot]) {
+          this.flattenedSTables[slot].REPR.generateFlattenedAccessors(STable, this.flattenedSTables[slot], slot);
+        } else {
+          this.generateNormalAccessors(STable, slot);
+        }
+      }
+    }
+
+    this.generateUniversalAccessors(STable);
+
+    this.generateDefaultsAndClone(STable);
+
+    STable.evalGatheredCode();
+  }
+
+  setupSTable(STable) {
+    const repr = this;
+    STable.addInternalMethods(class {
+      $$attrinited(classHandle, attrName) {
+        const attr = slotToAttr(repr.getHint(classHandle, attrName));
+        return (this[attr] == undefined) ? 0 : 1;
+      }
+    });
+  }
+
+};
+
+P6opaque.prototype.createObjConstructor = basicConstructor;
+P6opaque.prototype.typeObjectFor = basicTypeObjectFor;
+
+reprs.P6opaque = P6opaque;
+
+class KnowHOWREPR {
+  deserializeFinish(obj, data) {
+    obj.__name = data.str();
+    obj.__attributes = data.variant().array;
+    obj.__methods = data.variant();
+  }
+
+  serialize(data, obj) {
+    data.str(obj.__name);
+    data.ref(BOOT.createArray(obj.__attributes));
+    data.ref(obj.__methods);
+  }
+
+  allocate(STable) {
+    const obj = new STable.ObjConstructor();
+    obj.__methods = new Hash();
+    obj.__attributes = [];
+    obj.__name = '<anon>';
+    return obj;
+  }
+};
+
+KnowHOWREPR.prototype.typeObjectFor = basicTypeObjectFor;
+KnowHOWREPR.prototype.createObjConstructor = basicConstructor;
+
+
+reprs.KnowHOWREPR = KnowHOWREPR;
+
+class KnowHOWAttribute {
+  deserializeFinish(obj, data) {
+    obj.__name = data.str();
+  }
+
+  serialize(data, obj) {
+    data.str(obj.__name);
+  }
+};
+
+KnowHOWAttribute.prototype.createObjConstructor = basicConstructor;
+KnowHOWAttribute.prototype.typeObjectFor = basicTypeObjectFor;
+KnowHOWAttribute.prototype.allocate = basicAllocate;
+
+reprs.KnowHOWAttribute = KnowHOWAttribute;
+
+class Uninstantiable extends REPR {
+  allocate(STable) {
+    throw new NQPException('You cannot create an instance of this type (' + STable.debugName + ')');
+  }
+};
+reprs.Uninstantiable = Uninstantiable;
+
+
+const C_TYPE_CHAR = -1;
+const C_TYPE_SHORT = -2;
+const C_TYPE_INT = -3;
+const C_TYPE_LONG = -4;
+const C_TYPE_LONGLONG = -5;
+const C_TYPE_SIZE_T = -6;
+const C_TYPE_BOOL = -7;
+const C_TYPE_ATOMIC_INT = -8;
+
+function cType(ctype) {
+  switch (ctype) {
+    case C_TYPE_CHAR:
+      return ref.types.char;
+    case C_TYPE_SHORT:
+      return ref.types.short;
+    case C_TYPE_ATOMIC_INT:
+    case C_TYPE_INT:
+      return ref.types.int;
+    case C_TYPE_LONG:
+      return ref.types.long;
+    case C_TYPE_LONGLONG:
+      return ref.types.longlong;
+    case C_TYPE_SIZE_T:
+      return ref.types.size_t;
+    case C_TYPE_BOOL:
+      return ref.types.bool;
+  }
+}
+
+
+class P6int extends REPR {
+  constructor() {
+    super();
+    this.bits = 32;
+    this.isUnsigned = 0;
+  }
+
+  nativeCallSize() {
+    return this.bits/8;
+  }
+
+  asRefType() {
+    if (this.bits === 8) {
+      return this.isUnsigned ? ref.types.uint8 : ref.types.int8;
+    } else if (this.bits === 16) {
+      return this.isUnsigned ? ref.types.uint16 : ref.types.int16;
+    } else if (this.bits === 32) {
+      return this.isUnsigned ? ref.types.uint32 : ref.types.int32;
+    } else {
+      throw new NQPException(`Unsupported use in lowlevel contex, bits: ${this.bits}`);
+    }
+  }
+
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$setInt(value) {
+        this.value = value;
+      }
+
+      $$getInt() {
+        return this.value;
+      }
+
+      $$decont_i(value) {
+        return this.value;
+      }
+    });
+  }
+
+  compose(STable, reprInfoHash) {
+    const integer = reprInfoHash.content.get('integer');
+    if (integer) {
+      const bits = integer.content.get('bits');
+      if (bits === undefined) {
+      } else if (bits instanceof NQPInt) {
+        this.bits = bits.value < 0 ? cType(bits.value).size * 8 : bits.value;
+      } else {
+        throw 'bits to P6int.compose must be a native int';
+      }
+
+      const unsigned = integer.content.get('unsigned');
+      if (unsigned) {
+        if (unsigned instanceof NQPInt) {
+          this.isUnsigned = unsigned.value;
+        } else {
+          throw 'unsigned to P6int.compose must be a native int';
+        }
+      }
+    }
+  }
+
+  deserializeFinish(obj, data) {
+    // TODO integers bigger than 32bit
+    obj.value = data.varint();
+  }
+
+  deserializeInline(data) {
+    return data.varint();
+  }
+
+  serialize(data, obj) {
+    // TODO integers bigger than 32bit
+    data.varint(obj.value);
+  }
+
+  serializeInline(data, value) {
+    // TODO integers bigger than 32bit
+    data.varint(value);
+  }
+
+  generateBoxingMethods(STable, name) {
+    STable.addInternalMethods(class {
+      $$setInt(value) {
+        this[name] = value;
+      }
+
+      $$getInt() {
+        return this[name];
+      }
+
+      $$decont_i(ctx) {
+        return this[name];
+      }
+    });
+  }
+
+  generateFlattenedAccessors(ownerSTable, attrContentSTable, slot) {
+    const attr = slotToAttr(slot);
+    ownerSTable.addInternalMethod('$$getattr$' + slot, function() {
+      const obj = attrContentSTable.REPR.allocate(attrContentSTable);
+      obj.$$setInt(this[attr]);
+      return obj;
+    });
+  }
+
+  generateRefAccessors(ownerSTable, attrContentSTable, slot) {
+    const attr = slotToAttr(slot);
+    ownerSTable.addInternalMethod('$$getattr$' + slot, function() {
+      const obj = attrContentSTable.REPR.allocate(attrContentSTable);
+      obj.$$setInt(this.$$data[attr]);
+      return obj;
+    });
+
+    ownerSTable.addInternalMethod('$$getattr$' + slot + '_i', function() {
+      return this.$$data[attr];
+    });
+
+    ownerSTable.addInternalMethod('$$bindattr$' + slot + '_i', function(value) {
+      return this.$$data[attr] = value;
+    });
+  }
+
+  serializeReprData(st, cursor) {
+    cursor.varint(this.bits);
+    cursor.varint(this.isUnsigned);
+  }
+
+  deserializeReprData(cursor, STable) {
+    this.bits = cursor.varint();
+    this.isUnsigned = cursor.varint();
+  }
+};
+
+P6int.prototype.flattenedDefault = '0';
+P6int.prototype.boxedPrimitive = 1;
+P6int.prototype.flattenSTable = true;
+
+
+reprs.P6int = P6int;
+
+
+// TODO:  handle float/bits stuff in compose
+class P6num extends REPR {
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$setNum(value) {
+        this.value = value;
+      }
+
+      $$getNum() {
+        return this.value;
+      }
+
+      $$decont_n(value) {
+        return this.value;
+      }
+    });
+  }
+
+  serialize(data, obj) {
+    data.double(obj.value);
+  }
+
+  serializeInline(data, value) {
+    data.double(value);
+  }
+
+  deserializeFinish(obj, data) {
+    obj.value = data.double();
+  }
+
+  deserializeInline(data) {
+    return data.double();
+  }
+
+  generateBoxingMethods(STable, name) {
+    STable.addInternalMethods(class {
+      $$setNum(value) {
+        this[name] = value;
+      }
+
+      $$getNum() {
+        return this[name];
+      }
+
+      $$decont_n(ctx) {
+        return this[name];
+      }
+    });
+  }
+
+  generateFlattenedAccessors(ownerSTable, attrContentSTable, slot) {
+    const attr = slotToAttr(slot);
+
+    ownerSTable.addInternalMethod('$$getattr$' + slot, function() {
+      const obj = attrContentSTable.REPR.allocate(attrContentSTable);
+      obj.$$setNum(this[attr]);
+      return obj;
+    });
+  }
+};
+
+P6num.prototype.boxedPrimitive = 2;
+P6num.prototype.flattenSTable = true;
+P6num.prototype.flattenedDefault = '0';
+
+reprs.P6num = P6num;
+
+class P6str extends REPR {
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$setStr(value) {
+        this.value = value;
+      }
+
+      $$getStr() {
+        return this.value;
+      }
+
+      $$decont_s(value) {
+        return this.value;
+      }
+    });
+  }
+
+  serialize(data, obj) {
+    data.str(obj.value);
+  }
+
+  serializeInline(data, value) {
+    data.str(value);
+  }
+
+  deserializeFinish(obj, data) {
+    obj.value = data.str();
+  }
+
+  deserializeInline(data) {
+    return data.str();
+  }
+
+  generateBoxingMethods(STable, name) {
+    STable.addInternalMethods(class {
+      $$setStr(value) {
+        this[name] = value;
+      }
+
+      $$getStr() {
+        return this[name];
+      }
+
+      $$decont_s(ctx) {
+        return this[name];
+      }
+    });
+  }
+
+  generateFlattenedAccessors(ownerSTable, attrContentSTable, slot) {
+    const attr = slotToAttr(slot);
+
+    ownerSTable.addInternalMethod('$$getattr$' + slot, function() {
+      const obj = attrContentSTable.REPR.allocate(attrContentSTable);
+      obj.$$setStr(this[attr]);
+      return obj;
+    });
+  }
+};
+
+P6str.prototype.boxedPrimitive = 3;
+P6str.prototype.flattenSTable = true;
+P6str.prototype.flattenedDefault = 'nullStr';
+
+
+reprs.P6str = P6str;
+
+class NFA extends REPR {
+  deserializeFinish(obj, data) {
+    /* Read fates. */
+
+    obj.fates = data.variant();
+
+    /* Read number of states. */
+
+    const numStates = data.varint();
+
+    /* Read state graph. */
+
+    obj.states = [];
+
+    const edgeCount = [];
+
+    for (let i = 0; i < numStates; i++) {
+      edgeCount[i] = data.varint();
+    }
+
+    for (let i = 0; i < numStates; i++) {
+      obj.states[i] = [];
+      for (let j = 0; j < edgeCount[i]; j++) {
+        const edge = {act: data.varint(), to: data.varint()};
+        switch (edge.act & 0xff) {
+          case EDGE_EPSILON:
+            break;
+          case EDGE_FATE:
+          case EDGE_CODEPOINT:
+          case EDGE_CODEPOINT_LL:
+          case EDGE_CODEPOINT_NEG:
+          case EDGE_CHARCLASS:
+          case EDGE_CHARCLASS_NEG:
+            edge.argI = data.varint();
+            break;
+          case EDGE_CHARLIST:
+          case EDGE_CHARLIST_NEG:
+            edge.argS = data.str();
+            break;
+
+          case EDGE_CODEPOINT_I:
+          case EDGE_CODEPOINT_I_LL:
+          case EDGE_CODEPOINT_I_NEG:
+          case EDGE_CHARRANGE:
+          case EDGE_CHARRANGE_NEG:
+            edge.argLc = data.varint();
+            edge.argUc = data.varint();
+            break;
+          default:
+            throw 'NFA deserialization: unknown codepoint type: ' + edge.act;
+        }
+        obj.states[i].push(edge);
+      }
+    }
+  }
+
+  serialize(cursor, obj) {
+    /* Write fates. */
+
+    cursor.ref(obj.fates);
+
+    /* Write number of states. */
+
+    cursor.varint(obj.states.length);
+
+    /* Write state edge list counts. */
+
+    for (let i = 0; i < obj.states.length; i++) {
+      cursor.varint(obj.states[i].length);
+    }
+
+    /* Write state graph. */
+
+    for (let i = 0; i < obj.states.length; i++) {
+      for (let j = 0; j < obj.states[i].length; j++) {
+        const edge = obj.states[i][j];
+
+        cursor.varint(edge.act);
+        cursor.varint(edge.to);
+
+        switch (edge.act & 0xff) {
+          case EDGE_EPSILON:
+            break;
+          case EDGE_FATE:
+          case EDGE_CODEPOINT:
+          case EDGE_CODEPOINT_LL:
+          case EDGE_CODEPOINT_NEG:
+          case EDGE_CHARCLASS:
+          case EDGE_CHARCLASS_NEG:
+            cursor.varint(edge.argI);
+            break;
+          case EDGE_CHARLIST:
+          case EDGE_CHARLIST_NEG:
+            cursor.str(edge.argS);
+            break;
+          case EDGE_CODEPOINT_I:
+          case EDGE_CODEPOINT_I_LL:
+          case EDGE_CODEPOINT_I_NEG:
+          case EDGE_CHARRANGE:
+          case EDGE_CHARRANGE_NEG:
+            cursor.varint(edge.argLc);
+            cursor.varint(edge.argUc);
+            break;
+          default:
+            throw 'NFA serialization - unknown codepoint type: ' + edge.act;
+        }
+      }
     }
   }
 };
 
-P6int.name = 'P6int';
-P6int.prototype.allocate = basic_allocate;
-P6int.prototype.deserialize_finish = function(obj, data) {
-  // TODO integers bigger than 32bit
-  obj.value = data.varint();
-};
+reprs.NFA = NFA;
 
-P6int.prototype.serialize = function(data, obj) {
-  // TODO integers bigger than 32bit
-  data.varint(obj.value);
-};
-
-
-P6int.prototype.type_object_for = function(HOW) {
-  var type_object = this.basic_type_object_for(HOW);
-  return type_object;
-};
-
-module.exports.P6int = P6int;
-
-function P6num() {
+function primType(type) {
+  return type !== Null ? (type._STable.REPR.boxedPrimitive || 0): 0;
 }
 
-P6num.name = 'P6int';
-P6num.prototype.boxed_primitive = 2;
+// TODO rework VMArray to be more correct
+class VMArray extends REPR {
 
-P6num.prototype.allocate = basic_allocate;
-P6num.prototype.basic_constructor = basic_constructor;
-P6num.prototype.create_obj_constructor = function(STable) {
-  var c = this.basic_constructor(STable);
-
-  STable.obj_constructor = c; // HACK it's set again later, we set it for addInternalMethod
-
-  STable.addInternalMethod('$$set_num', function(value) {
-    this.value = value;
-  });
-  STable.addInternalMethod('$$get_num', function() {
-    return this.value;
-  });
-  return c;
-};
-
-P6num.prototype.serialize = function(data, obj) {
-  data.double(obj.value);
-};
-
-P6num.prototype.deserialize_finish = function(obj, data) {
-  obj.value = data.double();
-};
-
-module.exports.P6num = P6num;
-
-function P6str() {
-}
-
-P6str.prototype.boxed_primitive = 3;
-
-P6str.prototype.allocate = basic_allocate;
-P6str.prototype.basic_constructor = basic_constructor;
-P6str.prototype.create_obj_constructor = function(STable) {
-  var c = this.basic_constructor(STable);
-
-  STable.obj_constructor = c; // HACK it's set again later, we set it for addInternalMethod
-
-  STable.addInternalMethod('$$set_str', function(value) {
-    this.value = value;
-  });
-  STable.addInternalMethod('$$get_str', function() {
-    return this.value;
-  });
-  return c;
-};
-
-P6str.prototype.serialize = function(data, obj) {
-  data.str(obj.value);
-};
-
-P6str.prototype.deserialize_finish = function(obj, data) {
-  obj.value = data.str();
-};
-
-P6str.name = 'P6str';
-module.exports.P6str = P6str;
-
-function NFA() {
-}
-NFA.prototype.create_obj_constructor = basic_constructor;
-NFA.prototype.deserialize_finish = function(obj, data) {
-  // STUB
-};
-NFA.prototype.type_object_for = basic_type_object_for;
-NFA.prototype.allocate = basic_allocate;
-NFA.prototype.compose = noop_compose;
-NFA.name = 'NFA';
-exports.NFA = NFA;
-
-function VMArray() {
-}
-VMArray.prototype.create_obj_constructor = basic_constructor;
-
-VMArray.prototype.deserialize_finish = function(obj, data) {
-  console.log('deserializing VMArray');
-  // STUB
-};
-VMArray.prototype.type_object_for = basic_type_object_for;
-
-VMArray.prototype.deserialize_repr_data = function(cursor) {
-  this.type = cursor.variant();
-  /* TODO - type */
-};
-
-VMArray.prototype.serialize_repr_data = function(st, cursor) {
-  cursor.ref(this.type);
-};
-
-VMArray.prototype.deserialize_array = function(obj, data) {
-  if (this.type !== null) {
-    console.log('NYI: VMArrays of a type different then null');
+  allocate(STable) {
+    const obj = new STable.ObjConstructor();
+    obj.array = [];
+    return obj;
   }
-  var size = data.varint();
-  for (var i = 0; i < size; i++) {
-    obj.array[i] = data.variant();
+
+  allocateFromArray(STable, array) {
+    const obj = new STable.ObjConstructor();
+    obj.array = array;
+    return obj;
+  }
+
+  setupSTableWhenComposed(STable) {
+    STable.addInternalMethods(class {
+      $$join(delim) {
+        const stringified = [];
+        for (let i = 0; i < this.array.length; i++) {
+          stringified.push(typeof this.array[i] == 'string' ? this.array[i] : this.array[i].$$getStr());
+        }
+        return stringified.join(delim);
+      }
+
+      $$elems() {
+        return this.array.length;
+      }
+
+      $$existspos(index) {
+        if (index < 0) index += this.array.length;
+        return (this.array[index] === Null || this.array[index] === undefined) ? 0 : 1;
+      }
+
+      $$setelems(elems) {
+        this.array.length = elems;
+      }
+
+      $$numdimensions() {
+        return 1;
+      }
+
+      $$setdimensions(dimensions) {
+        if (dimensions.array.length != 1) {
+          throw new NQPException('A dynamic array can only have a single dimension');
+        } else {
+          this.array.length = dimensions.array[0];
+        }
+      }
+
+      $$dimensions(dimensions) {
+        return BOOT.createIntArray([this.array.length]);
+      }
+
+      $$toArray() {
+        return this.array;
+      }
+
+      $$numify() {
+        return this.array.length;
+      }
+
+      $$splice(source, offset, count) {
+        const removing = this.array.length - offset > count ? count : this.array.length - offset;
+        // TODO think about the case when the source is not VMArray
+        if (removing < source.array.length) {
+          this.array.length = this.array.length + source.array.length - removing;
+        }
+
+        this.array.copyWithin(offset + source.array.length, offset + removing);
+
+        for (let i = 0; i < source.array.length; i++) {
+          this.array[offset + i] = source.array[i];
+        }
+
+        if (removing > source.array.length) {
+          this.array.length = this.array.length + source.array.length - removing;
+        }
+
+        return this;
+      }
+
+      $$clone() {
+        const cloned = new STable.ObjConstructor();
+        cloned.array = this.array.slice();
+        return cloned;
+      }
+    });
+
+    if (this.primType === 0) {
+      STable.addInternalMethods(class {
+        $$iterator() {
+          return new iter.Iter(this.array);
+        }
+
+        $$flatArgs() {
+          return this.array;
+        }
+
+        $$atpos(index) {
+          const value = this.array[index < 0 ? this.array.length + index : index];
+          if (value === undefined) return Null;
+          return value;
+        }
+
+        $$bindpos(index, value) {
+          if (this._SC !== undefined) this.$$scwb();
+          return this.array[index < 0 ? this.array.length + index : index] = value;
+        }
+
+        $$push(value) {
+          if (this._SC !== undefined) this.$$scwb();
+          this.array.push(value);
+          return value;
+        }
+
+        $$pop() {
+          const value = this.array.pop();
+          if (value === undefined) return Null;
+          return value;
+        }
+
+        $$shift() {
+          const value = this.array.shift();
+          if (value === undefined) return Null;
+          return value;
+        }
+
+        $$unshift(value) {
+          this.array.unshift(value);
+          return value;
+        }
+      });
+    } else if (this.primType === 1) {
+      let mangle;
+      if (this.type !== Null) {
+        const repr = this.type._STable.REPR;
+        if (repr instanceof P6int) {
+          const bits = this.type._STable.REPR.bits;
+          const shift = 32 - bits;
+
+          if (this.type._STable.REPR.isUnsigned) {
+            mangle = function(value) {
+              const trimmed = (value << shift >> shift);
+              const ret = trimmed < 0 ? (1 << bits) + trimmed : trimmed;
+              return ret;
+            };
+          } else {
+            if (bits < 32) {
+              mangle = value => (value<< shift >> shift);
+            }
+          }
+        }
+      }
+
+      STable.addInternalMethod('$$mangle', mangle || (value => value));
+
+      STable.addInternalMethods(class {
+        $$flatArgs() {
+          return this.array.map(arg => new NativeIntArg(arg));
+        }
+
+        $$iterator() {
+          return new iter.IterInt(this.array);
+        }
+
+        $$push_i(value) {
+          if (this._SC !== undefined) this.$$scwb();
+          this.array.push(this.$$mangle(value));
+          return value;
+        }
+
+        $$atpos_i(index) {
+          const value = this.array[index < 0 ? this.array.length + index : index];
+          if (value === undefined) return 0;
+          return value;
+        }
+
+        $$bindpos_i(index, value) {
+          if (this._SC !== undefined) this.$$scwb();
+          this.array[index < 0 ? this.array.length + index : index] = this.$$mangle(value);
+          return value;
+        }
+
+        $$pop_i() {
+          const value = this.array.pop();
+          if (value === undefined) return Null;
+          return value;
+        }
+
+        $$shift_i() {
+          const value = this.array.shift();
+          if (value === undefined) return Null;
+          return value;
+        }
+
+        $$unshift_i(value) {
+          this.array.unshift(this.$$mangle(value));
+          return value;
+        }
+      });
+    } else if (this.primType === 2) {
+      STable.addInternalMethods(class {
+        $$flatArgs() {
+          return this.array.map(arg => new NativeNumArg(arg));
+        }
+
+        $$iterator() {
+          return new iter.IterNum(this.array);
+        }
+
+        $$atpos_n(index) {
+          const value = this.array[index < 0 ? this.array.length + index : index];
+          if (value === undefined) return 0.0;
+          return value;
+        }
+
+        $$bindpos_n(index, value) {
+          if (this._SC !== undefined) this.$$scwb();
+          return this.array[index < 0 ? this.array.length + index : index] = value;
+        }
+
+        $$push_n(value) {
+          if (this._SC !== undefined) this.$$scwb();
+          this.array.push(value);
+          return value;
+        }
+
+        $$pop_n() {
+          const value = this.array.pop();
+          if (value === undefined) return Null;
+          return value;
+        }
+
+        $$shift_n() {
+          const value = this.array.shift();
+          if (value === undefined) return Null;
+          return value;
+        }
+
+        $$unshift_n(value) {
+          this.array.unshift(value);
+          return value;
+        }
+      });
+    } else if (this.primType === 3) {
+      STable.addInternalMethods(class {
+        $$flatArgs() {
+          return this.array.map(arg => new NativeStrArg(arg));
+        }
+
+        $$iterator() {
+          return new iter.IterStr(this.array);
+        }
+
+        $$atpos_s(index) {
+          const value = this.array[index < 0 ? this.array.length + index : index];
+          if (value === undefined) return nullStr;
+          return value;
+        }
+
+        $$bindpos_s(index, value) {
+          if (this._SC !== undefined) this.$$scwb();
+          return this.array[index < 0 ? this.array.length + index : index] = value;
+        }
+
+        $$push_s(value) {
+          if (this._SC !== undefined) this.$$scwb();
+          this.array.push(value);
+          return value;
+        }
+
+        $$pop_s() {
+          const value = this.array.pop();
+          if (value === undefined) return Null;
+          return value;
+        }
+
+        $$shift_s() {
+          const value = this.array.shift();
+          if (value === undefined) return Null;
+          return value;
+        }
+
+        $$unshift_s(value) {
+          this.array.unshift(value);
+          return value;
+        }
+      });
+    } else {
+      console.trace('wrong type to VMArray', this.primType);
+    }
+
+
+    const $$atposnd = function(idx) {
+      if (idx.array.length != 1) {
+        throw new NQPException('A dynamic array can only be indexed with a single dimension');
+      }
+      const index = idx.array[0] || 0;
+      const value = this.array[index < 0 ? this.array.length + index : index];
+      if (value === undefined) return Null;
+      return value;
+    };
+
+    const $$bindposnd = function(idx, value) {
+      if (idx.array.length != 1) {
+        throw new NQPException('A dynamic array can only be indexed with a single dimension');
+      }
+      const index = idx.array[0] || 0;
+      return (this.array[index] = value);
+    };
+
+    const suffixes = ['', '_s', '_i', '_n'];
+    for (const suffix of suffixes) {
+      STable.addInternalMethod('$$atposnd' + suffix, $$atposnd);
+      STable.addInternalMethod('$$bindposnd' + suffix, $$bindposnd);
+    }
+  }
+
+  deserializeFinish(obj, data) {
+    obj.array = [];
+    const size = data.varint();
+    if (this.primType === 0) {
+      for (let i = 0; i < size; i++) {
+        obj.array[i] = data.variant();
+      }
+    } else if (this.primType === 1) {
+      for (let i = 0; i < size; i++) {
+        obj.array[i] = data.varint();
+      }
+    } else if (this.primType === 2) {
+      for (let i = 0; i < size; i++) {
+        obj.array[i] = data.double();
+      }
+    } else if (this.primType === 3) {
+      for (let i = 0; i < size; i++) {
+        obj.array[i] = data.str();
+      }
+    }
+  }
+
+
+  serialize(cursor, obj) {
+    cursor.varint(obj.array.length);
+    if (this.primType === 0) {
+      for (let i = 0; i < obj.array.length; i++) {
+        cursor.ref(obj.array[i] === undefined ? Null : obj.array[i]);
+      }
+    } else if (this.primType === 1) {
+      for (let i = 0; i < obj.array.length; i++) {
+        cursor.varint(obj.array[i] === undefined ? 0 : obj.array[i]);
+      }
+    } else if (this.primType === 2) {
+      for (let i = 0; i < obj.array.length; i++) {
+        cursor.double(obj.array[i] === undefined ? 0 : obj.array[i]);
+      }
+    } else if (this.primType === 3) {
+      for (let i = 0; i < obj.array.length; i++) {
+        cursor.str(obj.array[i] === undefined ? nullStr : obj.array[i]);
+      }
+    }
+  }
+
+  deserializeReprData(cursor, STable) {
+    this.type = cursor.variant();
+    this.primType = primType(this.type);
+    this.setupSTableWhenComposed(STable);
+  }
+
+  serializeReprData(st, cursor) {
+    cursor.ref(this.type);
+  }
+
+  compose(STable, reprInfoHash) {
+    if (reprInfoHash.content.get('array')) {
+      this.type = reprInfoHash.content.get('array').content.get('type') || Null;
+    } else {
+      this.type = Null;
+    }
+    this.primType = primType(this.type);
+    this.setupSTableWhenComposed(STable);
   }
 };
 
-// HACK
-VMArray.prototype.allocate = basic_allocate;
+reprs.VMArray = VMArray;
 
-VMArray.prototype.compose = function(STable, repr_info_hash) {
-  if (repr_info_hash.content.get('array')) {
-    this.type = repr_info_hash.content.get('array').content.get('type');
+const HashIter = require('./hash-iter.js');
+
+class VMHash extends REPR {
+  allocate(STable) {
+    const obj = new STable.ObjConstructor();
+    obj.content = new Map();
+    return obj;
+  }
+
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$clone() {
+        const cloned = new STable.ObjConstructor();
+        cloned.content = new Map();
+        this.content.forEach(function(value, key, map) {
+          cloned.content.set(key, value);
+        });
+        return cloned;
+      }
+
+      $$bindkey(key, value) {
+        this.content.set(key, value);
+        if (this._SC !== undefined) this.$$scwb();
+        return value;
+      }
+
+      $$atkey(key) {
+        return this.content.has(key) ? this.content.get(key) : Null;
+      }
+
+      $$existskey(key) {
+        return this.content.has(key);
+      }
+
+      $$deletekey(key) {
+        if (this._SC !== undefined) this.$$scwb();
+        this.content.delete(key);
+        return this;
+      }
+
+      $$elems() {
+        return this.content.size;
+      }
+
+      $$numify() {
+        return this.$$elems();
+      }
+
+      $$iterator() {
+        return new HashIter(this);
+      }
+
+      $$toObject() {
+        const ret = {};
+        this.content.forEach(function(value, key, map) {
+          ret[key] = value;
+        });
+        return ret;
+      }
+    });
+  }
+
+  deserializeFinish(obj, data) {
+    obj.content = new Map();
+    const elems = data.varint();
+    for (let i = 0; i < elems; i++) {
+      const str = data.str();
+      obj.content.set(str, data.variant());
+    }
+  }
+
+  serialize(cursor, obj) {
+    cursor.varint(obj.$$elems());
+    obj.content.forEach(function(value, key, map) {
+      cursor.str(key);
+      cursor.ref(value);
+    }, this);
   }
 };
 
-exports.VMArray = VMArray;
+reprs.VMHash = VMHash;
 
-function VMIter() {
+class VMIter {
+  deserializeFinish(obj, data) {
+    // STUB
+    console.log('deserializing VMIter');
+  }
+};
+
+VMIter.prototype.createObjConstructor = basicConstructor;
+VMIter.prototype.typeObjectFor = basicTypeObjectFor;
+reprs.VMIter = VMIter;
+
+
+function makeBI(STable, num) {
+  const instance = STable.REPR.allocate(STable);
+  instance.$$setBignum(num);
+  return instance;
 }
-VMIter.prototype.create_obj_constructor = basic_constructor;
-VMIter.prototype.deserialize_finish = function(obj, data) {
-  console.log('deserializing VMIter');
-  // STUB
-};
-VMIter.prototype.type_object_for = basic_type_object_for;
-exports.VMIter = VMIter;
 
-var bignum = require('bignum');
-
-function P6bigint() {
+function getBI(obj) {
+  return obj.$$getBignum();
 }
-P6bigint.prototype.create_obj_constructor = basic_constructor;
 
-P6bigint.prototype.basic_type_object_for = basic_type_object_for;
+function getIntFromBI(bignum) {
+  const bits = bignum.bitLength();
+  if (bits >= 64) {
+    throw new NQPException(`Cannot unbox ${bits} bit wide bigint into native integer`);
+  } else {
+    return bignum.toNumber() | 0;
+  }
+}
 
-P6bigint.prototype.type_object_for = function(HOW) {
-  var type_object = this.basic_type_object_for(HOW);
+class P6bigint extends REPR {
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$setInt(value) {
+        this.value = bignum(value);
+      }
 
-  this._STable.addInternalMethod('$$set_int', function(value) {
-    this.value = bignum(value);
-  });
+      $$getInt() {
+        return getIntFromBI(this.value);
+      }
 
-  this._STable.addInternalMethod('$$get_int', function() {
-    return this.value.toNumber() | 0;
-  });
+      $$setBignum(value) {
+        this.value = value;
+      }
 
-  this._STable.addInternalMethod('$$set_bignum', function(value) {
-    this.value = value;
-  });
+      $$getBignum() {
+        return this.value;
+      }
 
-  this._STable.addInternalMethod('$$get_bignum', function() {
-    return this.value;
-  });
+      $$decont_i(ctx) {
+        return getIntFromBI(this.value);
+      }
+    });
+  }
 
-  return type_object;
+  generateFlattenedAccessors(ownerSTable, attrContentSTable, slot) {
+    const attr = slotToAttr(slot);
+
+    ownerSTable.addInternalMethod('$$getattr$' + slot, function() {
+      const value = this[attr] || bignum(0);
+      return makeBI(attrContentSTable, value);
+    });
+
+    ownerSTable.addInternalMethod('$$bindattr$' + slot, function(value) {
+      this[attr] = getBI(value);
+      return value;
+    });
+  }
+
+  deserializeFinish(obj, data) {
+    if (data.varint() == 1) { /* Is it small int? */
+      obj.value = bignum(data.varint());
+    } else {
+      obj.value = bignum(data.str());
+    }
+  }
+
+  deserializeInline(data) {
+    if (data.varint() == 1) { /* Is it small int? */
+      return bignum(data.varint());
+    } else {
+      return bignum(data.str());
+    }
+  }
+
+  serialize(cursor, obj) {
+    const isSmall = 0; /* TODO - check */
+
+    cursor.varint(isSmall);
+    if (isSmall) {
+      cursor.varint(obj.value.toNumber());
+    } else {
+      cursor.str(obj.value.toString());
+    }
+  }
+
+  serializeInline(data, value) {
+    const isSmall = 0; /* TODO - check */
+
+    data.varint(isSmall);
+    if (isSmall) {
+      data.varint(value.toNumber());
+    } else {
+      data.str(value.toString());
+    }
+  }
+
+  generateBoxingMethods(STable, name) {
+    STable.addInternalMethods(class {
+      $$setInt(value) {
+        this[name] = bignum(value);
+      }
+
+      $$getInt() {
+        return getIntFromBI(this[name]);
+      }
+
+      $$decont_i(ctx) {
+        return getIntFromBI(this[name]);
+      }
+
+      $$getBignum() {
+        return this[name];
+      }
+
+      $$setBignum(num) {
+        this[name] = num;
+      }
+    });
+  }
 };
 
-P6bigint.prototype.generateBoxingMethods = function(repr, attr) {
-  var name = attr.get('name');
-  repr._STable.addInternalMethod('$$set_int', function(value) {
-    this[name] = bignum(value);
-  });
+P6bigint.prototype.flattenSTable = true;
+P6bigint.prototype.flattenedDefault = 'ZERO';
 
-  repr._STable.addInternalMethod('$$get_int', function() {
-    return this[name].toNumber();
-  });
 
-  repr._STable.addInternalMethod('$$get_bignum', function() {
-    return this[name];
-  });
-
-  repr._STable.addInternalMethod('$$set_bignum', function(num) {
-    this[name] = num;
-  });
-};
-
-P6bigint.prototype.allocate = basic_allocate;
-P6bigint.prototype.compose = noop_compose;
-exports.P6bigint = P6bigint;
+reprs.P6bigint = P6bigint;
 
 
 /* Stubs */
 
-function NativeCall() {}
-NativeCall.prototype.create_obj_constructor = basic_constructor;
-NativeCall.prototype.allocate = basic_allocate;
-exports.NativeCall = NativeCall;
+class NativeCall extends REPR {
+  generateBoxingMethods(STable, name) {
+    // TODO - figure out what if anything needs to be here
+  }
+};
+reprs.NativeCall = NativeCall;
 
-function CPointer() {}
-CPointer.prototype.create_obj_constructor = basic_constructor;
-exports.CPointer = CPointer;
+class CPointer extends REPR {
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$setPointer(value) {
+        this.$$pointer = value;
+      }
 
-function ReentrantMutex() {}
-ReentrantMutex.prototype.create_obj_constructor = basic_constructor;
+      $$getPointer() {
+        return this.$$pointer;
+      }
+    });
+  }
+};
+reprs.CPointer = CPointer;
 
-module.exports.ReentrantMutex = ReentrantMutex;
+class AsyncTask extends REPR {};
+reprs.AsyncTask = AsyncTask;
 
-function ConditionVariable() {}
-ConditionVariable.prototype.create_obj_constructor = basic_constructor;
+class ReentrantMutex extends REPR {
+  serialize(cursor, obj) {
+    /* Nothing to do, we just re-create the lock on deserialization on backend that support them.
+     * The JS backend doesn't support concurrency.
+     */
+  }
+};
+reprs.ReentrantMutex = ReentrantMutex;
 
-module.exports.ConditionVariable = ConditionVariable;
+class ConditionVariable extends REPR {};
+reprs.ConditionVariable = ConditionVariable;
 
-function MultiDimArray() {
+class Semaphore extends REPR {
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$setInt(value) {
+        this.value = value;
+      }
 
-}
-MultiDimArray.prototype.type_object_for = basic_type_object_for;
-MultiDimArray.prototype.compose = function(STable, repr_info_hash) {
-  var array = repr_info_hash.content.get('array');
-  var dimensions = array.content.get('dimensions');
+      $$getInt() {
+        return this.value;
+      }
 
-  var type = repr_info_hash.content.get('array').content.get('type');
+      $$decont_i(value) {
+        return this.value;
+      }
+    });
+  }
+};
+reprs.Semaphore = Semaphore;
 
-  if (type) {
-    STable.primType = type._STable.REPR.boxed_primitive;
-  } else {
-    STable.primType = 0;
+class ConcBlockingQueue extends REPR {
+  allocate(STable) {
+    const obj = new STable.ObjConstructor();
+    obj.data = [];
+    return obj;
   }
 
-  STable.type = type || null;
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$push(value) {
+        this.data.push(value);
+        return value;
+      }
 
-  if (dimensions instanceof NQPInt) {
-    dimensions = dimensions.value;
-    if (dimensions === 0) {
+      $$shift(value) {
+        if (this.data.length === 0) {
+          console.log('shifting on an empty ConcBlockingQueue NYI');
+        }
+        return this.data.shift();
+      }
+
+      $$elems(value) {
+        return this.data.length;
+      }
+
+      $$atpos(index) {
+        return this.data[index];
+      }
+    });
+  }
+};
+
+reprs.ConcBlockingQueue = ConcBlockingQueue;
+
+const emptyBuffer = Buffer.allocUnsafe(0);
+
+const defaultSeps = ['\r\n', '\n'];
+
+class Decoder extends REPR {
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$check() {
+        if (this.$$encoding === undefined) {
+          throw new NQPException('Decoder not yet configured');
+        }
+      }
+
+      $$translate(str) {
+        return this.$$shouldTranslate ? str.replace(/\r\n/g, '\n') : str;
+      }
+
+      $$decoderconfigure(ctx, encoding, config) {
+        if (this.$$encoding !== undefined) {
+          throw new NQPException('Decoder already configured');
+        }
+        this.$$encoding = core.renameEncoding(encoding);
+        if (!core.isKnownEncoding(this.$$encoding)) {
+          throw new NQPException(`Unknown string encoding: '${this.$$encoding}'`);
+        }
+        const translate = config.content.get('translate_newlines');
+        this.$$shouldTranslate = translate && nqp.toInt(translate, ctx) !== 0;
+
+        this.$$seps = defaultSeps;
+        this.$$buffer = emptyBuffer;
+        this.$$textBuffer = '';
+
+        return this;
+      }
+
+      $$decodersetlineseps(ctx, seps) {
+        this.$$check();
+        this.$$seps = seps.array;
+      }
+
+      $$decoderaddbytes(bytes) {
+        this.$$check();
+        const buf = core.toRawBuffer(bytes);
+        this.$$buffer = Buffer.concat([this.$$buffer, buf]);
+      }
+
+      /* TODO NFG, codepoints that don't fit into 2 bytes */
+      $$decodertakechars(count) {
+        let chars = '';
+        this.$$check();
+
+        let available = this.$$textBuffer;
+        let matched;
+
+        graphemeRegexp.lastIndex = 0;
+        while (count !== 0 && graphemeRegexp.test(this.$$textBuffer)) {
+          matched = graphemeRegexp.lastIndex;
+          count--;
+        }
+        if (matched !== undefined) {
+          chars = this.$$textBuffer.slice(0, matched);
+          available = available.slice(matched);
+        }
+
+        if (count === 0) {
+          this.$$textBuffer = available;
+          return this.$$translate(chars);
+        }
+
+        const {newBuffer: newBuffer, text: text} = codecs[this.$$encoding].decodePartial(this.$$buffer);
+
+        let matchedInNewText = 0;
+        graphemeRegexp.lastIndex = 0;
+        while (count !== 0 && graphemeRegexp.test(text)) {
+          matchedInNewText = graphemeRegexp.lastIndex;
+          count--;
+        }
+
+        if (count === 0) {
+          this.$$buffer = newBuffer;
+          this.$$textBuffer = text.slice(matchedInNewText);
+          return this.$$translate(chars + text.slice(0, matchedInNewText));
+        } else {
+          return nullStr;
+        }
+      }
+
+      $$decodertakeavailablechars() {
+        this.$$check();
+
+        const {newBuffer: newBuffer, text: text} = codecs[this.$$encoding].decodePartial(this.$$buffer);
+        this.$$buffer = newBuffer;
+        const available = this.$$textBuffer + text;
+        this.$$textBuffer = '';
+
+        return this.$$translate(available);
+      }
+
+      $$decodertakeallchars() {
+        this.$$check();
+
+        const all = this.$$textBuffer + codecs[this.$$encoding].decode(this.$$buffer);
+
+        this.$$buffer = emptyBuffer;
+        this.$$textBuffer = '';
+
+        return this.$$translate(all);
+      }
+
+      /* TODO: NFG */
+
+      $$decodertakeline(chomp, incompleteOk) {
+        this.$$check();
+
+        const {newBuffer: newBuffer, text: text} = codecs[this.$$encoding].decodePartial(this.$$buffer);
+        this.$$buffer = newBuffer;
+        this.$$textBuffer = this.$$textBuffer + text;
+
+        let newline = -1;
+        let sep;
+        for (let i = 0; i < this.$$seps.length; i++) {
+          const offset = this.$$textBuffer.indexOf(this.$$seps[i]);
+          if (offset != -1 && (newline == -1 || offset < newline)) {
+            newline = offset;
+            sep = this.$$seps[i];
+          }
+        }
+
+        if (newline != -1) {
+          const upToNewline = this.$$textBuffer.slice(0, newline);
+
+          this.$$textBuffer = this.$$textBuffer.slice(newline + sep.length);
+          return this.$$translate(chomp ? upToNewline : upToNewline + sep);
+        } else {
+          if (incompleteOk) {
+            const all = this.$$textBuffer + codecs[this.$$encoding].decode(this.$$buffer);
+            this.$$buffer = emptyBuffer;
+            this.$$textBuffer = '';
+            return this.$$translate(all);
+          } else {
+            return nullStr;
+          }
+        }
+      }
+
+      $$decoderempty() {
+        this.$$check();
+        return (this.$$textBuffer === '' && this.$$buffer.length === 0) ? 1 : 0;
+      }
+
+      $$decoderbytesavailable() {
+        this.$$check();
+        // TODO cache this to avoid reencoding
+        return codecs[this.$$encoding].encode(this.$$textBuffer).length + this.$$buffer.length;
+      }
+
+      $$decodertakebytes(bufType, bytes) {
+        this.$$check();
+
+        if (this.$$textBuffer !== '') {
+          this.$$buffer = Buffer.concat([
+            codecs[this.$$encoding].encode(this.$$textBuffer),
+            this.$$buffer,
+          ]);
+          this.$$textBuffer = '';
+        }
+
+        if (bytes > this.$$buffer.length) {
+          return Null;
+        }
+
+        const buf = bufType._STable.REPR.allocate(bufType._STable);
+
+        const elementSize = core.byteSize(buf);
+        const isUnsigned = buf._STable.REPR.type._STable.REPR.isUnsigned;
+
+
+        let offset = 0;
+        for (let i = 0; i < bytes / elementSize; i++) {
+          buf.array[i] = isUnsigned ? this.$$buffer.readUIntLE(offset, elementSize) : this.$$buffer.readIntLE(offset, elementSize);
+          offset += elementSize;
+        }
+
+        this.$$buffer = this.$$buffer.slice(bytes);
+
+        return buf;
+      }
+    });
+  }
+};
+reprs.Decoder = Decoder;
+
+class MultiDimArray extends REPR {
+  allocate(STable) {
+    const obj = new STable.ObjConstructor();
+    obj.dimensions = undefined;
+    return obj;
+  }
+
+  compose(STable, reprInfoHash) {
+    const array = reprInfoHash.content.get('array');
+    const dimensions = array.content.get('dimensions');
+
+    const type = reprInfoHash.content.get('array').content.get('type');
+
+    STable.type = type || Null;
+    STable.primType = primType(STable.type);
+
+    STable.dimensions = dimensions.$$getInt();
+
+    if (STable.dimensions === 0) {
       throw new NQPException('MultiDimArray REPR must be composed with at least 1 dimension');
     }
-
-  } else {
-    throw 'dimensions to MultiDimArray.compose must be a native int';
   }
 
-  //  console.log('dimensions', dimensions);
-  STable.dimensions = dimensions;
-};
-MultiDimArray.prototype.allocate = basic_allocate;
 
-MultiDimArray.prototype.basic_constructor = basic_constructor;
-MultiDimArray.prototype.create_obj_constructor = function(STable) {
-  var c = this.basic_constructor(STable);
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$numdimensions(value) {
+        if (this.typeObject_) {
+          throw new NQPException('Cannot get number of dimensions of a type object');
+        }
+        return STable.dimensions;
+      }
 
-  STable.obj_constructor = c; // HACK it's set again later, we set it for addInternalMethod
+      $$clone() {
+        const clone = new this._STable.ObjConstructor();
+        clone.storage = this.storage.slice();
+        clone.dimensions = this.dimensions;
+        return clone;
+      }
 
-  STable.addInternalMethod('$$numdimensions', function(value) {
-    if (this.type_object_) {
-      throw new NQPException('Cannot get number of dimensions of a type object');
+      $$dimensions() {
+        if (this.typeObject_) {
+          throw new NQPException('Cannot get dimensions of a type object');
+        }
+        return BOOT.createIntArray(this.dimensions);
+      }
+
+      $$setdimensions(value) {
+        if (value.array.length != STable.dimensions) {
+          throw new NQPException('Array type of ' + STable.dimensions + ' dimensions cannot be intialized with ' + value.length + ' dimensions');
+        } else if (this.dimensions) {
+          throw new NQPException('Can only set dimensions once');
+        }
+        this.storage = [];
+        return (this.dimensions = value.array);
+      }
+
+      $$pop() {
+        throw new NQPException('Cannot pop a fixed dimension array');
+      }
+
+      $$shift() {
+        throw new NQPException('Cannot shift a fixed dimension array');
+      }
+
+      $$unshift(value) {
+        throw new NQPException('Cannot unshift a fixed dimension array');
+      }
+
+      $$push(value) {
+        throw new NQPException('Cannot push a fixed dimension array');
+      }
+
+      $$splice(source, offset, length) {
+        throw new NQPException('Cannot splice a fixed dimension array');
+      }
+
+      $$calculateIndex(idx, value) {
+        idx = idx.array;
+        if (idx.length != STable.dimensions) {
+          throw new NQPException('Cannot access ' + STable.dimensions + ' dimension array with ' + idx.length + ' indices');
+        }
+
+        for (let i = 0; i < idx.length; i++) {
+          if (idx[i] < 0 || idx[i] >= this.dimensions[i]) {
+            throw new NQPException('Index ' + idx[i] + ' for dimension ' + (i + 1) + ' out of range (must be 0..' + this.dimensions[i] + ')');
+          }
+        }
+        let calculatedIdx = 0;
+        for (let i = 0; i < idx.length; i++) {
+          calculatedIdx = calculatedIdx * this.dimensions[i] + (idx[i] || 0);
+        }
+        return calculatedIdx;
+      }
+
+      $$atposnd(idx) {
+        if (STable.primType != 0) throw new NQPException('wrong type');
+        const value = this.storage[this.$$calculateIndex(idx)];
+        if (value === undefined) return Null;
+        return value;
+      }
+
+      $$bindposnd(idx, value) {
+        if (STable.primType != 0) throw new NQPException('wrong type: ' + STable.primType);
+        return (this.storage[this.$$calculateIndex(idx)] = value);
+      }
+
+      $$atposnd_i(idx) {
+        if (STable.primType != 1) throw new NQPException('wrong type: ' + STable.primType);
+        const value = this.storage[this.$$calculateIndex(idx)];
+        return (value === undefined ? 0 : value);
+      }
+
+      $$bindposnd_i(idx, value) {
+        if (STable.primType != 1) throw new NQPException('wrong type' + STable.primType);
+        return (this.storage[this.$$calculateIndex(idx)] = value);
+      }
+
+      $$atposnd_n(idx) {
+        if (STable.primType != 2) throw new NQPException('wrong type');
+        const value = this.storage[this.$$calculateIndex(idx)];
+        return (value === undefined ? 0 : value);
+      }
+
+      $$bindposnd_n(idx, value) {
+        if (STable.primType != 2) throw new NQPException('wrong type');
+        return (this.storage[this.$$calculateIndex(idx)] = value);
+      }
+
+      $$atposnd_s(idx) {
+        if (STable.primType != 3) throw new NQPException('wrong type');
+        const value = this.storage[this.$$calculateIndex(idx)];
+        return (value === undefined ? nullStr : value);
+      }
+
+      $$bindposnd_s(idx, value) {
+        if (STable.primType != 3) throw new NQPException('wrong type');
+        return (this.storage[this.$$calculateIndex(idx)] = value);
+      }
+
+      // TODO optimize and avoid creating a temporary array
+      $$bindpos(index, value) {
+        return this.$$bindposnd(BOOT.createIntArray([index]), value);
+      }
+      $$bindpos_i(index, value) {
+        return this.$$bindposnd_i(BOOT.createIntArray([index]), value);
+      }
+      $$bindpos_s(index, value) {
+        return this.$$bindposnd_s(BOOT.createIntArray([index]), value);
+      }
+      $$bindpos_n(index, value) {
+        return this.$$bindposnd_n(BOOT.createIntArray([index]), value);
+      }
+
+      $$setelems(elems) {
+        this.$$setdimensions(BOOT.createIntArray([elems]));
+      }
+
+      $$elems(elems) {
+        return this.dimensions[0];
+      }
+
+      $$atpos(index) {
+        return this.$$atposnd(BOOT.createIntArray([index]));
+      }
+
+      $$atpos_i(index) {
+        return this.$$atposnd_i(BOOT.createIntArray([index]));
+      }
+
+      $$atpos_n(index) {
+        return this.$$atposnd_n(BOOT.createIntArray([index]));
+      }
+
+      $$atpos_s(index) {
+        return this.$$atposnd_s(BOOT.createIntArray([index]));
+      }
+    });
+  }
+
+  serializeReprData(st, cursor) {
+    if (st.dimensions) {
+      cursor.varint(st.dimensions);
+      cursor.ref(st.type);
+    } else {
+      cursor.varint(0);
     }
-    return STable.dimensions;
-  });
+  }
 
-  STable.addInternalMethod('$$clone', function() {
-    var clone = new this._STable.obj_constructor();
-    clone.storage = this.storage.slice();
-    clone.dimensions = this.dimensions;
-    return clone;
-  });
-
-  STable.addInternalMethod('$$dimensions', function() {
-    if (this.type_object_) {
-      throw new NQPException('Cannot get dimensions of a type object');
+  deserializeReprData(cursor, STable) {
+    const dims = cursor.varint();
+    if (dims > 0) {
+      STable.dimensions = dims;
+      STable.type = cursor.variant();
+      STable.primType = primType(STable.type);
     }
-    return new NQPArray(this.dimensions);
-  });
+  }
 
-  STable.addInternalMethod('$$setdimensions', function(value) {
-    if (value.array.length != STable.dimensions) {
-      throw new NQPException('Array type of ' + STable.dimensions + ' dimensions cannot be intialized with ' + value.length + ' dimensions');
-    } else if (this.dimensions) {
-      throw new NQPException('Can only set dimensions once');
+  valuesSize(obj) {
+    let size = 1;
+    for (let i = 0; i < obj.dimensions.length; i++) {
+      size = size * obj.dimensions[i];
     }
-    this.storage = [];
-    return (this.dimensions = value.array);
-  });
+    return size;
+  }
 
-  STable.addInternalMethod('$$pop', function() {
-    throw new NQPException('Cannot pop a fixed dimension array');
-  });
-
-  STable.addInternalMethod('$$shift', function() {
-    throw new NQPException('Cannot shift a fixed dimension array');
-  });
-
-  STable.addInternalMethod('$$unshift', function(value) {
-    throw new NQPException('Cannot unshift a fixed dimension array');
-  });
-
-  STable.addInternalMethod('$$push', function(value) {
-    throw new NQPException('Cannot push a fixed dimension array');
-  });
-
-  STable.addInternalMethod('$$splice', function(value) {
-    throw new NQPException('Cannot splice a fixed dimension array');
-  });
-
-  STable.addInternalMethod('$$calculateIndex', function(idx, value) {
-    idx = idx.array;
-    if (idx.length != STable.dimensions) {
-      throw new NQPException('Cannot access ' + STable.dimensions + ' dimension array with ' + idx.length + ' indices');
+  serialize(cursor, obj) {
+    for (let i = 0; i < obj._STable.dimensions; i++) {
+      cursor.varint(obj.dimensions[i]);
     }
-
-    for (var i = 0; i < idx.length; i++) {
-      if (idx[i] < 0 || idx[i] >= this.dimensions[i]) {
-        throw new NQPException('Index ' + idx[i] + ' for dimension ' + (i + 1) + ' out of range (must be 0..' + this.dimensions[i] + ')');
+    const size = this.valuesSize(obj);
+    for (let i = 0; i < size; i++) {
+      switch (obj._STable.primType) {
+        case 0:
+          cursor.ref(obj.storage[i]);
+          break;
+        case 1:
+          cursor.varint(obj.storage[i]);
+          break;
+        case 2:
+          cursor.double(obj.storage[i]);
+          break;
+        case 3:
+          cursor.str(obj.storage[i]);
+          break;
       }
     }
-    var calculatedIdx = 0;
-    for (var i = 0; i < idx.length; i++) {
-      calculatedIdx = calculatedIdx * this.dimensions[i] + idx[i];
+  }
+
+  deserializeFinish(obj, data) {
+    obj.dimensions = [];
+    for (let i = 0; i < obj._STable.dimensions; i++) {
+      obj.dimensions[i] = data.varint();
     }
-    return calculatedIdx;
-  });
+    const size = this.valuesSize(obj);
+    obj.storage = [];
+    for (let i = 0; i < size; i++) {
+      switch (obj._STable.primType) {
+        case 0:
+          obj.storage[i] = data.variant();
+          break;
+        case 1:
+          obj.storage[i] = data.varint();
+          break;
+        case 2:
+          obj.storage[i] = data.double();
+          break;
+        case 3:
+          obj.storage[i] = data.str();
+          break;
+      }
+    }
+  }
 
-  STable.addInternalMethod('$$atposnd', function(idx) {
-    if (STable.primType != 0) throw new NQPException('wrong type');
-    return this.storage[this.$$calculateIndex(idx)];
-  });
-
-  STable.addInternalMethod('$$bindposnd', function(idx, value) {
-    if (STable.primType != 0) throw new NQPException('wrong type: ' + STable.primType);
-    return (this.storage[this.$$calculateIndex(idx)] = value);
-  });
-
-  STable.addInternalMethod('$$atposnd_i', function(idx) {
-    if (STable.primType != 1) throw new NQPException('wrong type: ' + STable.primType);
-    return this.storage[this.$$calculateIndex(idx)];
-  });
-
-  STable.addInternalMethod('$$bindposnd_i', function(idx, value) {
-    if (STable.primType != 1) throw new NQPException('wrong type' + STable.primType);
-    return (this.storage[this.$$calculateIndex(idx)] = value);
-  });
-
-  STable.addInternalMethod('$$atposnd_n', function(idx) {
-    if (STable.primType != 2) throw new NQPException('wrong type');
-    return this.storage[this.$$calculateIndex(idx)];
-  });
-
-  STable.addInternalMethod('$$bindposnd_n', function(idx, value) {
-    if (STable.primType != 2) throw new NQPException('wrong type');
-    return (this.storage[this.$$calculateIndex(idx)] = value);
-  });
-
-  STable.addInternalMethod('$$atposnd_s', function(idx) {
-    if (STable.primType != 3) throw new NQPException('wrong type');
-    return this.storage[this.$$calculateIndex(idx)];
-  });
-
-  STable.addInternalMethod('$$bindposnd_s', function(idx, value) {
-    if (STable.primType != 3) throw new NQPException('wrong type');
-    return (this.storage[this.$$calculateIndex(idx)] = value);
-  });
-
-  // TODO optimize access
-  STable.addInternalMethod('$$bindpos', function(index, value) {
-    return this.$$bindposnd(new NQPArray([index]), value);
-  });
-
-  STable.addInternalMethod('$$setelems', function(elems) {
-    this.$$setdimensions(new NQPArray([elems]));
-  });
-
-  STable.addInternalMethod('$$elems', function(elems) {
-    return this.dimensions[0];
-  });
-
-  STable.addInternalMethod('$$atpos', function(index) {
-    return this.$$atposnd(new NQPArray([index]));
-  });
-
-
-  return c;
 };
 
-MultiDimArray.prototype.serialize_repr_data = function(st, cursor) {
-  if (st.dimensions) {
-    cursor.varint(st.dimensions);
-    cursor.ref(st.type);
-  } else {
+reprs.MultiDimArray = MultiDimArray;
+
+class VMException extends REPR {
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$getStr() {
+        return this.$$message;
+      }
+    });
+  }
+};
+
+
+reprs.VMException = VMException;
+
+
+class NativeRef extends REPR {
+  compose(STable, reprInfoHash) {
+    const nativeref = reprInfoHash.content.get('nativeref').content;
+    const type = nativeref.get('type');
+    this.primitiveType = type._STable.REPR.boxedPrimitive;
+    this.refkind = nativeref.get('refkind');
+  }
+
+  serializeReprData(st, cursor) {
+    cursor.varint(this.primitiveType || 0);
     cursor.varint(0);
   }
 
-};
-
-MultiDimArray.prototype.deserialize_repr_data = function(cursor, STable) {
-  var dims = cursor.varint();
-  if (dims > 0) {
-    STable.dimensions = dims;
-    STable.type = cursor.variant();
-    STable.primType = STable.type ? STable.type._STable.REPR.boxed_primitive : 0;
+  deserializeReprData(cursor, STable) {
+    this.primitiveType = cursor.varint();
+    cursor.varint();
   }
 };
+reprs.NativeRef = NativeRef;
 
-MultiDimArray.prototype.valuesSize = function(obj) {
-  var size = 1;
-  for (var i = 0; i < obj.dimensions.length; i++) {
-    size = size * obj.dimensions[i];
-  }
-  return size;
+class CArray extends REPR {
 };
+reprs.CArray = CArray;
 
-MultiDimArray.prototype.serialize = function(cursor, obj) {
-  for (var i = 0; i < obj._STable.dimensions; i++) {
-    cursor.varint(obj.dimensions[i]);
+class CStr extends REPR {
+  setupSTable(STable) {
+    STable.addInternalMethods(class {
+      $$setStr(str) {
+        // TODO
+      }
+    });
   }
-  var size = this.valuesSize(obj);
-  for (var i = 0; i < size; i++) {
-    switch (obj._STable.primType) {
-      case 0:
-        cursor.ref(obj.storage[i]);
-        break;
-      case 1:
-        cursor.varint(obj.storage[i]);
-        break;
-      case 2:
-        cursor.double(obj.storage[i]);
-        break;
-      case 3:
-        cursor.str(obj.storage[i]);
-        break;
+};
+reprs.CStr = CStr;
+
+class CREPR extends REPRWithAttributes {
+  allocate(STable) {
+    const obj = new STable.ObjConstructor();
+    if (!this.UnionConstructor) {
+      throw new NQPException("CUnion: must compose before allocating");
     }
+    obj.$$data = this.UnionConstructor();
+    return obj;
   }
-};
 
-MultiDimArray.prototype.deserialize_finish = function(obj, data) {
-  obj.dimensions = [];
-  for (var i = 0; i < obj._STable.dimensions; i++) {
-    obj.dimensions[i] = data.varint();
-  }
-  var size = this.valuesSize(obj);
-  obj.storage = [];
-  for (var i = 0; i < size; i++) {
-    switch (obj._STable.primType) {
-      case 0:
-        obj.storage[i] = data.variant();
-        break;
-      case 1:
-        obj.storage[i] = data.varint();
-        break;
-      case 2:
-        obj.storage[i] = data.double();
-        break;
-      case 3:
-        obj.storage[i] = data.str();
-        break;
+  compose(STable, reprInfoHash) {
+    this.nameToIndexMapping = [];
+
+    this.slotTypes = [];
+
+    let curAttr = 0;
+    const reprInfo = reprInfoHash.content.get('attribute').array;
+
+    for (let i = reprInfo.length - 1; i >= 0; i--) {
+      const entry = reprInfo[i].array;
+      const type = entry[0];
+      const attrs = entry[1].array;
+      const parents = entry[2].array;
+
+      /* If it has any attributes, give them each indexes and put them
+         * in the list to add to the layout. */
+      const numAttrs = attrs.length;
+      if (numAttrs > 0) {
+        const names = [];
+        const slots = [];
+
+        for (let j = 0; j < numAttrs; j++) {
+          const attr = attrs[j].content;
+
+          const attrType = attr.get('type');
+
+          this.slotTypes[curAttr] = attrType;
+
+/*          console.log('attrType');
+          require('nqp-runtime').dumpObj(attrType);*/
+
+          if (!attrType._STable.REPR.asRefType) {
+            throw new NQPException(`CUnion: Can't use attr ${attr.get('name').$$getStr()} as CUnion attr`);
+          }
+
+          slots.push(curAttr);
+          names.push(attr.get('name').$$getStr());
+
+          curAttr++;
+        }
+        this.nameToIndexMapping.push({classKey: type, slots: slots, names: names});
+      }
+
+      if (parents.length > 1) {
+        throw new NQPException("CUnion representation does not support multiple inheritance");
+      }
     }
+
+    this.build(STable);
+  }
+
+  build(STable) {
+    const refTypes = {};
+    for (let slot = 0; slot < this.slotTypes.length; slot++) {
+      refTypes[slotToAttr(slot)] = this.slotTypes[slot]._STable.REPR.asRefType();
+      this.slotTypes[slot]._STable.REPR.generateRefAccessors(STable, this.slotTypes[slot]._STable, slot);
+    }
+
+    this.UnionConstructor = this.createLowlevelConstructor(refTypes);
+
+
+    const suffixes = ['','_s', '_i', '_n'];
+    for (const suffix of suffixes) {
+      this.generateUniversalAccessor(STable, '$$getattr' + suffix, function(slot) {
+        return 'return this.$$getattr$' + slot + suffix + '()';
+      }, '', false, 'get a value');
+
+      this.generateUniversalAccessor(STable, '$$bindattr' + suffix, function(slot) {
+        return 'return this.$$bindattr$' + slot + suffix + '(value)';
+      }, ', value', false, 'bind a value');
+    }
+
+    STable.evalGatheredCode();
+  }
+
+
+  serializeReprData(st, cursor) {
+    cursor.varint(this.slotTypes.length);
+    for (let i = 0; i < this.slotTypes.length; i++) {
+      cursor.ref(this.slotTypes[i]);
+    }
+    this.serializeNameToIndexMapping(cursor);
+  }
+
+  deserializeReprData(cursor, STable) {
+    this.slotTypes = [];
+    const slotTypeCount = cursor.varint();
+    for (let i = 0; i < slotTypeCount; i++) {
+      this.slotTypes[i] = cursor.variant();
+    }
+    this.deserializeNameToIndexMapping(cursor);
+
+    this.build(STable);
   }
 };
 
-module.exports.MultiDimArray = MultiDimArray;
+class CUnion extends CREPR {
+  createLowlevelConstructor(refTypes) {
+    return new Union(refTypes);
+  }
+};
 
-function VMException() {
+class CStruct extends CREPR {
+};
+
+
+
+reprs.CUnion = CUnion;
+
+reprs.CStruct = CUnion;
+
+
+let ID = 0;
+for (const name in reprs) {
+  module.exports[name] = reprs[name];
+  reprs[name].prototype.ID = ID;
+  reprs[name].prototype.name = name;
+  reprById[ID] = reprs[name];
+  if (reprs[name].prototype.flattenedDefault) {
+    reprs[name].prototype.flattenedDefaultObj = eval(reprs[name].prototype.flattenedDefault);
+  }
+  ID++;
 }
-VMException.prototype.allocate = basic_allocate;
-VMException.prototype.type_object_for = basic_type_object_for;
-VMException.prototype.compose = noop_compose;
-VMException.prototype.basic_type_object_for = basic_type_object_for;
-
-VMException.prototype.basic_constructor = basic_constructor
-
-VMException.prototype.create_obj_constructor = function(STable) {
-  var c = this.basic_constructor(STable);
-  STable.obj_constructor = c; // HACK it's set again later, we set it for addInternalMethod
-  STable.addInternalMethod('$$get_str', function() {
-    return this.message;
-  });
-  return c;
-};
-
-module.exports.VMException = VMException;

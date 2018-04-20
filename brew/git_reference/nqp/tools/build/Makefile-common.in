@@ -81,16 +81,31 @@ COMMON_NQP_SOURCES  = \
 
 NQP_COMBINED = NQP.nqp
 
+# No QAST_SOURCES because it's just a single file that does not need combining
+
 QAST_COMBINED = QAST.nqp
 
-NQP_MO_SOURCES = src/how/Archetypes.nqp src/how/RoleToRoleApplier.nqp \
-                 src/how/NQPConcreteRoleHOW.nqp src/how/RoleToClassApplier.nqp \
-                 src/how/NQPCurriedRoleHOW.nqp src/how/NQPParametricRoleHOW.nqp \
-                 src/how/NQPClassHOW.nqp src/how/NQPNativeHOW.nqp \
-                 src/how/NQPAttribute.nqp src/how/NQPModuleHOW.nqp \
-                 src/how/EXPORTHOW.nqp \
+NQP_MO_SOURCES = \
+  src/how/Archetypes.nqp \
+  src/how/RoleToRoleApplier.nqp \
+  src/how/NQPConcreteRoleHOW.nqp \
+  src/how/RoleToClassApplier.nqp \
+  src/how/NQPCurriedRoleHOW.nqp \
+  src/how/NQPParametricRoleHOW.nqp \
+  src/how/NQPClassHOW.nqp \
+  src/how/NQPNativeHOW.nqp \
+  src/how/NQPAttribute.nqp \
+  src/how/NQPModuleHOW.nqp \
+  src/how/EXPORTHOW.nqp \
 
 NQP_MO_COMBINED = nqpmo.nqp
+
+COMMON_SOURCES = \
+  $(CORE_SETTING_SOURCES) \
+  $(QASTNODE_SOURCES) \
+  $(P5QREGEX_SOURCES) \
+  $(QREGEX_SOURCES) \
+  $(NQP_MO_SOURCES) \
 
 PERL          = @perl@
 MKPATH        = $(PERL) -MExtUtils::Command -e mkpath
@@ -98,14 +113,15 @@ CHMOD         = $(PERL) -MExtUtils::Command -e chmod
 CP            = $(PERL) -MExtUtils::Command -e cp
 RM_RF         = $(PERL) -MExtUtils::Command -e rm_rf
 RM_F          = $(PERL) -MExtUtils::Command -e rm_f
-SHELL         = @shell@
+@shell@
 
 SYSROOT         = @sysroot@
 PREFIX          = @prefix@
 BIN_DIR         = $(PREFIX)/bin
 NQP_LANG_DIR    = $(PREFIX)/share/nqp
-NQP_LIB_DIR     = $(NQP_LANG_DIR)/lib
-PROVE           = prove
+NQP_LIB_DIR     = @nqplibdir@
+PROVE_OPTIONS   = -j0$(TEST_JOBS)
+PROVE           = prove $(PROVE_OPTIONS)
 
 # nqp::makefile <-- tells NQP::Configure to treat this file as a makefile,
 #                   performing win32 slash and makefile conversions

@@ -7,9 +7,9 @@ use File::Spec qw();
 
 use base qw(Exporter);
 our @EXPORT_OK = qw(sorry slurp system_or_die
-                    cmp_rev 
+                    cmp_rev
                     read_config
-                    fill_template_file fill_template_text 
+                    fill_template_file fill_template_text
                     git_checkout
                     verify_install gen_moar
                     github_url
@@ -23,8 +23,11 @@ our @required_nqp_files = qw(
 );
 
 sub sorry {
-    my @msg = @_;
-    die join("\n", '', '===SORRY!===', @msg, "\n");
+    my ($ignore_errors, @msg) = @_;
+    my $message = join("\n", '', '===SORRY!===', @msg, "\n");
+    die $message
+        unless $ignore_errors;
+    print $message;
 }
 
 sub slurp {
@@ -94,6 +97,10 @@ sub read_config {
     local $_;
     for my $file (@config_src) {
         no warnings;
+        if (! -f $file) {
+            print "No pre-existing installed file found at $file\n";
+            next;
+        }
         if (open my $CONFIG, '-|', "\"$file\" --show-config") {
             while (<$CONFIG>) {
                 if (/^([^\s=]+)=(.*)/) { $config{$1} = $2 }
@@ -180,11 +187,11 @@ sub git_checkout {
 
     # get an up-to-date repository
     if (! -d $dir) {
-    	my @args = ('git', 'clone');
-    	push @args, $reference if $reference ne '';
-    	push @args, $depth if $depth ne '';
-    	push @args, $repo;
-    	push @args, $dir;
+        my @args = ('git', 'clone');
+        push @args, $reference if $reference ne '';
+        push @args, $depth if $depth ne '';
+        push @args, $repo;
+        push @args, $dir;
         system_or_die(@args);
         chdir($dir);
         system('git', 'config', 'remote.origin.pushurl', $pushurl)
@@ -197,7 +204,7 @@ sub git_checkout {
 
     if ($checkout) {
         system_or_die('git', 'checkout', $checkout);
-        system_or_die('git', 'pull') 
+        system_or_die('git', 'pull')
             if slurp('.git/HEAD') =~ /^ref:/;
     }
 
@@ -232,7 +239,8 @@ sub gen_nqp {
     my $nqp_want = shift;
     my %options  = @_;
 
-    my $backends    = $options{'backends'};
+    my $backends = $options{'backends'};
+    my $nqp_bin  = $options{'with-nqp'};
     my $gen_nqp     = $options{'gen-nqp'};
     my $gen_moar    = $options{'gen-moar'};
     my $prefix      = $options{'prefix'} || cwd().'/install';
@@ -246,15 +254,15 @@ sub gen_nqp {
     for my $b (qw/jvm moar/) {
         if ($backends =~ /$b/) {
             my $postfix = substr $b, 0, 1;
-            my $bin = $sdkroot
+            my $bin = $nqp_bin || ($sdkroot
                 ? File::Spec->catfile( $sdkroot, $prefix, 'bin', "nqp-$postfix$bat" )
-                : File::Spec->catfile( $prefix, 'bin', "nqp-$postfix$bat" );
+                : File::Spec->catfile( $prefix, 'bin', "nqp-$postfix$bat" ));
             $impls{$b}{bin} = $bin;
             my %c = read_config($bin);
             my $nqp_have = $c{'nqp::version'} || '';
             $impls{$b}{config} = \%c if %c;
-            my $nqp_ok   = $nqp_have && cmp_rev($nqp_have, $nqp_want) >= 0;
-            if ($nqp_ok) {
+            my $nqp_ok   = $nqp_have && 0 <= cmp_rev($nqp_have, $nqp_want);
+            if ($nqp_ok or $options{'ignore-errors'}) {
                 $impls{$b}{ok} = 1;
             }
             else {
@@ -335,7 +343,7 @@ sub gen_moar {
         return $moar_exe;
     }
     elsif ($moar_have) {
-        print "Found $moar_exe version $moar_have, which is too old.\n";
+        print "Found $moar_exe version $moar_have, which is too old. Wanted at least $moar_want\n";
     }
 
     return unless defined $gen_moar;

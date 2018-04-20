@@ -103,7 +103,7 @@ static void instrument_graph(MVMThreadContext *tc, MVMSpeshGraph *g) {
 static void add_instrumentation(MVMThreadContext *tc, MVMStaticFrame *sf) {
     MVMSpeshCode  *sc;
     MVMStaticFrameInstrumentation *ins;
-    MVMSpeshGraph *sg = MVM_spesh_graph_create(tc, sf, 1);
+    MVMSpeshGraph *sg = MVM_spesh_graph_create(tc, sf, 1, 0);
     instrument_graph(tc, sg);
     sc = MVM_spesh_codegen(tc, sg);
     ins = MVM_calloc(1, sizeof(MVMStaticFrameInstrumentation));
@@ -128,10 +128,9 @@ void MVM_cross_thread_write_instrument(MVMThreadContext *tc, MVMStaticFrame *sf)
         sf->body.handlers      = sf->body.instrumentation->instrumented_handlers;
         sf->body.bytecode_size = sf->body.instrumentation->instrumented_bytecode_size;
 
-        /* Throw away any specializations; we'll need to reproduce them as
-         * instrumented versions. */
-        sf->body.num_spesh_candidates = 0;
-        sf->body.spesh_candidates     = NULL;
+        /* Throw away any argument guard so we'll never resolve prior
+         * specializations again. */
+        MVM_spesh_arg_guard_discard(tc, sf);
     }
 }
 
@@ -144,6 +143,18 @@ static MVMint64 filtered_out(MVMThreadContext *tc, MVMObject *written) {
 
     /* Operations on a concurrent queue are fine 'cus it's concurrent. */
     if (REPR(written)->ID == MVM_REPR_ID_ConcBlockingQueue)
+        return 1;
+
+    /* Write on object from event loop thread is usually shift of invokable. */
+    if (tc->instance->event_loop_thread)
+        if (written->header.owner == tc->instance->event_loop_thread->thread_id)
+            return 1;
+
+    /* Filter out writes to Sub and Method, since these are almost always just
+     * multi-dispatch caches. */
+    if (strncmp( MVM_6model_get_stable_debug_name(tc, written->st), "Method", 6) == 0)
+        return 1;
+    if (strncmp( MVM_6model_get_stable_debug_name(tc, written->st), "Sub", 3) == 0)
         return 1;
 
     /* Otherwise, may be relevant. */
@@ -190,8 +201,8 @@ void MVM_cross_thread_write_check(MVMThreadContext *tc, MVMObject *written, MVMi
                 break;
         }
         uv_mutex_lock(&(tc->instance->mutex_cross_thread_write_logging));
-        fprintf(stderr, "Thread %d %s an object allocated by thread %d\n",
-            tc->thread_id, guilty_desc, written->header.owner);
+        fprintf(stderr, "Thread %d %s an object (%s) allocated by thread %d\n",
+            tc->thread_id, guilty_desc, MVM_6model_get_debug_name(tc, written), written->header.owner);
         MVM_dump_backtrace(tc);
         fprintf(stderr, "\n");
         uv_mutex_unlock(&(tc->instance->mutex_cross_thread_write_logging));

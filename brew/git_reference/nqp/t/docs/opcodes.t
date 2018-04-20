@@ -1,6 +1,6 @@
 #! nqp
 
-my @*vms := nqp::list('parrot', 'jvm', 'moar');
+my @*vms := nqp::list('jvm', 'moar', 'js');
 
 my %documented_ops := find_documented_opcodes();
 
@@ -14,20 +14,20 @@ my %ops := hash_of_vms();
     :keywords(<map_classlib_core_op add_core_op map_jvm_core_op add_hll_op>)
 );
 
-%ops<parrot> := find_opcodes(
+%ops<js> := find_opcodes(
     :files([
-        "src/vm/parrot/QAST/Operations.nqp",
-        "src/vm/parrot/NQP/Ops.nqp"
+        "src/vm/js/Operations.nqp"
     ]),
-    :keywords(<add_core_op add_core_pirop_mapping add_hll_op>)
+    :keywords(<add_op add_simple_op add_hll_op add_cmp_op add_infix_op>)
 );
+
 
 %ops<moar> := find_opcodes(
     :files([
         "src/vm/moar/QAST/QASTOperationsMAST.nqp",
         "src/vm/moar/NQP/Ops.nqp"
     ]),
-    :keywords(<add_core_op add_core_moarop_mapping add_hll_op>)
+    :keywords(<add_core_op add_core_moarop_mapping add_hll_op add_getattr_op add_bindattr_op>)
 );
 
 # Most backends programmatically add these ops - to keep our cheating simple,
@@ -58,22 +58,36 @@ for %combined_ops -> $opcode {
 # Do documented opcodes actually exist? Fail once per vm if not.
 for @*vms -> $vm {
     for %documented_ops{$vm} -> $doc_op {
-        $vm eq "parrot"
-            ?? skip("Not all ops implemented in parrot")
-            !! ok(%ops{$vm}{$doc_op}, "documented op '$doc_op' exists in $vm");
+        ok(%ops{$vm}{$doc_op}, "documented op '$doc_op' exists in $vm");
     }
 }
 
 sub find_opcodes(:@files, :@keywords) {
     my %ops := nqp::hash();
     for @files -> $file {
-        my @lines := nqp::split("\n", nqp::readallfh(nqp::open($file,"r")));
+        my @lines := nqp::split("\n", slurp($file));
         for @lines -> $line {
-            next unless $line ~~ / @keywords /;
-            my @pieces := nqp::split("'", $line);
-            $line := @pieces[1] eq 'nqp' ?? @pieces[3] !! @pieces[1];
-            next unless nqp::chars($line);
-            %ops{$line} := 1;
+            if $line ~~ / @keywords / {
+                my @pieces := nqp::split("'", $line);
+                $line := @pieces[1] eq 'nqp' ?? @pieces[3] !! @pieces[1];
+
+                next unless nqp::chars($line);
+
+                if @pieces[1] ne 'nqp' && @pieces[2] ~~ /^ \s* '~' \s* '$suffix' /{
+                    for <_s _n _i> -> $suffix {
+                        %ops{$line ~ $suffix} := 1;
+                    }
+                }
+                %ops{$line} := 1;
+            } elsif $line ~~ /^ \s* for \s* '<' (<[\w\ ]>+) '>' \s* '->' \s* '$func' \s* \{/ -> $match {
+                for nqp::split(' ', $match[0]) -> $func {
+                    %ops{$func ~ '_n'} := 1;
+                }
+            } elsif $line ~~ / '%ops<' (<[a..zA..Z0..9_]>+) '> :=' / -> $match {
+                if ?$match {
+                    %ops{$match[0]} := 1;
+                }
+            }
         }
     }
     return %ops;
@@ -91,23 +105,23 @@ sub find_documented_opcodes() {
     my %documented_ops := hash_of_vms();
     %documented_ops<any> := nqp::hash();
 
-    my @doc_lines := nqp::split("\n", nqp::readallfh(nqp::open("docs/ops.markdown","r")));
+    my @doc_lines := nqp::split("\n", slurp("docs/ops.markdown"));
     my @opcode_vms := nqp::list();
     for @doc_lines -> $line {
         my $match := $line ~~ /^ '##' \s* <[a..zA..Z0..9_]>+ \s* ('`' .* '`')? /;
-        if (?$match) {
-            if (!?$match[0]) {
+        if ?$match {
+            if !?$match[0] {
                 @opcode_vms := nqp::clone(@*vms);
             } else {
                 @opcode_vms := nqp::list();
                 if $match[0] ~~ /jvm/ {
                     nqp::push(@opcode_vms,"jvm");
                 }
-                if $match[0] ~~ /parrot/ {
-                    nqp::push(@opcode_vms,"parrot");
-                }
                 if $match[0] ~~ /moar/ {
                     nqp::push(@opcode_vms,"moar");
+                }
+                if $match[0] ~~ /js/ {
+                    nqp::push(@opcode_vms,"js");
                 }
             }
         }

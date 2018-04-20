@@ -8,12 +8,15 @@ gen-version.pl -- script to generate version information for HLL compilers
 
 use POSIX 'strftime';
 
+my $prefix = shift;
+my $libdir = shift;
+
 open(my $fh, '<', 'VERSION') or die $!;
 my $VERSION = <$fh>;
 close($fh);
 
 # .git is a file and not a directory in submodule
-if (-e '.git' && open(my $GIT, '-|', "git describe --tags")) {
+if (-e '.git' && open(my $GIT, '-|', 'git describe --tags "--match=20*"')) {
     $VERSION = <$GIT>;
     close($GIT);
 }
@@ -26,6 +29,8 @@ print <<"END_VERSION";
 sub hll-config(\$config) {
     \$config<version>    := '$VERSION';
     \$config<build-date> := '$builddate';
+    \$config<prefix>     := '$prefix';
+    \$config<libdir>     := '$libdir';
 }
 END_VERSION
 

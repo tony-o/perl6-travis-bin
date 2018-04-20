@@ -36,10 +36,15 @@ my %lit_str_serial;
 
 say 'digraph G {';
 say '  graph [rankdir="TB"];';
-say '  node [shape=record];';
+say '  node [shape=record,style=filled,fillcolor=white];';
+
+say "    \"Control Flow Graph\";";
+say "    \"Dominance Tree\";";
 
 my $insnum = 0;
 my $in_subgraph = 0;
+
+my $ann_num = 0;
 
 # if instruction-carrying lines appear before the first BB, we
 # shall gracefully invent a starting point.
@@ -55,6 +60,13 @@ my @dominance_conns;
 my @callsite_args;
 
 my %reg_writers;
+my @delayed_writer_connections;
+
+my @bb_overview;
+
+constant @bb_colors = ((((1 .. *) X* 0.618033988749895) X% 1.0) .map(*.fmt("%.5f "))
+                      Z~ (((0, -1 ... *) X* 0.0618033988749895) X% 0.05 + 0.95) .map(*.fmt("%.5f ")))
+                      X~ "0.9900";
 
 for lines() -> $_ is copy {
     when / ^ '      ' <!before '['> $<opname>=[<[a..z I 0..9 _]>+] \s+
@@ -70,13 +82,13 @@ for lines() -> $_ is copy {
               | callsite '(' ~ ')' <-[)]>+
               | '<nyi>'
               | '<nyi(lit)>'
-            ] ]* % [',' \s*] \s* $ / {
+            ] ]* % [',' \s*] [\s* '(' <-[)]>+ ')']? \s* $ / {
         say "";
-        print "    \"{$<opname>}_{$insnum}\" ";
-        say "    [";
+        say "    \"{$<opname>}_{$insnum}\" ";
+        print "    [";
 
         if $<opname> eq "set" | "decont" {
-            say "       shape=Mrecord";
+            print "shape=Mrecord ";
         }
 
         my $previous_ins = $last_ins;
@@ -124,7 +136,7 @@ for lines() -> $_ is copy {
                     type => $type,
                     targets_reg => 1,
                     writes_tgt => 1 ),
-                do for 1..^$arity { $%(
+                slip do for 1..^$arity { $%(
                     flags => 0,
                     rwmasked => (my $boringtype = %MAST::Ops::flags<MVM_operand_read_reg>),
                     type => $boringtype,
@@ -146,7 +158,7 @@ for lines() -> $_ is copy {
                 if %reg_writers{$v}:exists {
                     @back_connections.push: %reg_writers{$v} => $current_ins ~ ":$k";
                 } else {
-                    note "found register without writer: $v for instruction $current_ins argument $k (this is harmless)"
+                    @delayed_writer_connections.push: $v => $current_ins ~ ":$k";
                 }
             }
             @labelparts.push: "<$k> $v";
@@ -178,7 +190,7 @@ for lines() -> $_ is copy {
         if $previous_ins ~~ / entry / {
             say "    $previous_ins -> $last_ins [style=dotted];";
         } else {
-            say "    $previous_ins -> $last_ins [color=lightgrey];";
+            say "    $previous_ins -> $last_ins [color=\"#999999\"];";
         }
         say "";
 
@@ -196,22 +208,28 @@ for lines() -> $_ is copy {
             say "    $last_ins -> \"exit_$current_bb\" [style=dotted];";
             say "  }" if $in_subgraph;
         }
+
         say "  subgraph ";
         say "\"cluster_{~$<addr>}\" \{";
+        say "    style=filled;";
+        say "    color=\"@bb_colors[+$<bbnum>]\";";
         say "    rankdir = TB;";
         #say "    label = \"$<bbnum>\";";
         say "    \"entry_$<addr>\" [label=\"<op> entry of block $<bbnum>\"];";
         $in_subgraph = True;
         $current_bb = ~$<addr>;
         $last_ins = "\"entry_$<addr>\"";
+
+        @bb_overview.push: "    \"bb_ov_$<addr>\" [fillcolor=\"@bb_colors[+$<bbnum>]\",color=black,style=filled,label=\"$<bbnum>\"];";
+        @bb_overview.push: "    \"bb_ov_d_$<addr>\" [fillcolor=\"@bb_colors[+$<bbnum>]\",color=black,style=filled,label=\"$<bbnum>\"];";
     }
     when / ^ '    ' 'Successors: ' [$<succ>=[<.digit>+]]* % ', ' $ / {
         %bb_connections{$current_bb} = @<succ>>>.Str;
     }
-    when / ^ '      ' '[Annotation: ' $<annotation>=[<[a..z A..Z 0..9 \ ]>+] / {
+    when / ^ '      ' '[Annotation: ' $<annotation>=[<[a..z A..Z 0..9 \ ]>+] $<rest>=<-[\]]>+ / {
         my $previous_ins = $last_ins;
-        $last_ins = "\"annotation_{$current_bb}_{$<annotation>}_{(state $)++}\"";
-        say "    $last_ins [label=\"{$<annotation>}\" shape=cds];";
+        $last_ins = "\"annotation_{$current_bb}_{$<annotation>}_{$ann_num++}\"";
+        say "    $last_ins [label=\"{$<annotation>} {$<rest>}\" shape=cds];";
         if $last_ins ~~ / entry / {
             say "    $previous_ins -> $last_ins [style=dotted];";
         } else {
@@ -225,7 +243,7 @@ for lines() -> $_ is copy {
             @dominance_conns.push($current_bb => $child.Int);
         }
     }
-    when / ^ '    ' [ 'Instructions' | 'Predeccessors' ] / { }
+    when / ^ '    ' [ 'Instructions' | 'Predecessors' ] / { }
     when /^ [ 'Facts' | '='+ ] / { }
     when /^ 'Spesh of \'' $<methname>=[<[a..z 0..9 _ ' -]>*]
             '\' (cuid: ' $<cuid>=[<[a..z A..Z 0..9 _ . -]>+]
@@ -246,14 +264,14 @@ for lines() -> $_ is copy {
     when / ^ '    ' \d+ [ 'spesh slots' | 'log values'] / { }
     when / ^ '    ' \s* [\d+]+ %% \s+ / { }
     default {
-        say "    unparsed_line_{(state $)++} [label=\"{$_}\"];";
+        say "    unparsed_line_$((state $)++) [label=\"{$_}\"];";
     }
 }
 
 say "  }" if $in_subgraph;
 
 if @callsite_args {
-    say @callsite_args.map({ "\"arg_{(state $)++}\" [label=\"$_\"]" }).join(';');
+    say @callsite_args.map({ "\"arg_$((state $)++)\" [label=\"$_\"]" }).join(';');
     say "callsite -> " ~ (^@callsite_args).map({"\"arg_$_\""}).join(" -> ") ~ ";";
 }
 
@@ -263,6 +281,20 @@ for @connections {
 
 for @dominance_conns {
     say "\"exit_$_.key()\" -> \"entry_%bb_map{$_.value}\" [style=tapered;penwidth=10;arrowhead=none;color=grey];";
+    say "\"bb_ov_d_$_.key()\" -> \"bb_ov_d_%bb_map{$_.value}\" [style=tapered;penwidth=10;arrowhead=none;color=grey];";
+    once say "\"Dominance Tree\" -> \"bb_ov_d_$_.key()\";";
+}
+
+for @delayed_writer_connections -> $conn {
+    my $from = $conn.key;
+    my $to   = $conn.value;
+
+    if %reg_writers{$from}:exists {
+        say "    %reg_writers{$from} -> $to;";
+        note "found a connection for $from even after reading the whole file ...";
+    } else {
+        note "Couldn't find a writer for $from anywhere! (harmless error)";
+    }
 }
 
 for %bb_connections.kv -> $k, $v {
@@ -275,9 +307,13 @@ for %bb_connections.kv -> $k, $v {
         ?? %bb_map{@$v}
         !! %bb_map{$v[*-1]};
     for @candidates -> $cand {
-        say "\"exit_$k\" -> \"entry_$cand\" [style=dotted];";
+        say "    \"exit_$k\" -> \"entry_$cand\" [style=dotted];";
+        say "    \"bb_ov_$k\" -> \"bb_ov_$cand\";";
     }
+    once say "\"Control Flow Graph\" -> \"bb_ov_$k\";";
 }
+
+.say for @bb_overview;
 
 say '}';
 

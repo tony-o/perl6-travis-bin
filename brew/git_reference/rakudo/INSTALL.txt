@@ -1,6 +1,6 @@
   Build requirements (Installing from source)
     For building Rakudo you need at least a C compiler, a "make" utility,
-    and Perl 5.8 or newer. To automatically obtain and build MoarVM
+    and Perl 5.10 or newer. To automatically obtain and build MoarVM
     as well as NQP, you may also need a git client, which is also needed
     for fetching the test suite.
 
@@ -10,7 +10,7 @@
     (Perl is installed by default already). To enable parallel testing you
     also need the CPAN module Test::Harness in version 3.16 or newer; you
     can control the number of parallel jobs with the "TEST_JOBS" environment
-    variable.
+    variable. If TEST_JOBS is not specified, 6 jobs will be used.
 
   Building and invoking Rakudo
     If you're wanting the bleeding-edge version of the Rakudo Perl 6
@@ -33,7 +33,7 @@
 
         $ perl Configure.pl --gen-moar --gen-nqp --backends=moar     # Moar only
     or:
-        $ perl Configure.pl --gen-nqp --backends=jvm  # needs JDK 1.7 installed
+        $ perl Configure.pl --gen-nqp --backends=jvm  # needs JDK 1.8 installed
     then:
         $ make
 
@@ -54,9 +54,9 @@
 
     If you would like readline-like features, such as command history, line
     editing, and tab completion for builtins, you should install the Linenoise
-    module via panda:
+    module via zef:
 
-        $ panda install Linenoise
+        $ zef install Linenoise
 
     Important: To run Rakudo from outside the build directory, you must run
 
@@ -136,9 +136,6 @@
     Running "make spectest" will import the official Perl 6 test suite from
     the "roast" repository <http://github.com/perl6/roast/> and run all
     of these tests that are currently known to pass.
-
-    You can compare your own results to the results of the daily runs in
-    <https://github.com/coke/perl6-roast-data/>.
 
     At present we do not have any plans to directly store the official test
     suite as part of the Rakudo repository, but will continue to fetch it

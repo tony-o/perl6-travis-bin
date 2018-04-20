@@ -1,124 +1,187 @@
-CodeRef.cuids = {};
-function CodeRef(name, cuid) {
-  this.name = name;
-  this.cuid = cuid;
-  if (cuid) CodeRef.cuids[cuid] = this;
-}
+'use strict';
 
-CodeRef.prototype.block = function(func) {
-  this.$call = func;
-};
+const NQPObject = require('./nqp-object.js');
+const StaticCtx = require('./static-ctx.js');
 
-CodeRef.prototype.setOuter = function(outerCtx) {
-  this.outerCtx = outerCtx;
-  return this;
-};
-
-// HACK - do this properly
-CodeRef.prototype.$call = function() {
-  var nqp = require('nqp-runtime');
-  if (this.closureTemplate) {
-
-    var $$cuids = this.cuids;
-    var declare = [];
-    for (var i in $$cuids) {
-      declare.push('cuid' + $$cuids[i].cuid + " = $$cuids[" + i + "]");
-    }
-    var declare_cuids = "var " + declare.join(",") + ";\n" ;
-
-    var template = declare_cuids + 'var ' + this.outerCtx + '= null;(' + this.closureTemplate + ')';
-    var $$codeRef = this;
-
-    this.$call = eval(template);
-    return this.$call.apply(this, arguments);
+class CodeRef extends NQPObject {
+  freshBlock() {
+    return this.closureTemplate;
   }
-};
 
-CodeRef.prototype.$apply = function(argsArray) {
-  return this.$call.apply(this, argsArray);
-};
+  constructor(name, cuid) {
+    super();
+    this.name = name;
+    this.cuid = cuid;
+    this.staticCode = this;
+  }
 
-CodeRef.prototype.takeclosure = function() {
-  console.trace("takeclosure shouldn't be used");
-};
+  captureCtx(outerCtx) {
+    this.$$call = this.freshBlock();
+    this.outerCtx = outerCtx;
+  }
 
-CodeRef.prototype.capture = function(block) {
-  this.$call = block;
-  return this;
-};
+  capture(block) {
+    this.$$call = block;
+    return this;
+  }
 
-CodeRef.prototype.method = function(method) {
-  this.$call = function() {
-    var args = [];
-    args.push(arguments[0]);
-    args.push(arguments[1]);
-    for (var i = 3; i < arguments.length; i++) {
-      args.push(arguments[i]);
+  setOuter(outerCtx) {
+    this.outerCtx = outerCtx;
+    return this;
+  }
+
+  // HACK - do this properly
+  $$call() {
+    const staticCode = this.staticCode;
+    if (staticCode.closureTemplate) {
+      /* HACK */
+      let searched = staticCode;
+
+      let fakeCtx;
+      let fakeOuterCtx;
+
+      const setOuter = outer => {
+        if (fakeCtx) {
+          fakeCtx.$$outer = outer;
+        } else {
+          fakeOuterCtx = outer;
+        }
+      };
+
+      while (true) {
+        if (searched.outerCtx) {
+          setOuter(searched.outerCtx);
+          break;
+        } else if (searched.outerCodeRef) {
+          const newFakeCtx = new StaticCtx();
+
+          setOuter(newFakeCtx);
+
+          fakeCtx = newFakeCtx;
+
+          const outerCode = searched.outerCodeRef;
+          fakeCtx.$$cuid = searched.outerCodeRef.cuid;
+          const staticVars = outerCode.staticVars;
+          if (staticVars) {
+            for (const staticVarName in staticVars) {
+              fakeCtx[staticVarName] = staticVars[staticVarName];
+            }
+          }
+
+          const contVars = outerCode.contVars;
+          if (contVars) {
+            for (const contVarName in contVars) {
+              /* not cloning make INIT and BEGIN correctly */
+              fakeCtx[contVarName] = contVars[contVarName];
+            }
+          }
+          searched = searched.outerCodeRef;
+        } else {
+          setOuter(null);
+          break;
+        }
+      }
+
+      this.outerCtx = fakeOuterCtx;
+
+      this.$$call = staticCode.freshBlock();
+      return this.$$call.apply(this, arguments);
+    } else {
+      console.log('can\'t autoclose - BAD');
     }
-    return method.apply(arguments[2], args);
-  };
+  }
 
-  /* TODO - think about cloning */
+  $$apply(argsArray) {
+    return this.$$call.apply(this, argsArray);
+  }
 
-  return this;
-};
+  closure(block) {
+    const closure = new CodeRef(this.name, this.cuid);
+    closure.codeObj = this.codeObj;
+    closure.$$call = block;
+    closure.staticCode = this;
+    return closure;
+  }
 
-CodeRef.prototype.closure = function(block) {
-  var closure = new CodeRef(this.name, undefined);
-  closure.codeObj = this.codeObj;
-  closure.cuid = this.cuid;
-  closure.$call = block;
-  closure.staticCode = this;
-  return closure;
-};
+  closureCtx(outerCtx) {
+    const closure = new CodeRef(this.name, this.cuid);
+    closure.codeObj = this.codeObj;
+    closure.$$call = this.freshBlock();
+    closure.staticCode = this;
 
-CodeRef.prototype.CPS = function(block) {
-  this.$callCPS = block;
-  return this;
-};
+    /* HACK thing more how declaration_static should be handled,
+       we need this for rakudo.js setting loading to work */
 
-CodeRef.prototype.sameCPS = function(block) {
-  this.$callCPS = function() {
-    var args = Array.prototype.slice.call(arguments);
-    var cont = args.splice(2, 1)[0];
-    return cont(this.$call.apply(this, args));
-  };
-  return this;
-};
+    if (outerCtx === null && this.outerCtx) {
+      closure.outerCtx = this.outerCtx;
+    } else {
+      closure.outerCtx = outerCtx;
+    }
 
-CodeRef.prototype.onlyCPS = function(block) {
-  this.$call = function() {
-    throw 'this block can be only called in CPS mode';
-  };
-  return this;
-};
+    return closure;
+  }
 
-CodeRef.prototype.setCodeObj = function(codeObj) {
-  this.codeObj = codeObj;
-  return this;
-};
+  captureAndClosure(outer, block) {
+    this.capture(block);
+    const closure = this.closure(block);
+    if (outer !== null) {
+      this.outerCtx = outer;
+      closure.outerCtx = outer;
+    }
+    return closure;
+  }
 
-CodeRef.prototype.setInfo = function(ctx, outerCtx, closureTemplate, staticInfo, asMethod, cuids) {
-  this.closureTemplate = closureTemplate;
-  this.ctx = ctx;
-  this.outerCtx = outerCtx;
-  this.staticInfo = staticInfo;
-  this.asMethod = asMethod;
-  this.cuids = cuids;
-  return this;
-};
+  captureAndClosureCtx(outerCtx) {
+    this.capture(this.freshBlock());
+    const closure = this.closure(this.freshBlock());
 
-CodeRef.prototype.$$clone = function() {
-  var clone = new CodeRef(this.name);
-  clone.$call = this.$call;
-  clone.codeObj = this.codeObj;
-  clone.cuid = this.cuid + ' clone';
-  clone.staticCode = this;
-  return clone;
-};
+    if (outerCtx !== null) {
+      this.outerCtx = outerCtx;
+      closure.outerCtx = outerCtx;
+    }
 
-CodeRef.prototype.$$to_bool = function(ctx) {
-  return 1;
+    return closure;
+  }
+
+  setCodeObj(codeObj) {
+    this.codeObj = codeObj;
+    return this;
+  }
+
+  setInfo(outerCodeRef, closureTemplate, lexicalsTypeInfo, staticVars, contVars, sourceOffset) {
+    this.closureTemplate = closureTemplate;
+    this.outerCodeRef = outerCodeRef;
+    this.lexicalsTypeInfo = lexicalsTypeInfo;
+    this.staticVars = staticVars;
+    this.contVars = contVars;
+    this.sourceOffset = sourceOffset;
+    return this;
+  }
+
+  $$clone() {
+    const clone = new CodeRef(this.name, undefined);
+    clone.$$call = this.$$call;
+    clone.codeObj = this.codeObj;
+    clone.staticCode = this.staticCode;
+    clone.outerCtx = this.outerCtx;
+    return clone;
+  }
+
+  $$toBool(ctx) {
+    return 1;
+  }
+
+  $$can(ctx, name) {
+    return 0;
+  }
+
+  $$istype(ctx, type) {
+    return 0;
+  }
+
+  getOuterCtx() {
+    return this.outerCtx || this.staticCode.outerCtx || null;
+  }
 };
 
 module.exports = CodeRef;

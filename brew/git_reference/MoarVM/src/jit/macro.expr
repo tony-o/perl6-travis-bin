@@ -1,0 +1,80 @@
+# -*-whitespace-*-
+
+(macro: ^getf (,object ,type ,field)
+   (load (addr ,object (&offsetof ,type ,field)) (&SIZEOF_MEMBER ,type ,field)))
+(macro: ^setf (,object ,type ,field ,value)
+    (store (addr ,object (&offsetof ,type ,field)) ,value (&SIZEOF_MEMBER ,type ,field)))
+
+(macro: ^cu_callsite (,a) (idx  (^getf (cu) MVMCompUnit body.callsites) ,a ptr_sz))
+
+(macro: ^frame () (^getf (tc) MVMThreadContext cur_frame))
+(macro: ^parg (,a) (idx (^getf (^frame) MVMFrame params.args) ,a reg_sz))
+
+(macro: ^params () (addr (^frame) (&offsetof MVMFrame params)))
+(macro: ^caller () (^getf (^frame) MVMFrame caller))
+
+# get spesh slot address
+(macro: ^spesh_slot_addr (,a)
+   (idx (^getf (^frame) MVMFrame effective_spesh_slots) ,a ptr_sz))
+(macro: ^spesh_slot_value (,a)
+    (load (^spesh_slot_addr ,a) ptr_sz))
+
+(macro: ^vmnull ()
+    (^getf
+          (^getf (tc) MVMThreadContext instance)
+          MVMInstance VMNull))
+
+(macro: ^stable (,a) (^getf ,a MVMObject st))
+
+(macro: ^hllconfig ()
+    (^getf (cu) MVMCompUnit body.hll_config))
+
+(macro: ^exit () (branch (label branch_exit)))
+
+(macro: ^p6obody (,a)
+   (let: (($replace (^getf ,a MVMP6opaque body.replaced)))
+         (if (nz $replace)
+              $replace
+              (addr ,a (&offsetof MVMP6opaque body)))))
+
+
+(macro: ^func (,a) (const (&CONST_PTR ,a) ptr_sz))
+(macro: ^indirect_cu_string (,cu ,a)
+    (let: (($str (load (idx (^getf ,cu  MVMCompUnit body.strings) ,a ptr_sz) ptr_sz)))
+    (if (nz $str) $str
+        (call (^func MVM_cu_string)
+              (arglist (carg (tc) ptr) (carg ,cu ptr) (carg ,a int))
+              ptr_sz))))
+
+(macro: ^cu_string (,a)
+    (^indirect_cu_string (cu) ,a))
+
+(macro: ^objflag (,cv) (const (&QUOTE ,cv) (&SIZEOF_MEMBER MVMObject header.flags)))
+
+(macro: ^write_barrier (,root ,obj)
+  (when (all (nz (and (^getf ,root MVMCollectable flags) (^objflag MVM_CF_SECOND_GEN)))
+             (nz ,obj)
+             (zr (and (^getf ,obj MVMCollectable flags) (^objflag MVM_CF_SECOND_GEN))))
+    (callv (^func &MVM_gc_write_barrier_hit)
+     (arglist (carg (tc) ptr)
+              (carg ,root ptr)))))
+
+(macro: ^store_write_barrier! (,root ,addr ,obj)
+  (dov
+    (store ,addr ,obj ptr_sz)
+    (^write_barrier ,root ,obj)))
+
+
+(macro: ^repr (,obj) (^getf (^stable ,obj) MVMSTable REPR))
+
+(macro: ^is_type_obj (,a)
+    (nz (and (^getf ,a MVMObject header.flags) (^objflag MVM_CF_TYPE_OBJECT))))
+(macro: ^is_conc_obj (,a)
+    (zr (and (^getf ,a MVMObject header.flags) (^objflag MVM_CF_TYPE_OBJECT))))
+
+(macro: ^stable_cont_func (,obj ,func)
+    (^getf
+          (^getf (^stable ,obj) MVMSTable container_spec)
+          MVMContainerSpec ,func))
+
+(macro: ^body (,a) (addr ,a (&offsetof MVMObjectStooge data)))

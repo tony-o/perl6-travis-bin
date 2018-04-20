@@ -1,182 +1,453 @@
 #include "moar.h"
 
-#ifndef _WIN32
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    typedef SOCKET Socket;
+    #define sa_family_t unsigned int
+#else
     #include "unistd.h"
+    #include <sys/socket.h>
+    #include <sys/un.h>
+
+    typedef int Socket;
+    #define closesocket close
 #endif
 
 #if defined(_MSC_VER)
 #define snprintf _snprintf
 #endif
 
+/* Assumed maximum packet size. If ever changing this to something beyond a
+ * 16-bit number, then make sure to change the receive offsets in the data
+ * structure below. */
+#define PACKET_SIZE 65535
+
+/* Error handling varies between POSIX and WinSock. */
+MVM_NO_RETURN static void throw_error(MVMThreadContext *tc, int r, char *operation) MVM_NO_RETURN_GCC;
+#ifdef _WIN32
+    #define MVM_IS_SOCKET_ERROR(x) ((x) == SOCKET_ERROR)
+    static void throw_error(MVMThreadContext *tc, int r, char *operation) {
+        int error = WSAGetLastError();
+        LPTSTR error_string = NULL;
+        if (FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+                NULL, error, 0, (LPTSTR)&error_string, 0, NULL) == 0) {
+            /* Couldn't get error string; throw with code. */
+            MVM_exception_throw_adhoc(tc, "Could not %s: error code %d", error);
+        }
+        MVM_exception_throw_adhoc(tc, "Could not %s: %s", operation, error_string);
+    }
+#else
+    #define MVM_IS_SOCKET_ERROR(x) ((x) < 0)
+    static void throw_error(MVMThreadContext *tc, int r, char *operation) {
+        MVM_exception_throw_adhoc(tc, "Could not %s: %s", operation, strerror(errno));
+    }
+#endif
+
  /* Data that we keep for a socket-based handle. */
 typedef struct {
-    /* Start with same fields as a sync stream, since we will re-use most
-     * of its logic. */
-    MVMIOSyncStreamData ss;
+    /* The socket handle (file descriptor on POSIX, SOCKET on Windows). */
+    Socket handle;
 
-    /* Details of next connection to accept; NULL if none. */
-    uv_stream_t *accept_server;
-    int          accept_status;
+    /* Buffer of the last received packet of data, and start/end pointers
+     * into the data. */
+    char *last_packet;
+    MVMuint16 last_packet_start;
+    MVMuint16 last_packet_end;
+
+    /* Did we reach EOF yet? */
+    MVMint32 eof;
+
+    /* ID for instrumentation. */
+    unsigned int interval_id;
 } MVMIOSyncSocketData;
 
-static MVMint64 do_close(MVMThreadContext *tc, MVMIOSyncSocketData *data) {
-    if (data->ss.handle) {
-         uv_close((uv_handle_t *)data->ss.handle, NULL);
-         data->ss.handle = NULL;
+/* Read a packet worth of data into the last packet buffer. */
+static void read_one_packet(MVMThreadContext *tc, MVMIOSyncSocketData *data) {
+    unsigned int interval_id = MVM_telemetry_interval_start(tc, "syncsocket.read_one_packet");
+    int r;
+    MVM_gc_mark_thread_blocked(tc);
+    data->last_packet = MVM_malloc(PACKET_SIZE);
+    r = recv(data->handle, data->last_packet, PACKET_SIZE, 0);
+    MVM_gc_mark_thread_unblocked(tc);
+    MVM_telemetry_interval_stop(tc, interval_id, "syncsocket.read_one_packet");
+    if (MVM_IS_SOCKET_ERROR(r) || r == 0) {
+        MVM_free(data->last_packet);
+        data->last_packet = NULL;
+        if (r != 0)
+            throw_error(tc, r, "receive data from socket");
     }
-    if (data->ss.ds) {
-        MVM_string_decodestream_destory(tc, data->ss.ds);
-        data->ss.ds = NULL;
+    else {
+        data->last_packet_start = 0;
+        data->last_packet_end = r;
+    }
+}
+
+MVMint64 socket_read_bytes(MVMThreadContext *tc, MVMOSHandle *h, char **buf, MVMint64 bytes) {
+    MVMIOSyncSocketData *data = (MVMIOSyncSocketData *)h->body.data;
+    char *use_last_packet = NULL;
+    MVMuint16 use_last_packet_start, use_last_packet_end;
+
+    /* If at EOF, nothing more to do. */
+    if (data->eof) {
+        *buf = NULL;
+        return 0;
+    }
+
+    /* See if there's anything in the packet buffer. */
+    if (data->last_packet) {
+        MVMuint16 last_remaining = data->last_packet_end - data->last_packet_start;
+        if (bytes <= last_remaining) {
+            /* There's enough, and it's sufficient for the request. Extract it
+             * and return, discarding the last packet buffer if we drain it. */
+            *buf = MVM_malloc(bytes);
+            memcpy(*buf, data->last_packet + data->last_packet_start, bytes);
+            if (bytes == last_remaining) {
+                MVM_free(data->last_packet);
+                data->last_packet = NULL;
+            }
+            else {
+                data->last_packet_start += bytes;
+            }
+            return bytes;
+        }
+        else {
+            /* Something, but not enough. Take the last packet for use, then
+             * we'll read another one. */
+            use_last_packet = data->last_packet;
+            use_last_packet_start = data->last_packet_start;
+            use_last_packet_end = data->last_packet_end;
+            data->last_packet = NULL;
+        }
+    }
+
+    /* If we get here, we need to read another packet. */
+    read_one_packet(tc, data);
+
+    /* Now assemble the result. */
+    if (data->last_packet && use_last_packet) {
+        /* Need to assemble it from two places. */
+        MVMuint32 last_available = use_last_packet_end - use_last_packet_start;
+        MVMuint32 available = last_available + data->last_packet_end;
+        if (bytes > available)
+            bytes = available;
+        *buf = MVM_malloc(bytes);
+        memcpy(*buf, use_last_packet + use_last_packet_start, last_available);
+        memcpy(*buf + last_available, data->last_packet, bytes - last_available);
+        if (bytes == available) {
+            /* We used all of the just-read packet. */
+            MVM_free(data->last_packet);
+            data->last_packet = NULL;
+        }
+        else {
+            /* Still something left in the just-read packet for next time. */
+            data->last_packet_start += bytes - last_available;
+        }
+    }
+    else if (data->last_packet) {
+        /* Only data from the just-read packet. */
+        if (bytes >= data->last_packet_end) {
+            /* We need all of it, so no copying needed, just hand it back. */
+            *buf = data->last_packet;
+            bytes = data->last_packet_end;
+            data->last_packet = NULL;
+        }
+        else {
+            /* Only need some of it. */
+            *buf = MVM_malloc(bytes);
+            memcpy(*buf, data->last_packet, bytes);
+            data->last_packet_start += bytes;
+        }
+    }
+    else if (use_last_packet) {
+        /* Nothing read this time, so at the end. Drain previous packet data
+         * and mark EOF. */
+        bytes = use_last_packet_end - use_last_packet_start;
+        *buf = MVM_malloc(bytes);
+        memcpy(*buf, use_last_packet + use_last_packet_start, bytes);
+        data->eof = 1;
+    }
+    else {
+        /* Nothing to hand back; at EOF. */
+        *buf = NULL;
+        bytes = 0;
+        data->eof = 1;
+    }
+
+    return bytes;
+}
+
+/* Checks if EOF has been reached on the incoming data. */
+MVMint64 socket_eof(MVMThreadContext *tc, MVMOSHandle *h) {
+    MVMIOSyncSocketData *data = (MVMIOSyncSocketData *)h->body.data;
+    return data->eof;
+}
+
+void socket_flush(MVMThreadContext *tc, MVMOSHandle *h, MVMint32 sync) {
+    /* A no-op for sockets; we don't buffer. */
+}
+
+void socket_truncate(MVMThreadContext *tc, MVMOSHandle *h, MVMint64 bytes) {
+    MVM_exception_throw_adhoc(tc, "Cannot truncate a socket");
+}
+
+/* Writes the specified bytes to the stream. */
+MVMint64 socket_write_bytes(MVMThreadContext *tc, MVMOSHandle *h, char *buf, MVMint64 bytes) {
+    MVMIOSyncSocketData *data = (MVMIOSyncSocketData *)h->body.data;
+    MVMint64 sent = 0;
+    unsigned int interval_id;
+
+    interval_id = MVM_telemetry_interval_start(tc, "syncsocket.write_bytes");
+    MVM_gc_mark_thread_blocked(tc);
+    while (bytes > 0) {
+        int r = send(data->handle, buf, (int)bytes, 0);
+        if (MVM_IS_SOCKET_ERROR(r)) {
+            MVM_gc_mark_thread_unblocked(tc);
+            MVM_telemetry_interval_stop(tc, interval_id, "syncsocket.write_bytes");
+            throw_error(tc, r, "send data to socket");
+        }
+        sent += r;
+        buf += r;
+        bytes -= r;
+    }
+    MVM_gc_mark_thread_unblocked(tc);
+    MVM_telemetry_interval_annotate(bytes, interval_id, "written this many bytes");
+    MVM_telemetry_interval_stop(tc, interval_id, "syncsocket.write_bytes");
+    return bytes;
+}
+
+static MVMint64 do_close(MVMThreadContext *tc, MVMIOSyncSocketData *data) {
+    if (data->handle) {
+        closesocket(data->handle);
+        data->handle = 0;
     }
     return 0;
 }
 static MVMint64 close_socket(MVMThreadContext *tc, MVMOSHandle *h) {
-    MVMIOSyncSocketData *data = (MVMIOSyncSocketData *)h->body.data;
-    return do_close(tc, data);
+    return do_close(tc, (MVMIOSyncSocketData *)h->body.data);
 }
 
 static void gc_free(MVMThreadContext *tc, MVMObject *h, void *d) {
     MVMIOSyncSocketData *data = (MVMIOSyncSocketData *)d;
     do_close(tc, data);
+    MVM_free(data);
 }
 
-/* Actually, it may return sockaddr_in6 as well; it's not a problem for us, because we just
- * pass is straight to uv, and the first thing it does is it looks at the address family,
- * but it's a thing to remember if someone feels like peeking inside the returned struct. */
+static size_t get_struct_size_for_family(sa_family_t family) {
+    switch (family) {
+        case AF_INET6:
+            return sizeof(struct sockaddr_in6);
+        case AF_INET:
+            return sizeof(struct sockaddr_in);
+#ifndef _WIN32
+        case AF_UNIX:
+            return sizeof(struct sockaddr_un);
+#endif
+        default:
+            return sizeof(struct sockaddr);
+    }
+}
+
+/* This function may return any type of sockaddr e.g. sockaddr_un, sockaddr_in or sockaddr_in6
+ * It shouldn't be a problem with general code as long as the port number is kept below the int16 limit: 65536
+ * After this it defines the family which may spawn non internet sockaddr's
+ * The family can be extracted by (port >> 16) & USHORT_MAX
+ *
+ * Currently supported families:
+ *
+ * AF_UNSPEC = 1
+ *   Unspecified, in most cases should be equal to AF_INET or AF_INET6
+ *
+ * AF_UNIX = 1
+ *   Unix domain socket, will spawn a sockaddr_un which will use the given host as path
+ *   e.g: MVM_io_resolve_host_name(tc, "/run/moarvm.sock", 1 << 16)
+ *   will spawn an unix domain socket on /run/moarvm.sock
+ *
+ * AF_INET = 2
+ *   IPv4 socket
+ *
+ * AF_INET6 = 10
+ *   IPv6 socket
+ */
 struct sockaddr * MVM_io_resolve_host_name(MVMThreadContext *tc, MVMString *host, MVMint64 port) {
     char *host_cstr = MVM_string_utf8_encode_C_string(tc, host);
     struct sockaddr *dest;
-    struct addrinfo *result;
     int error;
+    struct addrinfo *result;
     char port_cstr[8];
+    unsigned short family = (port >> 16) & USHRT_MAX;
+    struct addrinfo hints;
+
+#ifndef _WIN32
+    /* AF_UNIX = 1 */
+    if (family == AF_UNIX) {
+        struct sockaddr_un *result_un = MVM_malloc(sizeof(struct sockaddr_un));
+
+        if (strlen(host_cstr) > 107) {
+            MVM_free(result_un);
+            MVM_free(host_cstr);
+            MVM_exception_throw_adhoc(tc, "Socket path can only be maximal 107 characters long");
+        }
+
+        result_un->sun_family = AF_UNIX;
+        strcpy(result_un->sun_path, host_cstr);
+        MVM_free(host_cstr);
+
+        return (struct sockaddr *)result_un;
+    }
+#endif
+
+    hints.ai_family = family;
+    hints.ai_socktype = 0;
+    hints.ai_flags = AI_PASSIVE;
+    hints.ai_protocol = 0;
+    hints.ai_addrlen = 0;
+    hints.ai_addr = NULL;
+    hints.ai_canonname = NULL;
+    hints.ai_next = NULL;
+
     snprintf(port_cstr, 8, "%d", (int)port);
 
-    error = getaddrinfo(host_cstr, port_cstr, NULL, &result);
-    MVM_free(host_cstr);
+    error = getaddrinfo(host_cstr, port_cstr, &hints, &result);
     if (error == 0) {
-        if (result->ai_addr->sa_family == AF_INET6) {
-            dest = MVM_malloc(sizeof(struct sockaddr_in6));
-            memcpy(dest, result->ai_addr, sizeof(struct sockaddr_in6));
-        } else {
-            dest = MVM_malloc(sizeof(struct sockaddr));
-            memcpy(dest, result->ai_addr, sizeof(struct sockaddr));
-        }
+        size_t size = get_struct_size_for_family(result->ai_addr->sa_family);
+        MVM_free(host_cstr);
+        dest = MVM_malloc(size);
+        memcpy(dest, result->ai_addr, size);
     }
     else {
-        MVM_exception_throw_adhoc(tc, "Failed to resolve host name");
+        char *waste[] = { host_cstr, NULL };
+        MVM_exception_throw_adhoc_free(tc, waste, "Failed to resolve host name '%s' with family %d. Error: '%s'",
+                                       host_cstr, family, gai_strerror(error));
     }
     freeaddrinfo(result);
 
     return dest;
 }
 
-static void on_connect(uv_connect_t* req, int status) {
-    uv_unref((uv_handle_t *)req->handle);
-    if (status < 0) {
-        MVMThreadContext *tc = ((MVMIOSyncSocketData *)req->data)->ss.cur_tc;
-        MVM_free(req);
-        MVM_exception_throw_adhoc(tc, "Failed to connect: %s", uv_strerror(status));
-    }
-}
+/* Establishes a connection. */
 static void socket_connect(MVMThreadContext *tc, MVMOSHandle *h, MVMString *host, MVMint64 port) {
     MVMIOSyncSocketData *data = (MVMIOSyncSocketData *)h->body.data;
-    if (!data->ss.handle) {
-        struct sockaddr *dest    = MVM_io_resolve_host_name(tc, host, port);
-        uv_tcp_t        *socket  = MVM_malloc(sizeof(uv_tcp_t));
-        uv_connect_t    *connect = MVM_malloc(sizeof(uv_connect_t));
+    unsigned int interval_id;
+
+    interval_id = MVM_telemetry_interval_start(tc, "syncsocket connect");
+    if (!data->handle) {
+        struct sockaddr *dest = MVM_io_resolve_host_name(tc, host, port);
         int r;
 
-        data->ss.cur_tc = tc;
-        connect->data   = data;
-        if ((r = uv_tcp_init(tc->loop, socket)) < 0 ||
-                (r = uv_tcp_connect(connect, socket, dest, on_connect)) < 0) {
-            MVM_free(socket);
-            MVM_free(connect);
+        Socket s = socket(dest->sa_family , SOCK_STREAM , 0);
+        if (MVM_IS_SOCKET_ERROR(s)) {
             MVM_free(dest);
-            MVM_exception_throw_adhoc(tc, "Failed to connect: %s", uv_strerror(r));
+            MVM_telemetry_interval_stop(tc, interval_id, "syncsocket connect");
+            throw_error(tc, s, "create socket");
         }
-        uv_ref((uv_handle_t *)socket);
-        uv_run(tc->loop, UV_RUN_DEFAULT);
 
-        data->ss.handle = (uv_stream_t *)socket;
-
-        MVM_free(connect);
+        MVM_gc_mark_thread_blocked(tc);
+        r = connect(s, dest, (socklen_t)get_struct_size_for_family(dest->sa_family));
+        MVM_gc_mark_thread_unblocked(tc);
         MVM_free(dest);
+        if (MVM_IS_SOCKET_ERROR(r)) {
+            MVM_telemetry_interval_stop(tc, interval_id, "syncsocket connect");
+            throw_error(tc, s, "connect socket");
+        }
+
+        data->handle = s;
     }
     else {
+        MVM_telemetry_interval_stop(tc, interval_id, "syncsocket didn't connect");
         MVM_exception_throw_adhoc(tc, "Socket is already bound or connected");
     }
 }
 
-static void on_connection(uv_stream_t *server, int status) {
-    /* Stash data for a later accept call (safe as we specify a queue of just
-     * one connection). Decrement reference count also. */
-    MVMIOSyncSocketData *data = (MVMIOSyncSocketData *)server->data;
-    data->accept_server = server;
-    data->accept_status = status;
-    uv_unref((uv_handle_t *)server);
-}
 static void socket_bind(MVMThreadContext *tc, MVMOSHandle *h, MVMString *host, MVMint64 port, MVMint32 backlog) {
     MVMIOSyncSocketData *data = (MVMIOSyncSocketData *)h->body.data;
-    if (!data->ss.handle) {
-        struct sockaddr *dest    = MVM_io_resolve_host_name(tc, host, port);
-        uv_tcp_t        *socket  = MVM_malloc(sizeof(uv_tcp_t));
+    if (!data->handle) {
+        struct sockaddr *dest = MVM_io_resolve_host_name(tc, host, port);
         int r;
 
-        if ((r = uv_tcp_init(tc->loop, socket)) != 0 ||
-                (r = uv_tcp_bind(socket, dest, 0)) != 0) {
-            MVM_free(socket);
+        Socket s = socket(dest->sa_family , SOCK_STREAM , 0);
+        if (MVM_IS_SOCKET_ERROR(s)) {
             MVM_free(dest);
-            MVM_exception_throw_adhoc(tc, "Failed to bind: %s", uv_strerror(r));
+            throw_error(tc, s, "create socket");
         }
+
+        /* On POSIX, we set the SO_REUSEADDR option, which allows re-use of
+         * a port in TIME_WAIT state (modulo many hair details). Oringinally,
+         * MoarVM used libuv, which does this automatically on non-Windows.
+         * We have tests with bring up a server, then take it down, and then
+         * bring another up on the same port, and we get test failures due
+         * to racing to re-use the port without this. */
+#ifndef _WIN32
+        {
+            int one = 1;
+            setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        }
+#endif
+
+        r = bind(s, dest, (socklen_t)get_struct_size_for_family(dest->sa_family));
         MVM_free(dest);
+        if (MVM_IS_SOCKET_ERROR(r))
+            throw_error(tc, s, "bind socket");
 
-        /* Start listening, but unref the socket so it won't get in the way of
-         * other things we want to do on this event loop. */
-        socket->data = data;
-        if ((r = uv_listen((uv_stream_t *)socket, backlog, on_connection)) != 0) {
-            MVM_free(socket);
-            MVM_exception_throw_adhoc(tc, "Failed to listen: %s", uv_strerror(r));
-        }
-        uv_unref((uv_handle_t *)socket);
+        r = listen(s, (int)backlog);
+        if (MVM_IS_SOCKET_ERROR(r))
+            throw_error(tc, s, "start listening on socket");
 
-        data->ss.handle = (uv_stream_t *)socket;
+        data->handle = s;
     }
     else {
         MVM_exception_throw_adhoc(tc, "Socket is already bound or connected");
     }
+}
+
+MVMint64 socket_getport(MVMThreadContext *tc, MVMOSHandle *h) {
+    MVMIOSyncSocketData *data = (MVMIOSyncSocketData *)h->body.data;
+
+    struct sockaddr_storage name;
+    int error;
+    socklen_t len = sizeof(struct sockaddr_storage);
+    MVMint64 port = 0;
+
+    error = getsockname(data->handle, (struct sockaddr *) &name, &len);
+
+    if (error != 0)
+        MVM_exception_throw_adhoc(tc, "Failed to getsockname: %s", strerror(errno));
+
+    switch (name.ss_family) {
+        case AF_INET6:
+            port = ntohs((*( struct sockaddr_in6 *) &name).sin6_port);
+            break;
+        case AF_INET:
+            port = ntohs((*( struct sockaddr_in *) &name).sin_port);
+            break;
+    }
+
+    return port;
 }
 
 static MVMObject * socket_accept(MVMThreadContext *tc, MVMOSHandle *h);
 
 /* IO ops table, populated with functions. */
 static const MVMIOClosable     closable      = { close_socket };
-static const MVMIOEncodable    encodable     = { MVM_io_syncstream_set_encoding };
-static const MVMIOSyncReadable sync_readable = { MVM_io_syncstream_set_separator,
-                                                 MVM_io_syncstream_read_line,
-                                                 MVM_io_syncstream_slurp,
-                                                 MVM_io_syncstream_read_chars,
-                                                 MVM_io_syncstream_read_bytes,
-                                                 MVM_io_syncstream_eof };
-static const MVMIOSyncWritable sync_writable = { MVM_io_syncstream_write_str,
-                                                 MVM_io_syncstream_write_bytes,
-                                                 MVM_io_syncstream_flush,
-                                                 MVM_io_syncstream_truncate };
-static const MVMIOSeekable          seekable = { MVM_io_syncstream_seek,
-                                                 MVM_io_syncstream_tell };
+static const MVMIOSyncReadable sync_readable = { socket_read_bytes,
+                                                 socket_eof };
+static const MVMIOSyncWritable sync_writable = { socket_write_bytes,
+                                                 socket_flush,
+                                                 socket_truncate };
 static const MVMIOSockety            sockety = { socket_connect,
                                                  socket_bind,
-                                                 socket_accept };
+                                                 socket_accept,
+                                                 socket_getport };
 static const MVMIOOps op_table = {
     &closable,
-    &encodable,
     &sync_readable,
     &sync_writable,
     NULL,
     NULL,
     NULL,
-    &seekable,
+    NULL,
     &sockety,
+    NULL,
     NULL,
     NULL,
     NULL,
@@ -186,50 +457,31 @@ static const MVMIOOps op_table = {
 
 static MVMObject * socket_accept(MVMThreadContext *tc, MVMOSHandle *h) {
     MVMIOSyncSocketData *data = (MVMIOSyncSocketData *)h->body.data;
+    Socket s;
 
-    while (!data->accept_server) {
-        if (tc->loop != data->ss.handle->loop) {
-            MVM_exception_throw_adhoc(tc, "Tried to accept() on a socket from outside its originating thread");
-        }
-        uv_ref((uv_handle_t *)data->ss.handle);
-        uv_run(tc->loop, UV_RUN_DEFAULT);
-    }
-
-    /* Check the accept worked out. */
-    if (data->accept_status < 0) {
-        MVM_exception_throw_adhoc(tc, "Failed to listen: unknown error");
+    unsigned int interval_id = MVM_telemetry_interval_start(tc, "syncsocket accept");
+    MVM_gc_mark_thread_blocked(tc);
+    s = accept(data->handle, NULL, NULL);
+    MVM_gc_mark_thread_unblocked(tc);
+    if (MVM_IS_SOCKET_ERROR(s)) {
+        MVM_telemetry_interval_stop(tc, interval_id, "syncsocket accept failed");
+        throw_error(tc, s, "accept socket connection");
     }
     else {
-        uv_tcp_t *client    = MVM_malloc(sizeof(uv_tcp_t));
-        uv_stream_t *server = data->accept_server;
-        int r;
-        uv_tcp_init(tc->loop, client);
-        data->accept_server = NULL;
-        if ((r = uv_accept(server, (uv_stream_t *)client)) == 0) {
-            MVMOSHandle         * const result = (MVMOSHandle *)MVM_repr_alloc_init(tc, tc->instance->boot_types.BOOTIO);
-            MVMIOSyncSocketData * const data   = MVM_calloc(1, sizeof(MVMIOSyncSocketData));
-            data->ss.handle   = (uv_stream_t *)client;
-            data->ss.encoding = MVM_encoding_type_utf8;
-            MVM_string_decode_stream_sep_default(tc, &(data->ss.sep_spec));
-            result->body.ops  = &op_table;
-            result->body.data = data;
-            return (MVMObject *)result;
-        }
-        else {
-            uv_close((uv_handle_t*)client, NULL);
-            MVM_free(client);
-            MVM_exception_throw_adhoc(tc, "Failed to accept: %s", uv_strerror(r));
-        }
+        MVMOSHandle * const result = (MVMOSHandle *)MVM_repr_alloc_init(tc,
+                tc->instance->boot_types.BOOTIO);
+        MVMIOSyncSocketData * const data = MVM_calloc(1, sizeof(MVMIOSyncSocketData));
+        data->handle = s;
+        result->body.ops  = &op_table;
+        result->body.data = data;
+        MVM_telemetry_interval_stop(tc, interval_id, "syncsocket accept succeeded");
+        return (MVMObject *)result;
     }
 }
 
 MVMObject * MVM_io_socket_create(MVMThreadContext *tc, MVMint64 listen) {
     MVMOSHandle         * const result = (MVMOSHandle *)MVM_repr_alloc_init(tc, tc->instance->boot_types.BOOTIO);
     MVMIOSyncSocketData * const data   = MVM_calloc(1, sizeof(MVMIOSyncSocketData));
-    data->ss.handle   = NULL;
-    data->ss.encoding = MVM_encoding_type_utf8;
-    data->ss.translate_newlines = 0;
-    MVM_string_decode_stream_sep_default(tc, &(data->ss.sep_spec));
     result->body.ops  = &op_table;
     result->body.data = data;
     return (MVMObject *)result;

@@ -4,7 +4,7 @@
 #endif
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps P6int_this_repr;
 
 static void mk_storage_spec(MVMThreadContext *tc, MVMuint16 bits, MVMuint16 is_unsigned, MVMStorageSpec *spec) {
     /* create storage spec */
@@ -25,7 +25,7 @@ static void mk_storage_spec(MVMThreadContext *tc, MVMuint16 bits, MVMuint16 is_u
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st  = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st  = MVM_gc_allocate_stable(tc, &P6int_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -144,11 +144,14 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
 #else
                 case MVM_P6INT_C_TYPE_BOOL:     repr_data->bits = 8 * sizeof(char);      break;
 #endif
+                case MVM_P6INT_C_TYPE_ATOMIC:   repr_data->bits = 8 * sizeof(AO_t);      break;
             }
 
             if (repr_data->bits !=  1 && repr_data->bits !=  2 && repr_data->bits !=  4 && repr_data->bits != 8
              && repr_data->bits != 16 && repr_data->bits != 32 && repr_data->bits != 64)
                 MVM_exception_throw_adhoc(tc, "MVMP6int: Unsupported int size (%dbit)", repr_data->bits);
+        } else {
+            repr_data->bits = default_storage_spec.bits;
         }
 
         if (!MVM_is_null(tc, is_unsigned_o)) {
@@ -167,8 +170,8 @@ static void deserialize_stable_size(MVMThreadContext *tc, MVMSTable *st, MVMSeri
 /* Serializes the REPR data. */
 static void serialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerializationWriter *writer) {
     MVMP6intREPRData *repr_data = (MVMP6intREPRData *)st->REPR_data;
-    MVM_serialization_write_varint(tc, writer, repr_data->bits);
-    MVM_serialization_write_varint(tc, writer, repr_data->is_unsigned);
+    MVM_serialization_write_int(tc, writer, repr_data->bits);
+    MVM_serialization_write_int(tc, writer, repr_data->is_unsigned);
 }
 
 /* Deserializes representation data. */
@@ -176,8 +179,8 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
     MVMP6intREPRData *repr_data = (MVMP6intREPRData *)MVM_malloc(sizeof(MVMP6intREPRData));
 
 
-    repr_data->bits        = MVM_serialization_read_varint(tc, reader);
-    repr_data->is_unsigned = MVM_serialization_read_varint(tc, reader);
+    repr_data->bits        = MVM_serialization_read_int(tc, reader);
+    repr_data->is_unsigned = MVM_serialization_read_int(tc, reader);
 
     if (repr_data->bits !=  1 && repr_data->bits !=  2 && repr_data->bits !=  4 && repr_data->bits != 8
      && repr_data->bits != 16 && repr_data->bits != 32 && repr_data->bits != 64)
@@ -189,19 +192,19 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
 }
 
 static void deserialize(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMSerializationReader *reader) {
-    set_int(tc, st, root, data, MVM_serialization_read_varint(tc, reader));
+    set_int(tc, st, root, data, MVM_serialization_read_int(tc, reader));
 }
 
 static void serialize(MVMThreadContext *tc, MVMSTable *st, void *data, MVMSerializationWriter *writer) {
-    MVM_serialization_write_varint(tc, writer, get_int(tc, st, NULL, data));
+    MVM_serialization_write_int(tc, writer, get_int(tc, st, NULL, data));
 }
 
 /* Initializes the representation. */
 const MVMREPROps * MVMP6int_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &P6int_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps P6int_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     NULL, /* initialize */
@@ -237,5 +240,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "P6int", /* name */
     MVM_REPR_ID_P6int,
-    0, /* refs_frames */
+    NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

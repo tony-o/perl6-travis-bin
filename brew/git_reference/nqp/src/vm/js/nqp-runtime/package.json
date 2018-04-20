@@ -3,27 +3,38 @@
   "version": "0.1.0",
   "description": "the runtime for the js backend for nqp",
   "bugs": {
-    "url:": "https://github.com/pmurias/nqp-js/issues",
+    "url:": "https://github.com/perl6/nqp/issues",
     "email": "pawelmurias@gmail.com"
   },
-  "licenses": [
-    {
-      "type": "Artistic 2",
-      "url": "http://opensource.org/licenses/Artistic-2.0"
-    }
-  ],
-  "repository": "http://github.com/pmurias/nqp-js/",
+  "license": "Artistic-2.0",
+  "repository": "http://github.com/perl6/nqp/",
   "main": "runtime.js",
   "dependencies": {
-    "bignum": "*",
-    "fs-ext": "pmurias/node-fs-ext#nan_2",
-    "node-int64": "*",
-    "nqp-js-io": "pmurias/nqp-js-io",
-    "sha1": "*",
-    "sleep": "*",
-    "xorshift": "*",
-    "ffi": "*",
-    "ref": "*",
-    "es6-map": "*"
+    "bignum": "^0.12.5",
+    "bignum-browserify": "pmurias/bigint-browserify",
+    "char-props": "0.1.5",
+    "escape-string-regexp": "^1.0.5",
+    "ffi": "^2.2.0",
+    "fibers": "^2.0.0",
+    "fold-case": "^1.0.0",
+    "fs-ext": "^0.6.0",
+    "mkdirp": "^0.5.1",
+    "node-int64": "^0.4.0",
+    "nqp-js-ucd": "0.0.1",
+    "nqp-unicode-data": "^2.0.0",
+    "qrusage": "^1.4.0",
+    "ref": "^1.3.4",
+    "ref-struct": "^1.1.0",
+    "ref-union": "^1.0.1",
+    "sha1": "^1.1.1",
+    "shortid": "2.2.8",
+    "sleep": "^5.1.1",
+    "source-map": "0.5.7",
+    "source-map-resolve": "^0.5.1",
+    "stack-trace": "0.0.10",
+    "unicharadata": "*",
+    "unicode-collation-algorithm": "0.0.2",
+    "xorshift": "^1.1.0",
+    "xregexp": "^3.2.0"
   }
 }

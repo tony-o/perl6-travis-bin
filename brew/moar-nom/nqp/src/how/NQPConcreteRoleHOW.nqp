@@ -58,7 +58,7 @@ knowhow NQPConcreteRoleHOW {
     # to go with it, and return that.
     method new_type(:$name = '<anon>', :$instance_of!) {
         my $metarole := self.new(:name($name), :instance_of($instance_of));
-        nqp::newtype($metarole, 'Uninstantiable');
+        nqp::setdebugtypename(nqp::newtype($metarole, 'Uninstantiable'), $name);
     }
 
     method add_method($obj, $name, $code_obj) {
@@ -123,7 +123,7 @@ knowhow NQPConcreteRoleHOW {
     ## Introspecty
     ##
 
-    method methods($obj, :$local) {
+    method methods($obj, :$local, :$all) {
         my @meths;
         for %!methods {
             nqp::push(@meths, nqp::iterval($_));

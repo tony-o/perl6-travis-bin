@@ -137,7 +137,7 @@ class NQP::Optimizer {
         self.visit_children($block);
 
         # Methods with late-bound names poison lowering.
-        if nqp::substr($block.name, 0, 12) eq '!!LATENAME!!' {
+        if nqp::eqat($block.name, '!!LATENAME!!', 0) {
             self.poison_lowering();
         }
 
@@ -167,6 +167,9 @@ class NQP::Optimizer {
 
     my %opt_n_i := nqp::hash('add', 1, 'sub', 1, 'mul', 1, 'mod', 1, 'neg', 1, 'abs', 1, 'iseq', 1, 'isne', 1,
                              'islt', 1, 'isle', 1, 'isgt', 1, 'isge', 1, 'cmp', 1);
+
+    my %op_poisons_lowering := nqp::hash('ctx', 1, 'curlexpad', 1, 'takedispatcher', 1, 'getlexouter', 1);
+
     method visit_op($op) {
         # Handle op needs special handling.
         my str $opname := $op.op;
@@ -245,7 +248,7 @@ class NQP::Optimizer {
         }
 
         # nqp::ctx and nqp::curlexpad capture the current context and so poisons lowering
-        if $opname eq 'ctx' || $opname eq 'curlexpad' {
+        if %op_poisons_lowering{$opname} {
             self.poison_lowering();
         }
 
@@ -358,7 +361,7 @@ class NQP::Optimizer {
     method visit_children($node, :$skip_selectors) {
         my int $i := 0;
         unless nqp::isstr($node) || !nqp::defined($node) {
-            while $i < +@($node) {
+            while $i < nqp::elems(@($node)) {
                 unless $skip_selectors && $i % 2 {
                     my $visit := $node[$i];
                     if nqp::istype($visit, QAST::Op) {
@@ -392,7 +395,7 @@ class NQP::Optimizer {
                                     }
                                 }
 
-                                # If we reach here, unknown. Poision.
+                                # If we reach here, unknown. Poison.
                                 self.poison_lowering();
                                 return $node;
                             }),

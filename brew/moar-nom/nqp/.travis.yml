@@ -1,8 +1,7 @@
-language: "perl"
-perl:
-    - "5.10"
+language: "java"
     
 sudo: false
+dist: trusty
 
 install: "echo"
 
@@ -16,7 +15,7 @@ branches:
 notifications:
   irc:
     channels:
-    - "irc.freenode.net#perl6"
+    - "irc.freenode.net#perl6-dev"
     on_success: change
     on_failure: always
     template:
@@ -28,3 +27,8 @@ env:
   matrix:
     - NQP_OPTIONS="--gen-moar"
     - NQP_OPTIONS="--gen-moar=master"
+    - NQP_OPTIONS="--backends=jvm"
+
+#matrix:
+#  allow_failures:
+#    - env: NQP_OPTIONS="--backends=jvm"

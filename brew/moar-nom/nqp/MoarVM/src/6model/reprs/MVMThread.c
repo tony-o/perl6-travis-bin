@@ -1,12 +1,12 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps MVMThread_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st  = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st  = MVM_gc_allocate_stable(tc, &MVMThread_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -27,6 +27,12 @@ static void gc_mark(MVMThreadContext *tc, MVMSTable *st, void *data, MVMGCWorkli
     MVMThreadBody *body = (MVMThreadBody *)data;
     MVM_gc_worklist_add(tc, worklist, &body->invokee);
     MVM_gc_worklist_add(tc, worklist, &body->next);
+
+    /* Unstarted threads are not yet in the running threads list, so their TC
+     * needs marking here. The rest of the time, it's marked due to being in
+     * the running threads list. */
+    if (MVM_load(&(body->stage)) == MVM_thread_stage_unstarted)
+        MVM_gc_root_add_tc_roots_to_worklist(body->tc, worklist, NULL);
 }
 
 /* Called by the VM in order to free memory associated with this object. */
@@ -58,10 +64,10 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info) {
 
 /* Initializes the representation. */
 const MVMREPROps * MVMThread_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &MVMThread_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps MVMThread_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     NULL, /* initialize */
@@ -87,5 +93,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "VMThread", /* name */
     MVM_REPR_ID_MVMThread,
-    0, /* refs_frames */
+    NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

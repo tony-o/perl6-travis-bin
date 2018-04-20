@@ -1,14 +1,16 @@
 package org.perl6.nqp.runtime;
 
+import com.sun.management.OperatingSystemMXBean;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.lang.management.ManagementFactory;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.ProcessBuilder.Redirect;
 import java.lang.Thread;
 import java.math.BigDecimal;
@@ -31,6 +33,7 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.text.Normalizer;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -89,17 +92,20 @@ import org.perl6.nqp.sixmodel.reprs.ConditionVariable;
 import org.perl6.nqp.sixmodel.reprs.ConditionVariableInstance;
 import org.perl6.nqp.sixmodel.reprs.ContextRef;
 import org.perl6.nqp.sixmodel.reprs.ContextRefInstance;
+import org.perl6.nqp.sixmodel.reprs.DecoderInstance;
 import org.perl6.nqp.sixmodel.reprs.IOHandleInstance;
 import org.perl6.nqp.sixmodel.reprs.JavaObjectWrapper;
-import org.perl6.nqp.sixmodel.reprs.LexoticInstance;
 import org.perl6.nqp.sixmodel.reprs.MultiCacheInstance;
 import org.perl6.nqp.sixmodel.reprs.NFA;
 import org.perl6.nqp.sixmodel.reprs.NFAInstance;
 import org.perl6.nqp.sixmodel.reprs.NFAStateInfo;
+import org.perl6.nqp.sixmodel.reprs.NativeCallBody;
+import org.perl6.nqp.sixmodel.reprs.NativeCallInstance;
 import org.perl6.nqp.sixmodel.reprs.NativeRefInstanceAttribute;
 import org.perl6.nqp.sixmodel.reprs.NativeRefInstanceIntLex;
 import org.perl6.nqp.sixmodel.reprs.NativeRefInstanceNumLex;
 import org.perl6.nqp.sixmodel.reprs.NativeRefInstancePositional;
+import org.perl6.nqp.sixmodel.reprs.NativeRefInstanceMultidim;
 import org.perl6.nqp.sixmodel.reprs.NativeRefInstanceStrLex;
 import org.perl6.nqp.sixmodel.reprs.NativeRefREPRData;
 import org.perl6.nqp.sixmodel.reprs.P6bigintInstance;
@@ -107,6 +113,7 @@ import org.perl6.nqp.sixmodel.reprs.P6int;
 import org.perl6.nqp.sixmodel.reprs.P6str;
 import org.perl6.nqp.sixmodel.reprs.P6num;
 import org.perl6.nqp.sixmodel.reprs.P6OpaqueREPRData;
+import org.perl6.nqp.sixmodel.reprs.P6OpaqueBaseInstance;
 import org.perl6.nqp.sixmodel.reprs.ReentrantMutexInstance;
 import org.perl6.nqp.sixmodel.reprs.SCRefInstance;
 import org.perl6.nqp.sixmodel.reprs.SemaphoreInstance;
@@ -160,6 +167,8 @@ public final class Ops {
     public static final int STAT_PLATFORM_DEVTYPE   = -5;
     public static final int STAT_PLATFORM_BLOCKSIZE = -6;
     public static final int STAT_PLATFORM_BLOCKS    = -7;
+
+    public static final int MAX_GRAPHEMES           = 2147483647;
 
     public static long stat(String filename, long status) {
         return stat_internal(filename, status);
@@ -739,6 +748,21 @@ public final class Ops {
         }
     }
 
+    public static String readcharsfh(SixModelObject obj, long chars, ThreadContext tc) {
+        if (obj instanceof IOHandleInstance) {
+            IOHandleInstance h = (IOHandleInstance)obj;
+            if (h.handle instanceof IIOSyncReadable)
+                return ((IIOSyncReadable)h.handle).readchars(tc, (int)chars);
+            else
+                throw ExceptionHandling.dieInternal(tc,
+                    "This handle does not support readchars");
+        }
+        else {
+            throw ExceptionHandling.dieInternal(tc,
+                "readcharsfh requires an object with the IOHandle REPR");
+        }
+    }
+
     public static String readlinefh(SixModelObject obj, ThreadContext tc) {
         if (obj instanceof IOHandleInstance) {
             IOHandleInstance h = (IOHandleInstance)obj;
@@ -776,21 +800,6 @@ public final class Ops {
         else {
             throw ExceptionHandling.dieInternal(tc,
                 "readallfh requires an object with the IOHandle REPR");
-        }
-    }
-
-    public static String getcfh(SixModelObject obj, ThreadContext tc) {
-        if (obj instanceof IOHandleInstance) {
-            IOHandleInstance h = (IOHandleInstance)obj;
-            if (h.handle instanceof IIOSyncReadable)
-                return ((IIOSyncReadable)h.handle).getc(tc);
-            else
-                throw ExceptionHandling.dieInternal(tc,
-                    "This handle does not support getc");
-        }
-        else {
-            throw ExceptionHandling.dieInternal(tc,
-                "getcfh requires an object with the IOHandle REPR");
         }
     }
 
@@ -894,6 +903,16 @@ public final class Ops {
         return -1;
     }
 
+    public static SixModelObject setbuffersizefh(SixModelObject obj, long size, ThreadContext tc) {
+        if (obj instanceof IOHandleInstance) {
+            // TODO: Implement this
+        }
+        else {
+            die_s("setbuffersizefh requires an object with the IOHandle REPR", tc);
+        }
+        return obj;
+    }
+
     public static long isttyfh(SixModelObject obj, ThreadContext tc) {
         if (obj instanceof IOHandleInstance) {
             IOHandleInstance h = (IOHandleInstance)obj;
@@ -994,7 +1013,7 @@ public final class Ops {
         Path before_o = Paths.get(before);
         Path after_o = Paths.get(after);
         try {
-            Files.move(before_o, after_o);
+            Files.move(before_o, after_o, StandardCopyOption.REPLACE_EXISTING);
         }
         catch (Exception e) {
             die_s(IOExceptionMessages.message(e), tc);
@@ -1211,7 +1230,7 @@ public final class Ops {
                 IOHandleInstance ioh = (IOHandleInstance)obj;
                 if (ioh.dirstrm != null && ioh.diri != null) {
                     if (ioh.diri.hasNext()) {
-                        return ioh.diri.next().toString();
+                        return ioh.diri.next().getFileName().toString();
                     } else {
                         return null;
                     }
@@ -1757,9 +1776,9 @@ public final class Ops {
         case CallSiteDescriptor.ARG_INT:
             return (long)args[idx];
         case CallSiteDescriptor.ARG_NUM:
-            return (long)(double)args[idx];
+            throw ExceptionHandling.dieInternal(cf.tc, "Expected native int argument, but got num");
         case CallSiteDescriptor.ARG_STR:
-            return coerce_s2i((String)args[idx]);
+            throw ExceptionHandling.dieInternal(cf.tc, "Expected native int argument, but got str");
         case CallSiteDescriptor.ARG_OBJ:
             return decont(((SixModelObject)args[idx]), cf.tc).get_int(cf.tc);
         default:
@@ -1771,9 +1790,9 @@ public final class Ops {
         case CallSiteDescriptor.ARG_NUM:
             return (double)args[idx];
         case CallSiteDescriptor.ARG_INT:
-            return (double)(long)args[idx];
+            throw ExceptionHandling.dieInternal(cf.tc, "Expected native num argument, but got int");
         case CallSiteDescriptor.ARG_STR:
-            return coerce_s2n((String)args[idx]);
+            throw ExceptionHandling.dieInternal(cf.tc, "Expected native num argument, but got str");
         case CallSiteDescriptor.ARG_OBJ:
             return decont(((SixModelObject)args[idx]), cf.tc).get_num(cf.tc);
         default:
@@ -1785,9 +1804,9 @@ public final class Ops {
         case CallSiteDescriptor.ARG_STR:
             return (String)args[idx];
         case CallSiteDescriptor.ARG_INT:
-            return coerce_i2s((long)args[idx]);
+            throw ExceptionHandling.dieInternal(cf.tc, "Expected native str argument, but got int");
         case CallSiteDescriptor.ARG_NUM:
-            return coerce_n2s((double)args[idx]);
+            throw ExceptionHandling.dieInternal(cf.tc, "Expected native str argument, but got num");
         case CallSiteDescriptor.ARG_OBJ:
             return decont(((SixModelObject)args[idx]), cf.tc).get_str(cf.tc);
         default:
@@ -1896,9 +1915,9 @@ public final class Ops {
             case CallSiteDescriptor.ARG_INT:
                 return (long)args[lookup >> 3];
             case CallSiteDescriptor.ARG_NUM:
-                return (long)(double)args[lookup >> 3];
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native int argument, but got num");
             case CallSiteDescriptor.ARG_STR:
-                return coerce_s2i((String)args[lookup >> 3]);
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native int argument, but got str");
             case CallSiteDescriptor.ARG_OBJ:
                 return ((SixModelObject)args[lookup >> 3]).get_int(cf.tc);
             default:
@@ -1917,9 +1936,9 @@ public final class Ops {
             case CallSiteDescriptor.ARG_NUM:
                 return (double)args[lookup >> 3];
             case CallSiteDescriptor.ARG_INT:
-                return (double)(long)args[lookup >> 3];
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native num argument, but got int");
             case CallSiteDescriptor.ARG_STR:
-                return coerce_s2n((String)args[lookup >> 3]);
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native num argument, but got str");
             case CallSiteDescriptor.ARG_OBJ:
                 return ((SixModelObject)args[lookup >> 3]).get_num(cf.tc);
             default:
@@ -1938,9 +1957,9 @@ public final class Ops {
             case CallSiteDescriptor.ARG_STR:
                 return (String)args[lookup >> 3];
             case CallSiteDescriptor.ARG_INT:
-                return coerce_i2s((long)args[lookup >> 3]);
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native str argument, but got int");
             case CallSiteDescriptor.ARG_NUM:
-                return coerce_n2s((double)args[lookup >> 3]);
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native str argument, but got num");
             case CallSiteDescriptor.ARG_OBJ:
                 return ((SixModelObject)args[lookup >> 3]).get_str(cf.tc);
             default:
@@ -1986,9 +2005,9 @@ public final class Ops {
             case CallSiteDescriptor.ARG_INT:
                 return (long)args[lookup >> 3];
             case CallSiteDescriptor.ARG_NUM:
-                return (long)(double)args[lookup >> 3];
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native int argument, but got num");
             case CallSiteDescriptor.ARG_STR:
-                return coerce_s2i((String)args[lookup >> 3]);
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native int argument, but got str");
             case CallSiteDescriptor.ARG_OBJ:
                 return ((SixModelObject)args[lookup >> 3]).get_int(cf.tc);
             default:
@@ -2010,9 +2029,9 @@ public final class Ops {
             case CallSiteDescriptor.ARG_NUM:
                 return (double)args[lookup >> 3];
             case CallSiteDescriptor.ARG_INT:
-                return (double)(long)args[lookup >> 3];
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native num argument, but got int");
             case CallSiteDescriptor.ARG_STR:
-                return coerce_s2n((String)args[lookup >> 3]);
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native num argument, but got str");
             case CallSiteDescriptor.ARG_OBJ:
                 return ((SixModelObject)args[lookup >> 3]).get_num(cf.tc);
             default:
@@ -2034,9 +2053,9 @@ public final class Ops {
             case CallSiteDescriptor.ARG_STR:
                 return (String)args[lookup >> 3];
             case CallSiteDescriptor.ARG_INT:
-                return coerce_i2s((long)args[lookup >> 3]);
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native str argument, but got int");
             case CallSiteDescriptor.ARG_NUM:
-                return coerce_n2s((double)args[lookup >> 3]);
+                throw ExceptionHandling.dieInternal(cf.tc, "Expected native str argument, but got num");
             case CallSiteDescriptor.ARG_OBJ:
                 return ((SixModelObject)args[lookup >> 3]).get_str(cf.tc);
             default:
@@ -2200,6 +2219,51 @@ public final class Ops {
             throw ExceptionHandling.dieInternal(tc, "captureposarg requires a CallCapture");
         }
     }
+    public static long captureposarg_i(SixModelObject obj, long idx, ThreadContext tc) {
+        if (obj instanceof CallCaptureInstance) {
+            CallCaptureInstance cc = (CallCaptureInstance)obj;
+            int i = (int)idx;
+            if (cc.descriptor.argFlags[i] == CallSiteDescriptor.ARG_INT) {
+                return (long)cc.args[i];
+            }
+            else {
+                throw ExceptionHandling.dieInternal(tc, "Expected native int argument");
+            }
+        }
+        else {
+            throw ExceptionHandling.dieInternal(tc, "captureposarg_i requires a CallCapture");
+        }
+    }
+    public static String captureposarg_s(SixModelObject obj, long idx, ThreadContext tc) {
+        if (obj instanceof CallCaptureInstance) {
+            CallCaptureInstance cc = (CallCaptureInstance)obj;
+            int i = (int)idx;
+            if (cc.descriptor.argFlags[i] == CallSiteDescriptor.ARG_STR) {
+                return (String)cc.args[i];
+            }
+            else {
+                throw ExceptionHandling.dieInternal(tc, "Expected native str argument");
+            }
+        }
+        else {
+            throw ExceptionHandling.dieInternal(tc, "captureposarg_s requires a CallCapture");
+        }
+    }
+    public static double captureposarg_n(SixModelObject obj, long idx, ThreadContext tc) {
+        if (obj instanceof CallCaptureInstance) {
+            CallCaptureInstance cc = (CallCaptureInstance)obj;
+            int i = (int)idx;
+            if (cc.descriptor.argFlags[i] == CallSiteDescriptor.ARG_NUM) {
+                return (double)cc.args[i];
+            }
+            else {
+                throw ExceptionHandling.dieInternal(tc, "Expected native num argument");
+            }
+        }
+        else {
+            throw ExceptionHandling.dieInternal(tc, "captureposarg_n requires a CallCapture");
+        }
+    }
     public static long captureexistsnamed(SixModelObject obj, String name, ThreadContext tc) {
         if (obj instanceof CallCaptureInstance) {
             CallCaptureInstance cc = (CallCaptureInstance)obj;
@@ -2287,30 +2351,7 @@ public final class Ops {
     public static final CallSiteDescriptor typeCheckCallSite = new CallSiteDescriptor(new byte[] { CallSiteDescriptor.ARG_OBJ, CallSiteDescriptor.ARG_OBJ, CallSiteDescriptor.ARG_OBJ }, null);
     public static final CallSiteDescriptor howObjCallSite = new CallSiteDescriptor(new byte[] { CallSiteDescriptor.ARG_OBJ, CallSiteDescriptor.ARG_OBJ }, null);
     public static final CallSiteDescriptor parameterizeCallSite = new CallSiteDescriptor(new byte[] { CallSiteDescriptor.ARG_OBJ, CallSiteDescriptor.ARG_OBJ }, null);
-    public static void invokeLexotic(SixModelObject invokee, CallSiteDescriptor csd, Object[] args, ThreadContext tc) {
-        LexoticException throwee = tc.theLexotic;
-        throwee.target = ((LexoticInstance)invokee).target;
-        switch (csd.argFlags[0]) {
-        case CallSiteDescriptor.ARG_OBJ:
-            throwee.payload = (SixModelObject)args[0];
-            break;
-        case CallSiteDescriptor.ARG_INT:
-            throwee.payload = box_i((long)args[0],
-                    tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.intBoxType, tc);
-            break;
-        case CallSiteDescriptor.ARG_NUM:
-            throwee.payload = box_n((double)args[0],
-                    tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.numBoxType, tc);
-            break;
-        case CallSiteDescriptor.ARG_STR:
-            throwee.payload = box_s((String)args[0],
-                    tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.strBoxType, tc);
-            break;
-        default:
-            throw ExceptionHandling.dieInternal(tc, "Invalid lexotic invocation argument");
-        }
-        throw throwee;
-    }
+    public static final CallSiteDescriptor intIntCallSite = new CallSiteDescriptor(new byte[] { CallSiteDescriptor.ARG_INT, CallSiteDescriptor.ARG_INT }, null);
     public static void invoke(SixModelObject invokee, int callsiteIndex, Object[] args, ThreadContext tc) throws Exception {
         // TODO Find a smarter way to do this without all the pointer chasing.
         if (callsiteIndex >= 0)
@@ -2340,10 +2381,6 @@ public final class Ops {
         invokeDirect(tc, invokee, csd, true, args);
     }
     public static void invokeDirect(ThreadContext tc, SixModelObject invokee, CallSiteDescriptor csd, boolean barrier, Object[] args) {
-        // If it's lexotic, throw the exception right off.
-        if (invokee instanceof LexoticInstance) {
-            invokeLexotic(invokee, csd, args, tc);
-        }
         // Otherwise, get the code ref.
         CodeRef cr;
         if (invokee instanceof CodeRef) {
@@ -2366,8 +2403,6 @@ public final class Ops {
             ArgsExpectation.invokeByExpectation(tc, cr, csd, args);
         }
         catch (ControlException e) {
-            if (barrier && (e instanceof SaveStackException))
-                ExceptionHandling.dieInternal(tc, "control operator crossed continuation barrier");
             throw e;
         }
         catch (Throwable e) {
@@ -2385,19 +2420,6 @@ public final class Ops {
         }
     }
 
-    /* Lexotic. */
-    public static SixModelObject lexotic(long target) {
-        LexoticInstance res = new LexoticInstance();
-        res.target = target;
-        return res;
-    }
-    public static SixModelObject lexotic_tc(long target, ThreadContext tc) {
-        LexoticInstance res = new LexoticInstance();
-        res.st = tc.gc.Lexotic.st;
-        res.target = target;
-        return res;
-    }
-
     /* Multi-dispatch cache. */
     public static SixModelObject multicacheadd(SixModelObject cache, SixModelObject capture, SixModelObject result, ThreadContext tc) {
         if (!(cache instanceof MultiCacheInstance))
@@ -2412,16 +2434,6 @@ public final class Ops {
             return null;
     }
 
-    /* Basic 6model operations. */
-    public static SixModelObject what(SixModelObject o) {
-        return o.st.WHAT;
-    }
-    public static SixModelObject how(SixModelObject o) {
-        return o.st.HOW;
-    }
-    public static SixModelObject who(SixModelObject o) {
-        return o.st.WHO;
-    }
     public static long where(SixModelObject o) {
         return o.hashCode();
     }
@@ -2439,7 +2451,7 @@ public final class Ops {
         return decont(o, tc).st.WHO;
     }
     public static long where(SixModelObject o, ThreadContext tc) {
-        return o.hashCode();
+        return decont(o, tc).hashCode();
     }
     public static SixModelObject setwho(SixModelObject o, SixModelObject who, ThreadContext tc) {
         decont(o, tc).st.WHO = who;
@@ -2501,7 +2513,7 @@ public final class Ops {
     public static SixModelObject hllhash(ThreadContext tc) {
         return tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.hashType;
     }
-    public static SixModelObject findmethod(ThreadContext tc, SixModelObject invocant, String name) {
+    public static SixModelObject findmethodInCache(ThreadContext tc, SixModelObject invocant, String name) {
         if (invocant == null)
             throw ExceptionHandling.dieInternal(tc, "Cannot call method '" + name + "' on a null object");
         invocant = decont(invocant, tc);
@@ -2513,6 +2525,13 @@ public final class Ops {
         return meth;
     }
     public static SixModelObject findmethod(SixModelObject invocant, String name, ThreadContext tc) {
+        SixModelObject method = findmethodNonFatal(invocant, name, tc);
+        if (method == null)
+                throw ExceptionHandling.dieInternal(tc,
+                    "Method '" + name + "' not found for invocant of class '" + typeName(invocant, tc) + "'");
+        return method;
+    }
+    public static SixModelObject findmethodNonFatal(SixModelObject invocant, String name, ThreadContext tc) {
         if (invocant == null)
             throw ExceptionHandling.dieInternal(tc, "Cannot call method '" + name + "' on a null object");
         invocant = decont(invocant, tc);
@@ -2538,12 +2557,12 @@ public final class Ops {
     public static String typeName(SixModelObject invocant, ThreadContext tc) {
         invocant = decont(invocant, tc);
         SixModelObject how = invocant.st.HOW;
-        SixModelObject nameMeth = findmethod(tc, how, "name");
+        SixModelObject nameMeth = findmethodInCache(tc, how, "name");
         invokeDirect(tc, nameMeth, howObjCallSite, new Object[] { how, invocant });
         return result_s(tc.curFrame);
     }
     public static long can(SixModelObject invocant, String name, ThreadContext tc) {
-        return findmethod(invocant, name, tc) == null ? 0 : 1;
+        return findmethodNonFatal(invocant, name, tc) == null ? 0 : 1;
     }
     public static long eqaddr(SixModelObject a, SixModelObject b) {
         return a == b ? 1 : 0;
@@ -2556,6 +2575,9 @@ public final class Ops {
     }
     public static String reprname(SixModelObject obj) {
         return obj.st.REPR.name;
+    }
+    public static String reprname(SixModelObject obj, ThreadContext tc) {
+        return decont(obj, tc).st.REPR.name;
     }
     public static SixModelObject newtype(SixModelObject how, String reprname, ThreadContext tc) {
         return REPRRegistry.getByName(reprname).type_object_for(tc, decont(how, tc));
@@ -2645,7 +2667,7 @@ public final class Ops {
         /* If we get here, need to call .^type_check on the value we're
          * checking. */
         if (cache == null || (typeCheckMode & STable.TYPE_CHECK_CACHE_THEN_METHOD) != 0) {
-            SixModelObject tcMeth = findmethod(obj.st.HOW, "type_check", tc);
+            SixModelObject tcMeth = findmethodNonFatal(obj.st.HOW, "type_check", tc);
             if (tcMeth == null)
                 return 0;
                 /* TODO: Review why the following busts stuff. */
@@ -2664,7 +2686,7 @@ public final class Ops {
 
         /* If the flag to call .accepts_type on the target value is set, do so. */
         if ((typeCheckMode & STable.TYPE_CHECK_NEEDS_ACCEPTS) != 0) {
-            SixModelObject atMeth = findmethod(type.st.HOW, "accepts_type", tc);
+            SixModelObject atMeth = findmethodNonFatal(type.st.HOW, "accepts_type", tc);
             if (atMeth == null)
                 throw ExceptionHandling.dieInternal(tc,
                     "Expected accepts_type method, but none found in meta-object");
@@ -2711,9 +2733,63 @@ public final class Ops {
         return decont(obj, tc).st.REPR.getClass().equals(P6str.class) ? 1 : 0;
     }
 
+    /* HLL aware boxing operations */
+    public static SixModelObject hllboxtype_i(long value, ThreadContext tc) {
+        SixModelObject type = tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.intBoxType;
+        SixModelObject res = type.st.REPR.allocate(tc, type.st);
+        res.set_int(tc, value);
+        return res;
+    }
+    public static SixModelObject hllboxtype_n(double value, ThreadContext tc) {
+        SixModelObject type = tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.numBoxType;
+        SixModelObject res = type.st.REPR.allocate(tc, type.st);
+        res.set_num(tc, value);
+        return res;
+    }
+    public static SixModelObject hllboxtype_s(String value, ThreadContext tc) {
+        SixModelObject type = tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.strBoxType;
+        SixModelObject res = type.st.REPR.allocate(tc, type.st);
+        res.set_str(tc, value);
+        return res;
+    }
+
     /* Attribute operations. */
     public static SixModelObject getattr(SixModelObject obj, SixModelObject ch, String name, ThreadContext tc) {
-        return obj.get_attribute_boxed(tc, decont(ch, tc), name, STable.NO_HINT);
+        try {
+            return obj.get_attribute_boxed(tc, decont(ch, tc), name, STable.NO_HINT);
+        }
+        catch (P6OpaqueBaseInstance.BadReferenceRuntimeException badRef) {
+            SixModelObject retval = null;
+            obj.get_attribute_native(tc, decont(ch, tc), name, STable.NO_HINT);
+            if (tc.native_type == ThreadContext.NATIVE_INT) {
+                retval = box_i((long)tc.native_i, tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.intBoxType, tc);
+            }
+            else if (tc.native_type == ThreadContext.NATIVE_NUM) {
+                retval = box_n((double)tc.native_n, tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.numBoxType, tc);
+            }
+            else if (tc.native_type == ThreadContext.NATIVE_STR) {
+                retval = box_s((String)tc.native_s, tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.strBoxType, tc);
+            }
+            else if (tc.native_type == ThreadContext.NATIVE_JVM_OBJ) {
+                int slot = ((P6OpaqueBaseInstance)obj).resolveAttribute(obj.st.WHAT, name);
+                STable attr_st = ((P6OpaqueREPRData) obj.st.REPRData).flattenedSTables[slot];
+                if (attr_st != null) {
+                    retval = attr_st.REPR.allocate(tc, attr_st);
+                    for (Field field : retval.getClass().getDeclaredFields()) {
+                        try {
+                            if (tc.native_j == null || field.getType().isAssignableFrom(tc.native_j.getClass())) {
+                                field.set(retval, tc.native_j);
+                                break;
+                            }
+                        }
+                        catch (IllegalAccessException iae) {
+                            throw ExceptionHandling.dieInternal(tc, "Attribute '" + name + "' couldn't be boxed");
+                        }
+                    }
+                }
+            }
+            return retval;
+        }
     }
     public static long getattr_i(SixModelObject obj, SixModelObject ch, String name, ThreadContext tc) {
         obj.get_attribute_native(tc, decont(ch, tc), name, STable.NO_HINT);
@@ -2737,9 +2813,47 @@ public final class Ops {
             throw ExceptionHandling.dieInternal(tc, "Attribute '" + name + "' is not a native str");
     }
     public static SixModelObject getattr(SixModelObject obj, SixModelObject ch, String name, long hint, ThreadContext tc) {
-        return obj.get_attribute_boxed(tc, decont(ch, tc), name, hint);
+        try {
+            return obj.get_attribute_boxed(tc, decont(ch, tc), name, hint);
+        }
+        catch (P6OpaqueBaseInstance.BadReferenceRuntimeException badRef) {
+            SixModelObject retval = null;
+            obj.get_attribute_native(tc, decont(ch, tc), name, hint);
+            if (tc.native_type == ThreadContext.NATIVE_INT) {
+                retval = box_i((long)tc.native_i, tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.intBoxType, tc);
+            }
+            else if (tc.native_type == ThreadContext.NATIVE_NUM) {
+                retval = box_n((double)tc.native_n, tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.numBoxType, tc);
+            }
+            else if (tc.native_type == ThreadContext.NATIVE_STR) {
+                retval = box_s((String)tc.native_s, tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.strBoxType, tc);
+            }
+            else if (tc.native_type == ThreadContext.NATIVE_JVM_OBJ) {
+                int slot = ((P6OpaqueBaseInstance)obj).resolveAttribute(obj.st.WHAT, name);
+                STable attr_st = ((P6OpaqueREPRData) obj.st.REPRData).flattenedSTables[slot];
+                if (attr_st != null) {
+                    retval = attr_st.REPR.allocate(tc, attr_st);
+                    for (Field field : retval.getClass().getDeclaredFields()) {
+                        try {
+                            if (field.getType().isAssignableFrom(tc.native_j.getClass())) {
+                                field.set(retval, tc.native_j);
+                                break;
+                            }
+                        }
+                        catch (IllegalAccessException iae) {
+                            throw ExceptionHandling.dieInternal(tc, "Attribute '" + name + "' couldn't be boxed");
+                        }
+                    }
+                }
+            }
+            return retval;
+        }
     }
     public static long getattr_i(SixModelObject obj, SixModelObject ch, String name, long hint, ThreadContext tc) {
+        // XXX: when we get other REPRs that do multiple inheritance
+        //      this check should probably move into codegen
+        if (obj.st.REPRData instanceof P6OpaqueREPRData && ((P6OpaqueREPRData) obj.st.REPRData).mi)
+            hint = STable.NO_HINT;
         obj.get_attribute_native(tc, decont(ch, tc), name, hint);
         if (tc.native_type == ThreadContext.NATIVE_INT)
             return tc.native_i;
@@ -2747,6 +2861,9 @@ public final class Ops {
             throw ExceptionHandling.dieInternal(tc, "Attribute '" + name + "' is not a native int");
     }
     public static double getattr_n(SixModelObject obj, SixModelObject ch, String name, long hint, ThreadContext tc) {
+        // XXX: as above
+        if (obj.st.REPRData instanceof P6OpaqueREPRData && ((P6OpaqueREPRData) obj.st.REPRData).mi)
+            hint = STable.NO_HINT;
         obj.get_attribute_native(tc, decont(ch, tc), name, hint);
         if (tc.native_type == ThreadContext.NATIVE_NUM)
             return tc.native_n;
@@ -2754,6 +2871,9 @@ public final class Ops {
             throw ExceptionHandling.dieInternal(tc, "Attribute '" + name + "' is not a native num");
     }
     public static String getattr_s(SixModelObject obj, SixModelObject ch, String name, long hint, ThreadContext tc) {
+        // XXX: as above
+        if (obj.st.REPRData instanceof P6OpaqueREPRData && ((P6OpaqueREPRData) obj.st.REPRData).mi)
+            hint = STable.NO_HINT;
         obj.get_attribute_native(tc, decont(ch, tc), name, hint);
         if (tc.native_type == ThreadContext.NATIVE_STR)
             return tc.native_s;
@@ -3216,6 +3336,40 @@ public final class Ops {
         return ref;
     }
 
+    /* Positional multidim reference operations. */
+    public static SixModelObject multidimref_i(SixModelObject obj, SixModelObject indices, ThreadContext tc) {
+        SixModelObject refType = tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.intMultidimRef;
+        if (refType == null)
+            throw ExceptionHandling.dieInternal(tc,
+                "No int multidim positional reference type registered for current HLL");
+        NativeRefInstanceMultidim ref = (NativeRefInstanceMultidim)refType.st.REPR.allocate(tc, refType.st);
+        ref.obj = obj;
+        ref.indices = smoToLongArray(tc, indices);
+        return ref;
+    }
+
+    public static SixModelObject multidimref_n(SixModelObject obj, SixModelObject indices, ThreadContext tc) {
+        SixModelObject refType = tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.numMultidimRef;
+        if (refType == null)
+            throw ExceptionHandling.dieInternal(tc,
+                "No num multidim positional reference type registered for current HLL");
+        NativeRefInstanceMultidim ref = (NativeRefInstanceMultidim)refType.st.REPR.allocate(tc, refType.st);
+        ref.obj = obj;
+        ref.indices = smoToLongArray(tc, indices);
+        return ref;
+    }
+
+    public static SixModelObject multidimref_s(SixModelObject obj, SixModelObject indices, ThreadContext tc) {
+        SixModelObject refType = tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.strMultidimRef;
+        if (refType == null)
+            throw ExceptionHandling.dieInternal(tc,
+                "No str multidim positional reference type registered for current HLL");
+        NativeRefInstanceMultidim ref = (NativeRefInstanceMultidim)refType.st.REPR.allocate(tc, refType.st);
+        ref.obj = obj;
+        ref.indices = smoToLongArray(tc, indices);
+        return ref;
+    }
+
     /* Associative operations. */
     public static SixModelObject atkey(SixModelObject hash, String key, ThreadContext tc) {
         return hash.at_key_boxed(tc, key);
@@ -3358,8 +3512,7 @@ public final class Ops {
         for (int i = 0; i < numLookups; i++) {
             Map.Entry<SixModelObject, SixModelObject> entry = lookup.get(i);
             SixModelObject compare = entry.getKey();
-            long comapreElems = compare.elems(tc);
-            if (paramsElems == comapreElems) {
+            if (paramsElems == compare.elems(tc)) {
                 boolean match = true;
                 for (long j = 0; j < paramsElems; j++) {
                     SixModelObject want = params.at_pos_boxed(tc, j);
@@ -3407,6 +3560,11 @@ public final class Ops {
     }
     public static SixModelObject typeparameterat(SixModelObject type, long idx, ThreadContext tc) {
         return typeparameters(type, tc).at_pos_boxed(tc, idx);
+    }
+    
+    public static SixModelObject setdebugtypename(SixModelObject type, String debugName, ThreadContext tc) {
+        type.st.debugName = debugName;
+        return type;
     }
 
     /* Container operations. */
@@ -3557,25 +3715,32 @@ public final class Ops {
             SixModelObject BOOTHash = tc.gc.BOOTHash;
             SixModelObject hash = BOOTHash.st.REPR.allocate(tc, BOOTHash.st);
 
-            /* TODO: don't cheat and just shove the nulls in. It's enough for
-             * the initial use case of this, though.
-             */
             StaticCodeInfo sci = ((ContextRefInstance)agg).context.codeRef.staticInfo;
             if (sci.oLexicalNames != null) {
                 for (int i = 0; i < sci.oLexicalNames.length; i++)
-                    hash.bind_key_boxed(tc, sci.oLexicalNames[i], null);
+                    hash.bind_key_boxed(tc, sci.oLexicalNames[i],
+                        ((ContextRefInstance)agg).at_key_boxed(tc, sci.oLexicalNames[i]));
             }
             if (sci.iLexicalNames != null) {
-                for (int i = 0; i < sci.iLexicalNames.length; i++)
-                    hash.bind_key_boxed(tc, sci.iLexicalNames[i], null);
+                for (int i = 0; i < sci.iLexicalNames.length; i++) {
+                    ((ContextRefInstance)agg).at_key_boxed(tc, sci.iLexicalNames[i]);
+                    hash.bind_key_boxed(tc, sci.iLexicalNames[i],
+                        box_i(tc.native_i, ((ContextRefInstance)agg).context.codeRef.staticInfo.compUnit.hllConfig.intBoxType, tc));
+                }
             }
             if (sci.nLexicalNames != null) {
-                for (int i = 0; i < sci.nLexicalNames.length; i++)
-                    hash.bind_key_boxed(tc, sci.nLexicalNames[i], null);
+                for (int i = 0; i < sci.nLexicalNames.length; i++) {
+                    ((ContextRefInstance)agg).at_key_boxed(tc, sci.nLexicalNames[i]);
+                    hash.bind_key_boxed(tc, sci.nLexicalNames[i],
+                        box_n(tc.native_n, ((ContextRefInstance)agg).context.codeRef.staticInfo.compUnit.hllConfig.numBoxType, tc));
+                }
             }
             if (sci.sLexicalNames != null) {
-                for (int i = 0; i < sci.sLexicalNames.length; i++)
-                    hash.bind_key_boxed(tc, sci.sLexicalNames[i], null);
+                for (int i = 0; i < sci.sLexicalNames.length; i++) {
+                    ((ContextRefInstance)agg).at_key_boxed(tc, sci.sLexicalNames[i]);
+                    hash.bind_key_boxed(tc, sci.sLexicalNames[i],
+                        box_s(tc.native_s, ((ContextRefInstance)agg).context.codeRef.staticInfo.compUnit.hllConfig.strBoxType, tc));
+                }
             }
 
             return iter(hash, tc);
@@ -3612,7 +3777,7 @@ public final class Ops {
         case BoolificationSpec.MODE_UNBOX_NUM:
             return obj instanceof TypeObject || obj.get_num(tc) == 0.0 ? 0 : 1;
         case BoolificationSpec.MODE_UNBOX_STR_NOT_EMPTY:
-            return obj instanceof TypeObject || obj.get_str(tc).equals("") ? 0 : 1;
+            return obj instanceof TypeObject || obj.get_str(tc) == null || obj.get_str(tc).equals("") ? 0 : 1;
         case BoolificationSpec.MODE_UNBOX_STR_NOT_EMPTY_OR_ZERO:
             if (obj instanceof TypeObject)
                 return 0;
@@ -3646,6 +3811,10 @@ public final class Ops {
     /* Smart coercions. */
     public static String smart_stringify(SixModelObject obj, ThreadContext tc) {
         obj = decont(obj, tc);
+
+        // If it's null, it's "", 'cause that way we at least don't NPE.
+        if (obj == null)
+            return "";
 
         // If it can unbox to a string, that wins right off.
         StorageSpec ss = obj.st.REPR.get_storage_spec(tc, obj.st);
@@ -3682,6 +3851,10 @@ public final class Ops {
     }
     public static double smart_numify(SixModelObject obj, ThreadContext tc) {
         obj = decont(obj, tc);
+
+        // If it's null, it's 0.0
+        if (obj == null)
+            return 0.0;
 
         // If it can unbox as an int or a num, that wins right off.
         StorageSpec ss = obj.st.REPR.get_storage_spec(tc, obj.st);
@@ -3833,8 +4006,50 @@ public final class Ops {
         return val.toUpperCase();
     }
 
-    public static String x(String val, long count) {
-        StringBuilder retval = new StringBuilder();
+    static String codepointToTitleCase(int codepoint) {
+        if (codepoint == 223) return "Ss";
+        return new String(Character.toChars(Character.toTitleCase(codepoint)));
+    }
+
+    public static String tc(String val) {
+        String ret = "";
+        for (int offset = 0; offset < val.length(); ) {
+            int codepoint = val.codePointAt(offset);
+            ret += codepointToTitleCase(codepoint);
+            offset += Character.charCount(codepoint);
+        }
+        return ret;
+    }
+
+    public static String tclc(String in) {
+        if (in.length() == 0)
+            return in;
+        int first = in.codePointAt(0);
+        return codepointToTitleCase(first)
+            + in.substring(Character.charCount(first)).toLowerCase();
+    }
+
+    public static String x(String val, long count, ThreadContext tc) {
+        /* Validate count; handle common cases. */
+        if (count == 0)
+            return "";
+        if (count == 1)
+            return val;
+        if (count < 0)
+            throw ExceptionHandling.dieInternal(tc, "repeat count (" + count + ") cannot be negative");
+        if (count > MAX_GRAPHEMES)
+            throw ExceptionHandling.dieInternal(tc, "repeat count (" + count + ") cannot be greater than max allowed number of graphemes " + MAX_GRAPHEMES);
+
+        /* If input string is empty, repeating it is empty. */
+        if (val.length() == 0)
+            return "";
+
+        /* Total size of the resulting string can't be bigger than a String is allowed to be. */
+        long total_count = val.length() * count;
+        if (total_count > MAX_GRAPHEMES)
+            throw ExceptionHandling.dieInternal(tc, "Can't repeat string, required number of graphemes " + total_count + " > max allowed of " + MAX_GRAPHEMES);
+
+        StringBuilder retval = new StringBuilder((int)total_count);
         for (long ii = 1; ii <= count; ii++) {
             retval.append(val);
         }
@@ -3965,8 +4180,13 @@ public final class Ops {
         return val.substring((int)offset, end);
     }
 
-    // does haystack have needle as a substring at offset?
+    // keep this till we reboostrap
     public static long string_equal_at(String haystack, String needle, long offset) {
+        return string_equal_at(false, haystack, needle, offset);
+    }
+
+    // does haystack have needle as a substring at offset?
+    private static long string_equal_at(boolean ignoreCase, String haystack, String needle, long offset) {
         long haylen = haystack.length();
         long needlelen = needle.length();
 
@@ -3979,19 +4199,44 @@ public final class Ops {
         if (haylen - offset < needlelen) {
             return 0;
         }
-        return haystack.regionMatches((int)offset, needle, 0, (int)needlelen) ? 1 : 0;
+        return haystack.regionMatches(ignoreCase, (int)offset, needle, 0, (int)needlelen) ? 1 : 0;
+    }
+
+    public static long eqat(String haystack, String needle, long offset) {
+        return string_equal_at(false, haystack, needle, offset);
+    }
+
+    public static long eqatic(String haystack, String needle, long offset) {
+        return string_equal_at(true, haystack, needle, offset);
     }
 
     public static long ordfirst(String str) {
-        return str.codePointAt(0);
+        if (str.isEmpty()) {
+            return -1;
+	}
+	else {
+            return str.codePointAt(0);
+	}
     }
 
     public static long ordat(String str, long offset) {
-        return str.codePointAt((int)offset);
+        if (offset < 0 || offset >= str.length()) {
+            return -1;
+        }
+	else {
+            return str.codePointAt((int)offset);
+        }
     }
 
     public static long ordbaseat(String str, long offset) {
-        throw new RuntimeException("ordbaseat NYI");
+        if (offset < 0 || offset >= str.length()) {
+            return -1;
+        }
+	else {
+            int code = str.codePointAt((int)offset);
+            String letter = new String(new int[]{code}, 0, 1);
+            return Normalizer.normalize(letter, Normalizer.Form.NFD).codePointAt(0);
+        }
     }
 
     public static String sprintf(String format, SixModelObject arr, ThreadContext tc) {
@@ -4049,37 +4294,135 @@ public final class Ops {
     }
 
     /* Brute force, but not normally needed for most programs. */
-    private static volatile HashMap<String, Character> cpNameMap;
+    private static volatile HashMap<String, Integer> cpNameMap;
+    private static volatile Boolean cpNameMapAboveBMP;
     public static long codepointfromname(String name) {
-        HashMap<String, Character> names = cpNameMap;
+        HashMap<String, Integer> names = cpNameMap;
+        /* Gets the first half (the BMP) */
         if (names == null) {
-            names = new HashMap< >();
-            for (char i = 0; i < Character.MAX_VALUE; i++)
+            /* Initialize the expected max hash size as 0x10FFFF */
+            names = new HashMap< >(0x10FFFF);
+            for (int i = 0; i < Character.MAX_VALUE; i++)
                 if (Character.isValidCodePoint(i))
                     names.put(Character.getName(i), i);
-            names.put("LF",  (char)10);
-            names.put("FF",  (char)12);
-            names.put("CR",  (char)13);
-            names.put("NEL", (char)133);
+            names.put("LF",               (int)10);
+            names.put("LINE FEED",        (int)10);
+            names.put("FF",               (int)12);
+            names.put("FORM FEED",        (int)12);
+            names.put("CR",               (int)13);
+            names.put("CARRIAGE RETURN",  (int)13);
+            names.put("NEL",              (int)133);
+            names.put("NEXT LINE",        (int)133);
             cpNameMap = names;
+            cpNameMapAboveBMP = false;
         }
-        Character found = names.get(name);
+        Integer found = names.get(name);
+        /* If we have not found it yet, put all other possible codepoints into
+         * the hash */
+        if (found == null && !cpNameMapAboveBMP) {
+            for (int i = Character.MAX_VALUE; i <= 0x10FFFF; i++)
+                if (Character.isValidCodePoint(i))
+                    names.put(Character.getName(i), i);
+            names.put("BELL",             (int)0x1F514);
+            cpNameMapAboveBMP = true;
+            found = names.get(name);
+        }
         return found == null ? -1 : found;
+    }
+
+    public static String getstrfromname(String name) {
+        long cp = codepointfromname(name.toUpperCase());
+        /* nqp::chr has been inlined, since it needs a thread context */
+        return cp < 0
+            ? ""
+            : ( new StringBuffer() ).append( Character.toChars( (int) cp) ).toString();
+    }
+
+    public static String strfromcodes(SixModelObject codes, ThreadContext tc) {
+        StringBuilder builder = new StringBuilder();
+        int n = (int)codes.elems(tc);
+        for (int i = 0; i < n; i++) {
+            codes.at_pos_native(tc, i);
+            builder.appendCodePoint((int) tc.native_i);
+        }
+        return builder.toString();
+    }
+
+    private static Normalizer.Form javaNormalizationForm(long normalization, ThreadContext tc) {
+        if (normalization == 1) {
+            return Normalizer.Form.NFC;
+        }
+        else if (normalization == 1) {
+            return Normalizer.Form.NFD;
+        }
+        else if (normalization == 2) {
+            return Normalizer.Form.NFKC;
+        }
+        else if (normalization == 3) {
+            return Normalizer.Form.NFKD;
+        }
+        else {
+            throw ExceptionHandling.dieInternal(tc, "Unknown normalization form: '" + normalization + "'");
+        }
+    }
+
+    public static SixModelObject normalizecodes(SixModelObject in, long normalization, SixModelObject out, ThreadContext tc) {
+      if (normalization == 0) {
+          int n = (int)in.elems(tc);
+          out.set_elems(tc, n);
+          for (int i = 0; i < n; i++) {
+              in.at_pos_native(tc, i);
+              out.bind_pos_native(tc, i);
+          }
+      }
+      else {
+          StringBuilder builder = new StringBuilder();
+          int n = (int)in.elems(tc);
+          for (int i = 0; i < n; i++) {
+              in.at_pos_native(tc, i);
+              builder.appendCodePoint((int) tc.native_i);
+          }
+
+          int i = 0;
+          for (int c : Normalizer.normalize(builder, javaNormalizationForm(normalization, tc)).codePoints().toArray()) {
+              tc.native_i = c;
+              out.bind_pos_native(tc, i++);
+          }
+      }
+
+      return out;
+    }
+
+    public static long codes(String str) {
+        return Normalizer.normalize(str, Normalizer.Form.NFC).codePoints().count();
+    }
+
+    public static SixModelObject strtocodes(String str, long normalization, SixModelObject codes, ThreadContext tc) {
+        int i = 0;
+        for (int c : Normalizer.normalize(str, javaNormalizationForm(normalization, tc)).codePoints().toArray()) {
+            tc.native_i = c;
+            codes.bind_pos_native(tc, i++);
+        }
+        return codes;
+    }
+
+    private static String javaEncodingName(String nameIn) {
+        if (nameIn.equals("utf8"))
+            return "UTF-8";
+        if (nameIn.equals("ascii"))
+            return "US-ASCII";
+        if (nameIn.equals("iso-8859-1"))
+            return "ISO-8859-1";
+        if (nameIn.equals("windows-1252"))
+            return "windows-1252";
+        return null;
     }
 
     public static SixModelObject encode(String str, String encoding, SixModelObject res, ThreadContext tc) {
         try {
-            if (encoding.equals("utf8")) {
-                Buffers.stashBytes(tc, res, str.getBytes("UTF-8"));
-            }
-            else if (encoding.equals("ascii")) {
-                Buffers.stashBytes(tc, res, str.getBytes("US-ASCII"));
-            }
-            else if (encoding.equals("iso-8859-1")) {
-                Buffers.stashBytes(tc, res, str.getBytes("ISO-8859-1"));
-            }
-            else if (encoding.equals("windows-1252")) {
-                Buffers.stashBytes(tc, res, str.getBytes("windows-1252"));
+            String mangledEncoding = javaEncodingName(encoding);
+            if (mangledEncoding != null) {
+                Buffers.stashBytes(tc, res, str.getBytes(mangledEncoding));
             }
             else if (encoding.equals("utf16")) {
                 short[] buffer = new short[str.length()];
@@ -4137,17 +4480,9 @@ public final class Ops {
     }
 
     public static String decode(SixModelObject buf, String encoding, ThreadContext tc) {
-        if (encoding.equals("utf8")) {
-            return decode8(buf, "UTF-8", tc);
-        }
-        else if (encoding.equals("ascii")) {
-            return decode8(buf, "US-ASCII", tc);
-        }
-        else if (encoding.equals("iso-8859-1")) {
-            return decode8(buf, "ISO-8859-1", tc);
-        }
-        else if (encoding.equals("windows-1252")) {
-            return decode8(buf, "windows-1252", tc);
+        String mangledEncoding = javaEncodingName(encoding);
+        if (mangledEncoding != null) {
+            return decode8(buf, mangledEncoding, tc);
         }
         else if (encoding.equals("utf16") || encoding.equals("utf32")) {
             int n = (int)buf.elems(tc);
@@ -4189,6 +4524,99 @@ public final class Ops {
         else {
             throw ExceptionHandling.dieInternal(tc, "Unknown encoding '" + encoding + "'");
         }
+    }
+
+    public static SixModelObject decoderconfigure(SixModelObject decoder, String encoding, SixModelObject config, ThreadContext tc) {
+        if (decoder instanceof DecoderInstance) {
+            String mangledEncoding = javaEncodingName(encoding);
+            if (mangledEncoding != null)
+                ((DecoderInstance)decoder).configure(tc, mangledEncoding, config);
+            else
+                throw ExceptionHandling.dieInternal(tc, "Unsupported VM encoding '" + encoding + "'");
+            return decoder;
+        }
+        else {
+            throw ExceptionHandling.dieInternal(tc, "decoderconfigure requires an instance with the Decoder REPR");
+        }
+    }
+
+    public static long decoderempty(SixModelObject decoder, ThreadContext tc) {
+        if (decoder instanceof DecoderInstance)
+            return ((DecoderInstance)decoder).isEmpty(tc);
+        else
+            throw ExceptionHandling.dieInternal(tc, "decoderempty requires an instance with the Decoder REPR");
+    }
+
+    public static SixModelObject decoderaddbytes(SixModelObject decoder, SixModelObject bytes, ThreadContext tc) {
+        if (decoder instanceof DecoderInstance) {
+            ((DecoderInstance)decoder).addBytes(tc, Buffers.unstashBytes(bytes, tc));
+            return decoder;
+        }
+        else {
+            throw ExceptionHandling.dieInternal(tc, "decoderaddbytes requires an instance with the Decoder REPR");
+        }
+    }
+
+    public static String decodertakechars(SixModelObject decoder, long chars, ThreadContext tc) {
+        if (decoder instanceof DecoderInstance)
+            return ((DecoderInstance)decoder).takeChars(tc, chars, false);
+        else
+            throw ExceptionHandling.dieInternal(tc, "decodertakechars requires an instance with the Decoder REPR");
+    }
+
+    public static String decodertakecharseof(SixModelObject decoder, long chars, ThreadContext tc) {
+        if (decoder instanceof DecoderInstance)
+            return ((DecoderInstance)decoder).takeChars(tc, chars, true);
+        else
+            throw ExceptionHandling.dieInternal(tc, "decodertakecharseof requires an instance with the Decoder REPR");
+    }
+
+    public static String decodertakeavailablechars(SixModelObject decoder, ThreadContext tc) {
+        if (decoder instanceof DecoderInstance)
+            return ((DecoderInstance)decoder).takeAvailableChars(tc);
+        else
+            throw ExceptionHandling.dieInternal(tc, "decodertakeavailablechars requires an instance with the Decoder REPR");
+    }
+
+    public static String decodertakeallchars(SixModelObject decoder, ThreadContext tc) {
+        if (decoder instanceof DecoderInstance)
+            return ((DecoderInstance)decoder).takeAllChars(tc);
+        else
+            throw ExceptionHandling.dieInternal(tc, "decodertakeallchars requires an instance with the Decoder REPR");
+    }
+
+    public static String decodertakeline(SixModelObject decoder, long chomp, long eof,
+                                         ThreadContext tc) {
+        if (decoder instanceof DecoderInstance)
+            return ((DecoderInstance)decoder).takeLine(tc, chomp != 0, eof != 0);
+        else
+            throw ExceptionHandling.dieInternal(tc, "decodertakeline requires an instance with the Decoder REPR");
+    }
+
+    public static SixModelObject decodersetlineseps(SixModelObject decoder, SixModelObject seps,
+                                                     ThreadContext tc) {
+        if (decoder instanceof DecoderInstance) {
+            ((DecoderInstance)decoder).setLineSeps(tc, seps);
+            return decoder;
+        }
+        else {
+            throw ExceptionHandling.dieInternal(tc, "decodersetlineseps requires an instance with the Decoder REPR");
+        }
+    }
+
+    public static long decoderbytesavailable(SixModelObject decoder, ThreadContext tc) {
+        if (decoder instanceof DecoderInstance)
+            return ((DecoderInstance)decoder).bytesAvailable(tc);
+        else
+            throw ExceptionHandling.dieInternal(tc, "decoderbytesavailable requires an instance with the Decoder REPR");
+    }
+
+    public static SixModelObject decodertakebytes(SixModelObject decoder, SixModelObject bufType,
+                                                  long bytes, ThreadContext tc) {
+        if (decoder instanceof DecoderInstance)
+            return ((DecoderInstance)decoder).takeBytes(tc, bufType, bytes);
+        else
+            throw ExceptionHandling.dieInternal(tc, "decodertakebytes requires an instance with the Decoder REPR");
     }
 
     private static final int CCLASS_ANY          = 65535;
@@ -4957,10 +5385,34 @@ public final class Ops {
         else
             throw ExceptionHandling.dieInternal(tc, "getstaticcode can only be used with a CodeRef");
     }
+    public static SixModelObject setdispatcher(SixModelObject disp, ThreadContext tc) {
+        tc.currentDispatcher = disp;
+        return disp;
+    }
+    public static SixModelObject setdispatcherfor(SixModelObject disp, SixModelObject dispFor, ThreadContext tc) {
+        tc.currentDispatcher = disp;
+        if (dispFor instanceof CodeRef) {
+            tc.currentDispatcherFor = dispFor;
+        }
+        else {
+            InvocationSpec is = dispFor.st.InvocationSpec;
+            if (is == null)
+                throw ExceptionHandling.dieInternal(tc, "setdispatcherfor needs invokable target");
+                if (is.ClassHandle != null)
+                    tc.currentDispatcherFor = (CodeRef)dispFor.get_attribute_boxed(tc,
+                            is.ClassHandle, is.AttrName, is.Hint);
+                else
+                    throw ExceptionHandling.dieInternal(tc, "setdispatcherfor needs simple invokable target");
+        }
+        return disp;
+    }
     public static void takedispatcher(int lexIdx, ThreadContext tc) {
         if (tc.currentDispatcher != null) {
-            tc.curFrame.oLex[lexIdx] = tc.currentDispatcher;
-            tc.currentDispatcher = null;
+            if (tc.currentDispatcherFor == null ||
+                    tc.currentDispatcherFor == tc.curFrame.codeRef) {
+                tc.curFrame.oLex[lexIdx] = tc.currentDispatcher;
+                tc.currentDispatcher = null;
+            }
         }
     }
 
@@ -5021,6 +5473,22 @@ public final class Ops {
         catch (Throwable t) {
             throw ExceptionHandling.dieInternal(tc, t);
         }
+    }
+
+    /* There's not a getrusage (with Windows fakery) equivalent on JVM, sadly.
+     * The main reason this op exists is for the thread pool scheduler in
+     * Rakudo, and we can get (or fake up enough of) what it needs. */
+    public static SixModelObject getrusage(ThreadContext tc) {
+        SixModelObject BOOTIntArray = tc.gc.BOOTIntArray;
+        SixModelObject res = BOOTIntArray.st.REPR.allocate(tc, BOOTIntArray.st);
+        long cpuNanos = ((OperatingSystemMXBean)ManagementFactory.getOperatingSystemMXBean())
+            .getProcessCpuTime();
+        long cpuMillis = cpuNanos / 1000;
+        tc.native_i = cpuMillis / 1000000; // UTIME_SEC
+        res.bind_pos_native(tc, 0);
+        tc.native_i = cpuMillis % 1000000; // UTIME_MSEC
+        res.bind_pos_native(tc, 1);
+        return res;
     }
 
     public static SixModelObject jvmgetproperties(ThreadContext tc) {
@@ -5100,6 +5568,14 @@ public final class Ops {
             throw ExceptionHandling.dieInternal(tc, "threadid requires an operand with REPR VMThread");
     }
 
+    public static long threadlockcount(SixModelObject thread, ThreadContext tc) {
+        if (thread instanceof VMThreadInstance)
+            return ((VMThreadInstance)thread).lockCount;
+        else
+            throw ExceptionHandling.dieInternal(tc,
+                "threadlockcount requires an operand with REPR VMThread");
+    }
+
     public static long threadyield(ThreadContext tc) {
         Thread.yield();
         return 0;
@@ -5115,19 +5591,29 @@ public final class Ops {
         return thread;
     }
 
+    public static long cpucores(ThreadContext tc) {
+        return Runtime.getRuntime().availableProcessors();
+    }
+
     public static SixModelObject lock(SixModelObject lock, ThreadContext tc) {
-        if (lock instanceof ReentrantMutexInstance)
+        if (lock instanceof ReentrantMutexInstance) {
             ((ReentrantMutexInstance)lock).lock.lock();
-        else
+            ((VMThreadInstance)currentthread(tc)).lockCount++;
+        }
+        else {
             throw ExceptionHandling.dieInternal(tc, "lock requires an operand with REPR ReentrantMutex");
+        }
         return lock;
     }
 
     public static SixModelObject unlock(SixModelObject lock, ThreadContext tc) {
-        if (lock instanceof ReentrantMutexInstance)
+        if (lock instanceof ReentrantMutexInstance) {
             ((ReentrantMutexInstance)lock).lock.unlock();
-        else
+            ((VMThreadInstance)currentthread(tc)).lockCount--;
+        }
+        else {
             throw ExceptionHandling.dieInternal(tc, "unlock requires an operand with REPR ReentrantMutex");
+        }
         return lock;
     }
 
@@ -5211,6 +5697,37 @@ public final class Ops {
             throw ExceptionHandling.dieInternal(tc, "queuepoll requires an operand with REPR ConcBlockingQueue");
     }
 
+    /* Atomic operations. */
+
+    public static SixModelObject cas(SixModelObject cont, SixModelObject expected, SixModelObject value, ThreadContext tc) {
+        ContainerSpec cs = cont.st.ContainerSpec;
+        if (cs != null)
+            return cs.cas(tc, cont, decont(expected, tc), decont(value, tc));
+        else
+            throw ExceptionHandling.dieInternal(tc,
+                "Cannot atomic compare and swap to an immutable value");
+    }
+    public static SixModelObject atomicload(SixModelObject cont, ThreadContext tc) {
+        ContainerSpec cs = cont.st.ContainerSpec;
+        if (cs != null)
+            return cs.atomic_load(tc, cont);
+        else
+            throw ExceptionHandling.dieInternal(tc,
+                "Cannot atomic load from an immutable value");
+    }
+    public static SixModelObject atomicstore(SixModelObject cont, SixModelObject value, ThreadContext tc) {
+        ContainerSpec cs = cont.st.ContainerSpec;
+        if (cs != null) {
+            value = decont(value, tc);
+            cs.atomic_store(tc, cont, value);
+            return value;
+        }
+        else {
+            throw ExceptionHandling.dieInternal(tc,
+                "Cannot atomic store to an immutable value");
+        }
+    }
+
     /* Asynchronousy operations. */
 
     private static class AddToQueueTimerTask extends TimerTask implements IIOCancelable {
@@ -5244,10 +5761,28 @@ public final class Ops {
         handle.handle = tt;
         return handle;
     }
+    public static SixModelObject permit(SixModelObject handle, long channel, long permits,
+                                        ThreadContext tc) {
+        // TODO Implement permit handling properly
+        return handle;
+    }
     public static SixModelObject cancel(SixModelObject handle, ThreadContext tc) {
         AsyncTaskInstance task = (AsyncTaskInstance) handle;
         if (task.handle instanceof IIOCancelable) {
             ((IIOCancelable)task.handle).cancel(tc);
+        } else {
+            throw ExceptionHandling.dieInternal(tc, "This handle does not support cancel");
+        }
+        return handle;
+    }
+    public static SixModelObject cancelnotify(SixModelObject handle, SixModelObject queue,
+            SixModelObject schedulee, ThreadContext tc) {
+        AsyncTaskInstance task = (AsyncTaskInstance) handle;
+        if (!(queue instanceof ConcBlockingQueueInstance))
+            throw ExceptionHandling.dieInternal(tc, "notifycancel's second argument should have REPR ConcBlockingQueue");
+        if (task.handle instanceof IIOCancelable) {
+            ((IIOCancelable)task.handle).cancel(tc);
+            ((ConcBlockingQueueInstance)queue).queue.add(schedulee);
         } else {
             throw ExceptionHandling.dieInternal(tc, "This handle does not support cancel");
         }
@@ -5266,7 +5801,11 @@ public final class Ops {
         ExceptionHandling.handlerDynamic(tc, ExceptionHandling.EX_CAT_CATCH, true, exObj);
     }
     public static void throwcatdyn_c(long category, ThreadContext tc) {
-        ExceptionHandling.handlerDynamic(tc, category, false, null);
+        SixModelObject exType = tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.exceptionType;
+        VMExceptionInstance exObj = (VMExceptionInstance)exType.st.REPR.allocate(tc, exType.st);
+        exObj.origin = tc.curFrame;
+        exObj.category = category;
+        ExceptionHandling.handlerDynamic(tc, category, false, exObj);
     }
     public static SixModelObject exception(ThreadContext tc) {
         int numHandlers = tc.handlers.size();
@@ -5290,13 +5829,10 @@ public final class Ops {
             throw ExceptionHandling.dieInternal(tc, "setextype needs an object with VMException representation");
     }
     public static String getmessage(SixModelObject obj, ThreadContext tc) {
-        if (obj instanceof VMExceptionInstance) {
-            String msg = ((VMExceptionInstance)obj).message;
-            return msg == null ? "Died" : msg;
-        }
-        else {
+        if (obj instanceof VMExceptionInstance)
+            return ((VMExceptionInstance)obj).message;
+        else
             throw ExceptionHandling.dieInternal(tc, "getmessage needs an object with VMException representation");
-        }
     }
     public static String setmessage(SixModelObject obj, String msg, ThreadContext tc) {
         if (obj instanceof VMExceptionInstance) {
@@ -5427,6 +5963,25 @@ public final class Ops {
     public static SixModelObject resume(SixModelObject obj, ThreadContext tc) {
         throw theResumer;
     }
+    public static void _throwpayloadlex_c(long category, SixModelObject payload, ThreadContext tc) {
+        SixModelObject exType = tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.exceptionType;
+        VMExceptionInstance exObj = (VMExceptionInstance)exType.st.REPR.allocate(tc, exType.st);
+        exObj.category = category;
+        exObj.origin = tc.curFrame;
+        tc.lastPayload = payload;
+        ExceptionHandling.handlerLexical(tc, category, exObj, false);
+    }
+    public static void _throwpayloadlexcaller_c(long category, SixModelObject payload, ThreadContext tc) {
+        SixModelObject exType = tc.curFrame.codeRef.staticInfo.compUnit.hllConfig.exceptionType;
+        VMExceptionInstance exObj = (VMExceptionInstance)exType.st.REPR.allocate(tc, exType.st);
+        exObj.category = category;
+        exObj.origin = tc.curFrame;
+        tc.lastPayload = payload;
+        ExceptionHandling.handlerLexical(tc, category, exObj, true);
+    }
+    public static SixModelObject lastexpayload(ThreadContext tc) {
+        return tc.lastPayload;
+    }
 
     /* compatibility shims for next bootstrap TODO */
     public static String die_s(String msg, ThreadContext tc) {
@@ -5525,6 +6080,14 @@ public final class Ops {
             config.numPosRef = configHash.at_key_boxed(tc, "num_pos_ref");
         if (configHash.exists_key(tc, "str_pos_ref") != 0)
             config.strPosRef = configHash.at_key_boxed(tc, "str_pos_ref");
+        if (configHash.exists_key(tc, "int_multidim_ref") != 0)
+            config.intMultidimRef = configHash.at_key_boxed(tc, "int_multidim_ref");
+        if (configHash.exists_key(tc, "num_multidim_ref") != 0)
+            config.numMultidimRef = configHash.at_key_boxed(tc, "num_multidim_ref");
+        if (configHash.exists_key(tc, "str_multidim_ref") != 0)
+            config.strMultidimRef = configHash.at_key_boxed(tc, "str_multidim_ref");
+        if (configHash.exists_key(tc, "lexical_handler_not_found_error") != 0)
+            config.lexicalHandlerNotFoundError = configHash.at_key_boxed(tc, "lexical_handler_not_found_error");
         return configHash;
     }
     public static SixModelObject getcomp(String name, ThreadContext tc) {
@@ -5565,6 +6128,18 @@ public final class Ops {
     public static String loadbytecode(String filename, ThreadContext tc) {
         new LibraryLoader().load(tc, filename);
         return filename;
+    }
+    public static SixModelObject loadbytecodebuffer(SixModelObject buffer, ThreadContext tc) throws Exception {
+        if (buffer instanceof VMArrayInstance_i8) {
+            new LibraryLoader().load(tc, ((VMArrayInstance_i8)buffer).slots);
+        }
+        else if (buffer instanceof VMArrayInstance_u8) {
+            new LibraryLoader().load(tc, ((VMArrayInstance_u8)buffer).slots);
+        }
+        else {
+            throw new RuntimeException("Must pass a uint8 or int8 buffer to loadbytecodebuffer");
+        }
+        return buffer;
     }
     public static SixModelObject settypehll(SixModelObject type, String language, ThreadContext tc) {
         type.st.hllOwner = tc.gc.getHLLConfigFor(language);
@@ -6092,6 +6667,21 @@ public final class Ops {
         }
     }
 
+    public static long coerce_n2i(double in) {
+        if (in == Double.POSITIVE_INFINITY
+        ||  in == Double.NEGATIVE_INFINITY
+        ||  in != in) {
+            return Long.MIN_VALUE;
+        }
+        else {
+            return new Double(in).longValue();
+        }
+    }
+
+    public static double coerce_i2n(long in) {
+        return new Long(in).doubleValue();
+    }
+
     /* Long literal workaround. */
     public static String join_literal(String[] parts) {
         StringBuilder retval = new StringBuilder(parts.length * 65535);
@@ -6238,7 +6828,18 @@ public final class Ops {
     }
 
     public static double div_In(SixModelObject a, SixModelObject b, ThreadContext tc) {
-        return new BigDecimal(getBI(tc, a)).divide(new BigDecimal(getBI(tc, b)), 309, RoundingMode.HALF_UP).doubleValue();
+        BigInteger divisor = getBI(tc, b);
+	// Use IEEE 754-2008 semantics for division by zero
+        return (divisor.compareTo(BigInteger.ZERO) == 0)
+            ? getBI(tc, a).doubleValue() / 0
+            : new BigDecimal(getBI(tc, a)).divide(new BigDecimal(divisor), 309, RoundingMode.HALF_UP).doubleValue();
+    }
+
+    public static long div_i(long a, long b, ThreadContext tc) {
+        if (b == 0) {
+            die_s("Division by zero", tc);
+        }
+        return (long)Math.floor((double) a / b);
     }
 
     public static SixModelObject mod_I(SixModelObject a, SixModelObject b, SixModelObject type, ThreadContext tc) {
@@ -6279,7 +6880,7 @@ public final class Ops {
     }
 
     public static double pow_n(double a, double b) {
-        if (a == 1 && !Double.isNaN(b)) {
+        if (a == 1) {
             return 1.0;
         }
         return Math.pow(a, b);
@@ -6311,7 +6912,7 @@ public final class Ops {
                 } else {
                     /* Otherwise, do floating point infinity of the right sign. */
                     SixModelObject result = nType.st.REPR.allocate(tc, nType.st);
-                    result.set_num(tc, exponent.mod(BigInteger.valueOf(2)) == BigInteger.ZERO
+                    result.set_num(tc, cmp > 0 || exponent.mod(BigInteger.valueOf(2)) == BigInteger.ZERO
                                         ? Double.POSITIVE_INFINITY
                                         : Double.NEGATIVE_INFINITY);
                     return result;
@@ -6646,7 +7247,15 @@ public final class Ops {
         try {
             if(codePoint < 0) {
                 name = "<illegal>";
-            } else {
+            }
+            /* Return <control-XXXX> for control characters */
+            else if (codePoint <= 0x1F || (0x7F <= codePoint && codePoint <= 0x9F)) {
+                name = String.format("<control-%04X>", codePoint);
+            }
+            else if ( (0xFDD0 <= codePoint && codePoint <= 0xFDEF) || (0xFFFE & codePoint) == 0xFFFE)  {
+                name = String.format("<noncharacter-%04X>", codePoint);
+            }
+            else {
                 name = Character.getName(cp);
                 if(name == null) {
                     name = "<unassigned>";

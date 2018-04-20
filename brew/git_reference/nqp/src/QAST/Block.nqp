@@ -4,6 +4,7 @@ class QAST::Block is QAST::Node does QAST::Children {
     has int $!custom_args;
     has int $!has_exit_handler;
     has int $!is_thunk;
+    has int $!no_inline;
     has str $!cuid;
     has int $!arity;
     has $!code_object;
@@ -11,13 +12,14 @@ class QAST::Block is QAST::Node does QAST::Children {
 
     method new(str :$name, str :$blocktype, *@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Block, '@!children', @children);
         nqp::bindattr_s($node, QAST::Block, '$!name', $name);
         nqp::bindattr_s($node, QAST::Block, '$!blocktype', $blocktype);
         $node.set(%options) if %options;
         $node
     }
-    
+
     method name($value = NO_VALUE) {
         $!name := $value unless $value =:= NO_VALUE;
         nqp::isnull_s($!name) ?? "" !! $!name
@@ -29,6 +31,7 @@ class QAST::Block is QAST::Node does QAST::Children {
     method custom_args($value = NO_VALUE)      { $!custom_args := $value unless $value =:= NO_VALUE; $!custom_args }
     method has_exit_handler($value = NO_VALUE) { $!has_exit_handler := $value unless $value =:= NO_VALUE; $!has_exit_handler }
     method is_thunk($value = NO_VALUE)         { $!is_thunk := $value unless $value =:= NO_VALUE; $!is_thunk }
+    method no_inline($value = NO_VALUE)         { $!no_inline := $value unless $value =:= NO_VALUE; $!no_inline }
     method arity($value = NO_VALUE)            { $!arity := $value unless $value =:= NO_VALUE; $!arity }
 
     method code_object($value = NO_VALUE) {
@@ -72,7 +75,7 @@ class QAST::Block is QAST::Node does QAST::Children {
             nqp::ifnull(nqp::atkey(%!symbol, $name), %NOSYMS)
         }
     }
-    
+
     method symtable() {
         %!symbol := nqp::hash() if nqp::isnull(%!symbol);
         %!symbol
@@ -81,7 +84,7 @@ class QAST::Block is QAST::Node does QAST::Children {
     method evaluate_unquotes(@unquotes) {
         my $result := self.shallow_clone();
         my $i := 0;
-        my $elems := +@(self);
+        my $elems := nqp::elems(@(self));
         while $i < $elems {
             $result[$i] := self[$i].evaluate_unquotes(@unquotes);
             $i := $i + 1;
@@ -90,6 +93,9 @@ class QAST::Block is QAST::Node does QAST::Children {
     }
 
     method dump_extra_node_info() {
-        nqp::chars(self.blocktype) ?? ":decl($!blocktype)" !! "";
+        my @extra;
+        @extra.push(":cuid($!cuid)") unless nqp::isnull_s($!cuid);
+        @extra.push(":blocktype($!blocktype)") if nqp::chars(self.blocktype);
+        nqp::join(' ', @extra);
     }
 }

@@ -6,6 +6,9 @@ struct MVMSerializationRoot {
     /* The version of the serialization format. */
     MVMint32 version;
 
+    /* How many parameterized type intern entries we have */
+    MVMint32  num_param_interns;
+
     /* The SC we're serializing/deserializing. */
     MVMSerializationContext *sc;
 
@@ -44,9 +47,7 @@ struct MVMSerializationRoot {
     MVMint32  num_repos;
     char     *repos_table;
 
-    /* The number of parameterized type intern entries, and the data segment
-     * containing them. */
-    MVMint32  num_param_interns;
+    /* The the data segment containing them parameterized type intern entries */
     char     *param_interns_data;
 
     /* Array of strings making up the string heap we are constructing. If we
@@ -98,6 +99,9 @@ struct MVMSerializationReader {
     /* Number of static code objects. */
     MVMuint32 num_static_codes;
 
+    /* Whether we're already working on these worklists. */
+    MVMuint32 working;
+
     /* Array of contexts (num_contexts in length). */
     MVMFrame **contexts;
 
@@ -106,9 +110,6 @@ struct MVMSerializationReader {
      * done, and we have the required object graph. */
     MVMDeserializeWorklist wl_objects;
     MVMDeserializeWorklist wl_stables;
-
-    /* Whether we're already working on these worklists. */
-    MVMuint32 working;
 
     /* The current object we're deserializing. */
     MVMObject *current_object;
@@ -125,9 +126,13 @@ struct MVMSerializationWriter {
     /* Serialization root data. */
     MVMSerializationRoot root;
 
-    /* The code refs and contexts lists we're working through/adding to. */
-    MVMObject  *codes_list;
-    MVMObject  *contexts_list;
+    /* The code refs we're working through/adding to. */
+    MVMObject *codes_list;
+
+    /* Frames that we're to serialize, along with memory management. */
+    MVMFrame **contexts_list;
+    MVMuint32 num_contexts;
+    MVMuint32 alloc_contexts;
 
     /* Current position in the stables, objects and contexts lists. */
     MVMint64 stables_list_pos;
@@ -181,15 +186,14 @@ MVMObject * MVM_serialization_demand_code(MVMThreadContext *tc, MVMSerialization
 void MVM_serialization_finish_deserialize_method_cache(MVMThreadContext *tc, MVMSTable *st);
 
 /* Reader/writer functions. */
+MVMint64 MVM_serialization_read_int64(MVMThreadContext *tc, MVMSerializationReader *reader);
 MVMint64 MVM_serialization_read_int(MVMThreadContext *tc, MVMSerializationReader *reader);
-MVMint64 MVM_serialization_read_varint(MVMThreadContext *tc, MVMSerializationReader *reader);
 MVMnum64 MVM_serialization_read_num(MVMThreadContext *tc, MVMSerializationReader *reader);
 MVMString * MVM_serialization_read_str(MVMThreadContext *tc, MVMSerializationReader *reader);
 MVMObject * MVM_serialization_read_ref(MVMThreadContext *tc, MVMSerializationReader *reader);
 MVMSTable * MVM_serialization_read_stable_ref(MVMThreadContext *tc, MVMSerializationReader *reader);
 void MVM_serialization_force_stable(MVMThreadContext *tc, MVMSerializationReader *reader, MVMSTable *st);
 void MVM_serialization_write_int(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMint64 value);
-void MVM_serialization_write_varint(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMint64 value);
 void MVM_serialization_write_num(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMnum64 value);
 void MVM_serialization_write_str(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMString *value);
 void MVM_serialization_write_ref(MVMThreadContext *tc, MVMSerializationWriter *writer, MVMObject *ref);

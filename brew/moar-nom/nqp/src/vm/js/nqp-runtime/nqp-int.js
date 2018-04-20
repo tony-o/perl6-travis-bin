@@ -1,21 +1,40 @@
-function NQPInt(value) {
-  this.value = value | 0;
-}
+'use strict';
 
-NQPInt.prototype.Int = function(ctx) {
-  return this.value;
-};
+const NQPObject = require('./nqp-object.js');
 
-NQPInt.prototype.Str = function(ctx) {
-  return this.value.toString();
-};
+class NQPInt extends NQPObject {
+  constructor(value) {
+    super();
+    this.value = value | 0;
+  }
 
-NQPInt.prototype.Num = function(ctx) {
-  return this.value;
-};
+  Str(ctx, _NAMED, self) {
+    return this.value.toString();
+  }
 
-NQPInt.prototype.$$to_bool = function(ctx) {
-  return (this.value ? 1 : 0);
+  $$toBool(ctx) {
+    return (this.value ? 1 : 0);
+  }
+
+  $$numify() {
+    return this.value;
+  }
+
+  $$istype(ctx, type) {
+    return 0;
+  }
+
+  $$can(ctx, name) {
+    return 0;
+  }
+
+  $$clone() {
+    return this;
+  }
+
+  $$getInt() {
+    return this.value;
+  }
 };
 
 module.exports = NQPInt;

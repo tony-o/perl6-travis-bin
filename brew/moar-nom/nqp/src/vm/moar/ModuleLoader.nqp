@@ -11,10 +11,10 @@ knowhow ModuleLoader {
         if !nqp::isnull($explicit) && nqp::defined($explicit) {
             nqp::push(@search_paths, $explicit);
         }
-
-        # Add CWD and blib.
-        nqp::push(@search_paths, '.');
-        nqp::push(@search_paths, 'blib');
+        my %env := nqp::getenvhash();
+        if nqp::existskey(%env, 'NQP_LIB') {
+            nqp::push(@search_paths, %env<NQP_LIB>);
+        }
 
         @search_paths
     }
@@ -167,5 +167,5 @@ knowhow ModuleLoader {
 }
 
 # Since this *is* the module loader, we can't locate it the normal way by
-# GLOBAL merging. So instead we stash it away in the Parrot namespace tree.
+# GLOBAL merging. So instead we stash it away in the current HLL directly.
 nqp::bindcurhllsym('ModuleLoader', ModuleLoader);

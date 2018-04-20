@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.charset.Charset;
+import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -57,6 +58,8 @@ public class FileHandle extends SyncHandle implements IIOSeekable, IIOLockable {
     public FileHandle(ThreadContext tc, String filename, String mode) {
         try {
             Path p = new File(filename).toPath();
+            if (Files.isDirectory(p))
+                ExceptionHandling.dieInternal(tc, "Tried to open directory " + filename);
             OpenOption[] opts = resolveOpenMode(mode);
             if(opts == null)
                 ExceptionHandling.dieInternal(tc, "Unhandled file open mode '" + mode + "'");
@@ -88,6 +91,8 @@ public class FileHandle extends SyncHandle implements IIOSeekable, IIOLockable {
         } catch (IllegalArgumentException e) {
             throw ExceptionHandling.dieInternal(tc, e);
         }
+        /* Reset readBuffer since content is out of sync after fc.position. */
+        readBuffer = null;
     }
     
     public long tell(ThreadContext tc) {

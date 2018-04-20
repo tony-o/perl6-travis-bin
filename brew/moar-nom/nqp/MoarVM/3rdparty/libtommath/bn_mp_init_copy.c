@@ -1,4 +1,4 @@
-#include <tommath.h>
+#include <tommath_private.h>
 #ifdef BN_MP_INIT_COPY_C
 /* LibTomMath, multiple-precision integer library -- Tom St Denis
  *
@@ -12,7 +12,7 @@
  * The library is free for all purposes without any express
  * guarantee it works.
  *
- * Tom St Denis, tomstdenis@gmail.com, http://libtom.org
+ * Tom St Denis, tstdenis82@gmail.com, http://libtom.org
  */
 
 /* creates "a" then copies b into it */
@@ -20,10 +20,15 @@ int mp_init_copy (mp_int * a, mp_int * b)
 {
   int     res;
 
-  if ((res = mp_init (a)) != MP_OKAY) {
+  if ((res = mp_init_size (a, b->used)) != MP_OKAY) {
     return res;
   }
-  return mp_copy (b, a);
+
+  if((res = mp_copy (b, a)) != MP_OKAY) {
+    mp_clear(a);
+  }
+
+  return res;
 }
 #endif
 

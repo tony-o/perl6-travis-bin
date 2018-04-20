@@ -7,6 +7,7 @@ class QAST::Var is QAST::Node does QAST::Children {
 
     method new(:$name, str :$scope, str :$decl, *@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Var, '@!children', @children);
         nqp::bindattr_s($node, QAST::Var, '$!name', $name);
         nqp::bindattr_s($node, QAST::Var, '$!scope', $scope);
@@ -14,7 +15,7 @@ class QAST::Var is QAST::Node does QAST::Children {
         $node.set(%options) if %options;
         $node
     }
-    
+
     method name($value = NO_VALUE) {
         $!name := $value unless $value =:= NO_VALUE;
         !nqp::isnull_s($!name) ?? $!name !! ""
@@ -26,6 +27,11 @@ class QAST::Var is QAST::Node does QAST::Children {
     method decl($value = NO_VALUE) {
         $!decl := $value unless $value =:= NO_VALUE;
         !nqp::isnull_s($!decl) ?? $!decl !! ""
+    }
+    method decl_as($value) {
+        my $clone := nqp::clone(self);
+        $clone.decl: $value;
+        $clone;
     }
     method slurpy($value = NO_VALUE)  { $!slurpy := $value unless $value =:= NO_VALUE; $!slurpy }
     method default($value = NO_VALUE) { $!default_or_value := $value unless $value =:= NO_VALUE; $!default_or_value }

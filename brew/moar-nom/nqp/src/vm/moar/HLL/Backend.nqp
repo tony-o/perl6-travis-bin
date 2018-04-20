@@ -1,103 +1,17 @@
 # Backend class for the MoarVM.
+
+my sub literal_subst(str $source, str $pattern, $replacement) {
+    my $where := 0;
+    my $result := $source;
+    while (my $found := nqp::index($result, $pattern, $where)) != -1 {
+        $where := $found + nqp::chars($replacement);
+        $result := nqp::replace($result, $found, nqp::chars($pattern), $replacement);
+    };
+    $result;
+}
+
 class HLL::Backend::MoarVM {
     our %moar_config := nqp::backendconfig();
-
-    sub sorted_keys($hash) {
-        my @keys;
-        for $hash {
-            nqp::push(@keys, $_.key);
-        }
-        if +@keys == 0 {
-            return @keys;
-        }
-
-        # we expect on the order of 6 or 7 keys here, so bubble sort is fine.
-        my int $start := 0;
-        my int $numkeys := +@keys;
-        my str $swap;
-        my int $current;
-        while $start < $numkeys - 1 {
-            $current := 0;
-            while $current < $numkeys - 1 {
-                if @keys[$current] lt @keys[$current + 1] {
-                    $swap := @keys[$current];
-                    @keys[$current] := @keys[$current + 1];
-                    @keys[$current + 1] := $swap;
-                }
-                $current++;
-            }
-            $start++;
-        }
-        return @keys;
-    }
-
-    sub output_as_json($obj, $output_fh, $esc_backslash, $esc_dquote, $esc_squote?) {
-        my @pieces := nqp::list_s();
-
-        sub to_json($obj) {
-            if nqp::islist($obj) {
-                nqp::push_s(@pieces, '[');
-                my $first := 1;
-                for $obj {
-                    if $first {
-                        $first := 0;
-                    }
-                    else {
-                        nqp::push_s(@pieces, ',');
-                    }
-                    to_json($_);
-                }
-                nqp::push_s(@pieces, ']');
-            }
-            elsif nqp::ishash($obj) {
-                nqp::push_s(@pieces, '{');
-                my $first := 1;
-                for sorted_keys($obj) {
-                    if $first {
-                        $first := 0;
-                    }
-                    else {
-                        nqp::push_s(@pieces, ',');
-                    }
-                    nqp::push_s(@pieces, '"');
-                    nqp::push_s(@pieces, $_);
-                    nqp::push_s(@pieces, '":');
-                    to_json($obj{$_});
-                }
-                nqp::push_s(@pieces, '}');
-            }
-            elsif nqp::isstr($obj) {
-                if nqp::index($obj, '\\') {
-                    $obj := subst($obj, /'\\'/, $esc_backslash, :global);
-                }
-                if nqp::index($obj, '"') {
-                    $obj := subst($obj, /'"'/, $esc_dquote, :global);
-                }
-                if nqp::defined($esc_squote) && nqp::index($obj, "'") {
-                    $obj := subst($obj, /"'"/, $esc_squote, :global);
-                }
-                nqp::push_s(@pieces, '"');
-                nqp::push_s(@pieces, $obj);
-                nqp::push_s(@pieces, '"');
-            }
-            elsif nqp::isint($obj) || nqp::isnum($obj) {
-                nqp::push_s(@pieces, ~$obj);
-            }
-            elsif nqp::can($obj, 'Str') {
-                to_json(nqp::unbox_s($obj.Str));
-            }
-            else {
-                nqp::die("Don't know how to dump a " ~ $obj.HOW.name($obj));
-            }
-            if nqp::elems(@pieces) > 4096 {
-                nqp::printfh($output_fh, nqp::join('', @pieces));
-                nqp::setelems(@pieces, 0);
-            }
-        }
-
-        to_json($obj);
-        nqp::printfh($output_fh, nqp::join('', @pieces));
-    }
 
     method apply_transcodings($s, $transcode) {
         $s
@@ -142,7 +56,16 @@ class HLL::Backend::MoarVM {
             if nqp::defined(@END);
 
         self.ensure_prof_routines();
-        $prof_start_sub(nqp::hash('kind', $kind));
+
+        if $kind eq "heap" {
+            unless nqp::defined($filename) {
+                $filename := 'heap-snapshot-' ~ nqp::time_n();
+            }
+            $prof_start_sub(nqp::hash('kind', $kind, 'path', $filename));
+        } else {
+            $prof_start_sub(nqp::hash('kind', $kind));
+        }
+
         my $res  := $what();
         unless nqp::defined(@END) {
             my $data := $prof_end_sub();
@@ -150,6 +73,7 @@ class HLL::Backend::MoarVM {
         }
         $res;
     }
+
     method dump_profile_data($data, $kind, $filename) {
         if $kind eq 'instrumented' {
             self.dump_instrumented_profile_data($data, $filename);
@@ -161,90 +85,21 @@ class HLL::Backend::MoarVM {
             nqp::die("Don't know how to dump data for $kind profile");
         }
     }
-    method dump_heap_profile_data($data, $filename) {
-        my @pieces;
 
-        unless nqp::defined($filename) {
-            $filename := 'heap-' ~ nqp::time_n() ~ '.txt';
-        }
-        my $profile_fh := open($filename, :w);
-
-        nqp::sayfh($profile_fh, '# This file contains MoarVM heap snapshots.');
-        nqp::sayfh($profile_fh, '# the stringheap section contains a list of');
-        nqp::sayfh($profile_fh, '# strings that are used throughout the file');
-        nqp::sayfh($profile_fh, '# by their index in the string heap.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# The types list has entries with two string');
-        nqp::sayfh($profile_fh, '# indices: The REPR of a type and the name.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# The following sections are per snapshot:');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# Every entry in the collectables section starts');
-        nqp::sayfh($profile_fh, '# with the type or frame index as second value.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '#   1 Object');
-        nqp::sayfh($profile_fh, '#   2 Type object');
-        nqp::sayfh($profile_fh, '#   3 STable');
-        nqp::sayfh($profile_fh, '#   4 Frame');
-        nqp::sayfh($profile_fh, '#   5 Perm Roots');
-        nqp::sayfh($profile_fh, '#   6 Instance Roots');
-        nqp::sayfh($profile_fh, '#   7 CStack Roots');
-        nqp::sayfh($profile_fh, '#   8 Thread Roots');
-        nqp::sayfh($profile_fh, '#   9 Root');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# The third field is the size of the GC-managed');
-        nqp::sayfh($profile_fh, '# part. The fourth field is the size of extra');
-        nqp::sayfh($profile_fh, '# data, for example managed by malloc or the FSA.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# The fifth field is the starting index into the');
-        nqp::sayfh($profile_fh, '# references list, the sixth field is the number');
-        nqp::sayfh($profile_fh, '# of references that belong to this collectable.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# Each reference has its ref kind, its "data"');
-        nqp::sayfh($profile_fh, '# and the index of the referenced collectable as');
-        nqp::sayfh($profile_fh, '# its fields.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '#   0 for unknown.');
-        nqp::sayfh($profile_fh, '#   1 for an index.');
-        nqp::sayfh($profile_fh, '#   2 for an entry in the string heap.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '[ stringheap');
-        for $data<strings> {
-            if nqp::index($_, '\n') {
-                nqp::sayfh($profile_fh, subst($_, /\n/, q{\\n}, :global));
-            }
-            else {
-                nqp::sayfh($profile_fh, $_);
-            }
-        }
-        nqp::sayfh($profile_fh, '[ types');
-        nqp::sayfh($profile_fh, $data<types>);
-
-        nqp::sayfh($profile_fh, '[ snapshots');
-        my int $snapshotidx := 0;
-        for $data<snapshots> -> $snapshot {
-            nqp::sayfh($profile_fh, '[ s' ~ $snapshotidx);
-            nqp::sayfh($profile_fh, 'r ' ~ $snapshot<references>);
-            nqp::sayfh($profile_fh, 'c ' ~ $snapshot<collectables>);
-            $snapshotidx := $snapshotidx + 1;
-        }
-
-        nqp::closefh($profile_fh);
-    }
     method dump_instrumented_profile_data($data, $filename) {
         my @pieces := nqp::list_s();
 
         unless nqp::defined($filename) {
             $filename := 'profile-' ~ nqp::time_n() ~ '.html';
         }
-        nqp::sayfh(nqp::getstderr(), "Writing profiler output to $filename");
-        my $profile_fh := open($filename, :w);
-        my $want_json  := ?($filename ~~ /'.json'$/);
+        note("Writing profiler output to $filename");
+        my $profile_fh;
+        my $want_json  := nqp::eqat($filename, '.json', -5);
+        my $want_sql   := nqp::eqat($filename, '.sql', -4);
 
         my $escaped_backslash;
-        my $escaped_squote;
         my $escaped_dquote;
-
+        my $escaped_squote;
         if $want_json {
             # Single quotes don't require escaping here
             $escaped_backslash := q{\\\\};
@@ -273,7 +128,6 @@ class HLL::Backend::MoarVM {
                 }
                 if nqp::existskey($node, "allocations") {
                     for $node<allocations> -> %alloc_info {
-                        my $type := %alloc_info<type>;
                         if nqp::existskey($id_remap, %alloc_info<id>) {
                             %alloc_info<id> := $id_remap{%alloc_info<id>};
                         } else {
@@ -282,7 +136,15 @@ class HLL::Backend::MoarVM {
                             %alloc_info<id> := $newkey;
                         }
                         unless nqp::existskey($id_to_thing, %alloc_info<id>) {
-                            $id_to_thing{%alloc_info<id>} := $type.HOW.name($type);
+                            my $typename;
+                            try {
+                                my $type := %alloc_info<type>;
+                                $typename := $type.HOW.name($type);
+                            }
+                            unless $typename {
+                                $typename := "<unknown type>";
+                            }
+                            $id_to_thing{%alloc_info<id>} := $typename;
                         }
                         nqp::deletekey(%alloc_info, "type");
                     }
@@ -304,10 +166,192 @@ class HLL::Backend::MoarVM {
                     }
                 }
                 CATCH {
+                    note("profiler caught an error during post_process_call_graph_node:");
                     note(nqp::getmessage($!));
                 }
             }
         }
+
+        sub sift_down(@a, int $start, int $end) {
+            my int $root := $start;
+
+            while 2*$root + 1 <= $end {
+                my $child := 2*$root + 1;
+                my $swap := $root;
+
+                if @a[$swap] gt @a[$child] {
+                    $swap := $child;
+                }
+                if $child + 1 <= $end && @a[$swap] ge @a[$child + 1] {
+                    $swap := $child + 1;
+                }
+                if $swap == $root {
+                    return;
+                } else {
+                    my str $tmp := @a[$root];
+                    @a[$root] := @a[$swap];
+                    @a[$swap] := $tmp;
+                    $root := $swap;
+                }
+            }
+        }
+
+        # Usually only a small number of keys are seen,
+		# so a bubble sort would be fine. However, the
+		# number can get much larger (e.g., when profiling
+		# a build of the Rakudo settings), so use a heapsort
+		# instead.
+        sub sorted_keys($hash) {
+            my @keys;
+            for $hash {
+                nqp::push(@keys, $_.key);
+            }
+
+            my int $count := +@keys;
+            my int $start := $count / 2 - 1;
+            while $start >= 0 {
+                sift_down(@keys, $start, $count - 1);
+                $start := $start - 1;
+            }
+
+            my int $end := +@keys - 1;
+            while $end > 0 {
+                my str $swap := @keys[$end];
+                @keys[$end] := @keys[0];
+                @keys[0] := $swap;
+                $end := $end - 1;
+                sift_down(@keys, 0, $end);
+            }
+
+            return @keys;
+        }
+
+        sub to_json($obj) {
+            if nqp::islist($obj) {
+                nqp::push_s(@pieces, '[');
+                my int $first := 1;
+                for $obj {
+                    if $first {
+                        $first := 0;
+                    }
+                    else {
+                        nqp::push_s(@pieces, ',');
+                    }
+                    to_json($_);
+                }
+                nqp::push_s(@pieces, ']');
+            }
+            elsif nqp::ishash($obj) {
+                nqp::push_s(@pieces, '{');
+                my int $first := 1;
+                for sorted_keys($obj) {
+                    if $first {
+                        $first := 0;
+                    }
+                    else {
+                        nqp::push_s(@pieces, ',');
+                    }
+                    nqp::push_s(@pieces, '"');
+                    nqp::push_s(@pieces, $_);
+                    nqp::push_s(@pieces, '":');
+                    to_json($obj{$_});
+                }
+                nqp::push_s(@pieces, '}');
+            }
+            elsif nqp::isstr($obj) {
+                if nqp::index($obj, '\\') {
+                    $obj := literal_subst($obj, '\\', $escaped_backslash);
+                }
+                if nqp::index($obj, '"') {
+                    $obj := literal_subst($obj, '"', $escaped_dquote);
+                }
+                if nqp::defined($escaped_squote) && nqp::index($obj, "'") {
+                    $obj := literal_subst($obj, "'", $escaped_squote);
+                }
+                nqp::push_s(@pieces, '"');
+                nqp::push_s(@pieces, $obj);
+                nqp::push_s(@pieces, '"');
+            }
+            elsif nqp::isint($obj) || nqp::isnum($obj) {
+                nqp::push_s(@pieces, ~$obj);
+            }
+            elsif nqp::can($obj, 'Str') {
+                to_json(nqp::unbox_s($obj.Str));
+            }
+            else {
+                nqp::die("Don't know how to dump a " ~ $obj.HOW.name($obj));
+            }
+            if nqp::elems(@pieces) > 4096 {
+                $profile_fh.print(nqp::join('', @pieces));
+                nqp::setelems(@pieces, 0);
+            }
+        }
+
+        sub to_sql($obj) {
+            my @profile;
+            for $obj[0] -> $k {
+                my $v := $obj[0]{$k};
+                if nqp::ishash($v) {
+                    $profile_fh.say("INSERT INTO routines VALUES ('" ~ nqp::join("','", nqp::list(nqp::iterkey_s($k), literal_subst(~$v<name>, "'", "''"), ~$v<line>, ~$v<file>)) ~ "');");
+                }
+                else {
+                    $profile_fh.say("INSERT INTO types VALUES ('" ~ nqp::join("','", nqp::list(nqp::iterkey_s($k), literal_subst(~$v, "'", "''"))) ~ "');");
+                }
+            }
+            for $obj[1] -> $k {
+                my $v := $obj[1]{$k};
+                if $k eq 'total_time' {
+                    @profile[0] := ~$v;
+                }
+                elsif $k eq 'spesh_time' {
+                    @profile[1] := ~$v;
+                }
+                elsif $k eq 'gcs' {
+                    for $v -> $gc {
+                        my @g := nqp::list_s();
+                        for <time retained_bytes promoted_bytes gen2_roots full cleared_bytes> -> $f {
+                            nqp::push_s(@g, ~($gc{$f} // '0'));
+                        }
+                        $profile_fh.say('INSERT INTO gcs VALUES (' ~ nqp::join(',', @g) ~ ');');
+                    }
+                }
+                elsif $k eq 'call_graph' {
+                    my %call_rec_depth;
+                    my int $node_id := 0;
+                    sub collect_calls(str $parent_id, %call_graph) {
+                        my str $call_id := ~$node_id;
+                        $node_id++;
+                        my @call := nqp::list_s($call_id, $parent_id);
+                        for <id osr spesh_entries jit_entries inlined_entries inclusive_time exclusive_time entries deopt_one deopt_all> -> $f {
+                            nqp::push_s(@call, ~(%call_graph{$f} // '0'));
+                        }
+                        my str $routine_id := ~%call_graph<id>;
+                        %call_rec_depth{$routine_id} := 0 unless %call_rec_depth{$routine_id};
+                        nqp::push_s(@call, ~%call_rec_depth{$routine_id});
+                        $profile_fh.say('INSERT INTO calls VALUES (' ~ nqp::join(',', @call) ~ ');');
+                        if %call_graph<allocations> {
+                            for %call_graph<allocations> -> $a {
+                                my @a := nqp::list_s($call_id);
+                                for <id spesh jit count> -> $f {
+                                    nqp::push_s(@a, ~($a{$f} // '0'));
+                                }
+                                $profile_fh.say('INSERT INTO allocations VALUES (' ~ nqp::join(',', @a) ~ ');');
+                            }
+                        }
+                        if %call_graph<callees> {
+                            %call_rec_depth{$routine_id}++;
+                            for %call_graph<callees> -> $c {
+                                collect_calls(~$call_id, $c);
+                            }
+                            %call_rec_depth{$routine_id}--;
+                        }
+                    }
+                    collect_calls(~$node_id, $v);
+                }
+            }
+            $profile_fh.say('INSERT INTO profile VALUES (' ~ nqp::join(',', @profile) ~ ');');
+        }
+
         # Post-process the call data, turning objects into flat data.
         for $data {
             post_process_call_graph_node($_<call_graph>);
@@ -315,23 +359,59 @@ class HLL::Backend::MoarVM {
 
         nqp::unshift($data, $id_to_thing);
 
+        # First make sure the template file exists if we want html
+        # if it doesn't exist, just spit out json instead.
+        my str $template;
+
+        if !$want_json && !$want_sql {
+            my $temppath := nqp::backendconfig()<prefix> ~ '/share/nqp/lib/profiler/template.html';
+            $template := try slurp('src/vm/moar/profiler/template.html');
+            unless $template {
+                $template := try slurp($temppath);
+            }
+            unless $template {
+                note("Could not locate profiler/template.html; should have been at $temppath; outputting sql data instead");
+                $want_sql := 1;
+                $filename := literal_subst($filename, ".html", ".sql");
+                unless nqp::eqat($filename, '.sql', -4) {
+                    $filename := $filename ~ '.sql';
+                }
+                note("Writing profiler output to $filename");
+            }
+        }
+
+        $profile_fh := open($filename, :w);
+
         if $want_json {
-            output_as_json($data, $profile_fh, $escaped_backslash, $escaped_dquote);
+            to_json($data);
+            $profile_fh.print(nqp::join('', @pieces));
+        }
+        elsif $want_sql {
+            $profile_fh.say('BEGIN;');
+            $profile_fh.say('CREATE TABLE types(id INTEGER PRIMARY KEY ASC, name TEXT);');
+            $profile_fh.say('CREATE TABLE routines(id INTEGER PRIMARY KEY ASC, name TEXT, line INT, file TEXT);');
+            $profile_fh.say('CREATE TABLE profile(total_time INT, spesh_time INT);');
+            $profile_fh.say('CREATE TABLE gcs(time INT, retained_bytes INT, promoted_bytes INT, gen2_roots INT, full INT, cleared_bytes INT);');
+            $profile_fh.say('CREATE TABLE calls(id INTEGER PRIMARY KEY ASC, parent_id INT, routine_id INT, osr INT, spesh_entries INT, jit_entries INT, inlined_entries INT, inclusive_time INT, exclusive_time INT, entries INT, deopt_one INT, deopt_all INT, rec_depth INT, FOREIGN KEY(routine_id) REFERENCES routines(id));');
+            $profile_fh.say('CREATE TABLE allocations(call_id INT, type_id INT, spesh INT, jit INT, count INT, PRIMARY KEY(call_id, type_id), FOREIGN KEY(call_id) REFERENCES calls(id), FOREIGN KEY(type_id) REFERENCES types(id));');
+            to_sql($data);
+            $profile_fh.say('END;');
         }
         else {
             # Get profiler template, split it in half, and write those either
             # side of the JSON itself.
-            my $template := try slurp('src/vm/moar/profiler/template.html');
-            unless $template {
-                $template := slurp(nqp::backendconfig()<prefix> ~ '/share/nqp/lib/profiler/template.html');
-            }
             my @tpl_pieces := nqp::split('{{{PROFILER_OUTPUT}}}', $template);
 
-            nqp::printfh($profile_fh, @tpl_pieces[0]);
-            output_as_json($data, $profile_fh, $escaped_backslash, $escaped_dquote, $escaped_squote);
-            nqp::printfh($profile_fh, @tpl_pieces[1]);
+            $profile_fh.print(@tpl_pieces[0]);
+            to_json($data);
+            $profile_fh.print(nqp::join('', @pieces));
+            $profile_fh.print(@tpl_pieces[1]);
         }
-        nqp::closefh($profile_fh);
+        $profile_fh.close;
+    }
+
+    method dump_heap_profile_data($data, $filename) {
+        note("Heap snapshot written to $filename");
     }
 
     method run_traced($level, $what) {
@@ -356,7 +436,7 @@ class HLL::Backend::MoarVM {
     }
 
     method mast($qast, *%adverbs) {
-        nqp::getcomp('QAST').to_mast($qast);
+        nqp::getcomp('QAST').to_mast($qast, %adverbs<mast_frames> // nqp::hash());
     }
 
     method mbc($mast, *%adverbs) {

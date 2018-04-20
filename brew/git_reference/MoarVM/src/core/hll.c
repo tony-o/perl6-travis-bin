@@ -1,21 +1,19 @@
 #include "moar.h"
 
 MVMHLLConfig *MVM_hll_get_config_for(MVMThreadContext *tc, MVMString *name) {
-    void *kdata;
     MVMHLLConfig *entry;
-    size_t klen;
-
-    MVM_HASH_EXTRACT_KEY(tc, &kdata, &klen, name, "get hll config needs concrete string");
 
     uv_mutex_lock(&tc->instance->mutex_hllconfigs);
 
-    if (tc->instance->hll_compilee_depth)
-        HASH_FIND(hash_handle, tc->instance->compilee_hll_configs, kdata, klen, entry);
-    else
-        HASH_FIND(hash_handle, tc->instance->compiler_hll_configs, kdata, klen, entry);
+    if (tc->instance->hll_compilee_depth) {
+        MVM_HASH_GET(tc, tc->instance->compilee_hll_configs, name, entry);
+    }
+    else {
+        MVM_HASH_GET(tc, tc->instance->compiler_hll_configs, name, entry);
+    }
 
     if (!entry) {
-        entry = MVM_calloc(sizeof(MVMHLLConfig), 1);
+        entry = MVM_calloc(1, sizeof(MVMHLLConfig));
         entry->name = name;
         entry->int_box_type = tc->instance->boot_types.BOOTInt;
         entry->num_box_type = tc->instance->boot_types.BOOTNum;
@@ -27,10 +25,12 @@ MVMHLLConfig *MVM_hll_get_config_for(MVMThreadContext *tc, MVMString *name) {
         entry->foreign_type_int = tc->instance->boot_types.BOOTInt;
         entry->foreign_type_num = tc->instance->boot_types.BOOTNum;
         entry->foreign_type_str = tc->instance->boot_types.BOOTStr;
-        if (tc->instance->hll_compilee_depth)
-            HASH_ADD_KEYPTR(hash_handle, tc->instance->compilee_hll_configs, kdata, klen, entry);
-        else
-            HASH_ADD_KEYPTR(hash_handle, tc->instance->compiler_hll_configs, kdata, klen, entry);
+        if (tc->instance->hll_compilee_depth) {
+            MVM_HASH_BIND(tc, tc->instance->compilee_hll_configs, name, entry);
+        }
+        else {
+            MVM_HASH_BIND(tc, tc->instance->compiler_hll_configs, name, entry);
+        }
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->int_box_type, "HLL int_box_type");
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->num_box_type, "HLL num_box_type");
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->str_box_type, "HLL str_box_type");
@@ -49,6 +49,7 @@ MVMHLLConfig *MVM_hll_get_config_for(MVMThreadContext *tc, MVMString *name) {
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->finalize_handler, "HLL finalize_handler");
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->bind_error, "HLL bind_error");
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->method_not_found_error, "HLL method_not_found_error");
+        MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->lexical_handler_not_found_error, "HLL lexical_handler_not_found_error");
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->int_lex_ref, "HLL int_lex_ref");
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->num_lex_ref, "HLL num_lex_ref");
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->str_lex_ref, "HLL str_lex_ref");
@@ -62,6 +63,7 @@ MVMHLLConfig *MVM_hll_get_config_for(MVMThreadContext *tc, MVMString *name) {
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->num_multidim_ref, "HLL num_multidim_ref");
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->str_multidim_ref, "HLL str_multidim_ref");
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->name, "HLL name");
+        MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->hash_handle.key, "HLL hash key");
     }
 
     uv_mutex_unlock(&tc->instance->mutex_hllconfigs);
@@ -113,12 +115,13 @@ MVMObject * MVM_hll_set_config(MVMThreadContext *tc, MVMString *name, MVMObject 
             check_config_key(tc, config_hash, "finalize_handler", finalize_handler, config);
             check_config_key(tc, config_hash, "bind_error", bind_error, config);
             check_config_key(tc, config_hash, "method_not_found_error", method_not_found_error, config);
+            check_config_key(tc, config_hash, "lexical_handler_not_found_error", lexical_handler_not_found_error, config);
             check_config_key_reftype(tc, config_hash, "int_lex_ref", int_lex_ref,
-                config, MVM_STORAGE_SPEC_BP_INT, MVM_NATIVEREF_REG_OR_LEX);
+                config, MVM_STORAGE_SPEC_BP_INT, MVM_NATIVEREF_LEX);
             check_config_key_reftype(tc, config_hash, "num_lex_ref", num_lex_ref,
-                config, MVM_STORAGE_SPEC_BP_NUM, MVM_NATIVEREF_REG_OR_LEX);
+                config, MVM_STORAGE_SPEC_BP_NUM, MVM_NATIVEREF_LEX);
             check_config_key_reftype(tc, config_hash, "str_lex_ref", str_lex_ref,
-                config, MVM_STORAGE_SPEC_BP_STR, MVM_NATIVEREF_REG_OR_LEX);
+                config, MVM_STORAGE_SPEC_BP_STR, MVM_NATIVEREF_LEX);
             check_config_key_reftype(tc, config_hash, "int_attr_ref", int_attr_ref,
                 config, MVM_STORAGE_SPEC_BP_INT, MVM_NATIVEREF_ATTRIBUTE);
             check_config_key_reftype(tc, config_hash, "num_attr_ref", num_attr_ref,
@@ -257,10 +260,8 @@ MVMObject * MVM_hll_sym_get(MVMThreadContext *tc, MVMString *hll, MVMString *sym
     uv_mutex_lock(&tc->instance->mutex_hll_syms);
     hash = MVM_repr_at_key_o(tc, syms, hll);
     if (MVM_is_null(tc, hash)) {
-        MVMROOT(tc, hll, {
-        MVMROOT(tc, syms, {
+        MVMROOT2(tc, hll, syms, {
             hash = MVM_repr_alloc_init(tc, tc->instance->boot_types.BOOTHash);
-        });
         });
         MVM_repr_bind_key_o(tc, syms, hll, hash);
         result = tc->instance->VMNull;

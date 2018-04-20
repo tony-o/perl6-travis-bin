@@ -2,8 +2,9 @@
 my role Enumeration {
     has $.key;
     has $.value;
+    has int $!index;
 
-    method enums() { self.^enum_values }
+    method enums() { self.^enum_values.Map }
 
     multi method kv(::?CLASS:D:) { ($!key, $!value) }
     method pair(::?CLASS:D:) { $!key => $!value }
@@ -20,12 +21,51 @@ my role Enumeration {
 
     multi method Numeric(::?CLASS:D:) { $!value.Numeric }
     multi method Int(::?CLASS:D:)     { $!value.Int }
+    multi method Real(::?CLASS:D:)    { $!value.Real }
+
+    multi method WHICH(::?CLASS:D:) {
+        nqp::box_s(
+          nqp::concat(self.^name,nqp::concat("|",$!index)),
+          ObjAt
+        )
+    }
+
+    # Make sure we always accept any element of the enumeration
+    multi method ACCEPTS(::?CLASS:D: ::?CLASS:U $ --> True) { }
+    multi method ACCEPTS(::?CLASS:D: ::?CLASS:D \v) { self === v }
 
     method CALL-ME(|) {
         my $x := nqp::atpos(nqp::p6argvmarray(), 1).AT-POS(0);
         nqp::istype($x, ::?CLASS)
             ?? $x
             !! self.^enum_from_value($x)
+    }
+
+    method pred(::?CLASS:D:) {
+        nqp::if(
+          nqp::getattr_i(self,::?CLASS,'$!index'),
+          nqp::atpos(
+            nqp::getattr(self.^enum_value_list,List,'$!reified'),
+            nqp::sub_i(nqp::getattr_i(self,::?CLASS,'$!index'),1)
+          ),
+          self
+        )
+    }
+    method succ(::?CLASS:D:) {
+        nqp::stmts(
+          (my $values := nqp::getattr(self.^enum_value_list,List,'$!reified')),
+          nqp::if(
+            nqp::islt_i(
+              nqp::getattr_i(self,::?CLASS,'$!index'),
+              nqp::sub_i(nqp::elems($values),1),
+            ),
+            nqp::atpos(
+               $values,
+               nqp::add_i(nqp::getattr_i(self,::?CLASS,'$!index'),1)
+            ),
+            self
+          )
+        )
     }
 }
 
@@ -53,10 +93,9 @@ sub ENUM_VALUES(*@args) {
             %res{$_} = $prev.=succ;
         }
     }
-    my $r := nqp::create(Map);
-    nqp::bindattr($r, Map, '$!storage',
-        nqp::getattr(%res, Map, '$!storage'));
-    $r;
+    nqp::p6bindattrinvres(
+      nqp::create(Map),Map,'$!storage',nqp::getattr(%res,Map,'$!storage')
+    )
 }
 
 Metamodel::EnumHOW.set_composalizer(-> $type, $name, %enum_values {
@@ -73,5 +112,12 @@ Metamodel::EnumHOW.set_composalizer(-> $type, $name, %enum_values {
     $r.^compose;
     $r
 });
+
+# We use this one because, for example, Int:D === Int:D, has an optimization
+# that simply unboxes the values. That's no good for us, since two different
+# Enumertaion:Ds could have the same Int:D value.
+multi infix:<===> (Enumeration:D \a, Enumeration:D \b) {
+    nqp::p6bool(nqp::eqaddr(nqp::decont(a), nqp::decont(b)))
+}
 
 # vim: ft=perl6 expandtab sw=4

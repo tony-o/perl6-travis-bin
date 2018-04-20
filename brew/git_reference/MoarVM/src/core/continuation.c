@@ -1,7 +1,7 @@
 #include "moar.h"
 
 static void clear_tag(MVMThreadContext *tc, void *sr_data) {
-    MVMContinuationTag **update = &tc->cur_frame->continuation_tags;
+    MVMContinuationTag **update = &tc->cur_frame->extra->continuation_tags;
     while (*update) {
         if (*update == sr_data) {
             *update = (*update)->next;
@@ -15,11 +15,12 @@ static void clear_tag(MVMThreadContext *tc, void *sr_data) {
 void MVM_continuation_reset(MVMThreadContext *tc, MVMObject *tag,
                             MVMObject *code, MVMRegister *res_reg) {
     /* Save the tag. */
+    MVMFrameExtra *e = MVM_frame_extra(tc, tc->cur_frame);
     MVMContinuationTag *tag_record = MVM_malloc(sizeof(MVMContinuationTag));
     tag_record->tag = tag;
     tag_record->active_handlers = tc->active_handlers;
-    tag_record->next = tc->cur_frame->continuation_tags;
-    tc->cur_frame->continuation_tags = tag_record;
+    tag_record->next = e->continuation_tags;
+    e->continuation_tags = tag_record;
 
     /* Were we passed code or a continuation? */
     if (REPR(code)->ID == MVM_REPR_ID_MVMContinuation) {
@@ -31,10 +32,11 @@ void MVM_continuation_reset(MVMThreadContext *tc, MVMObject *tag,
         MVMCallsite *null_args_callsite = MVM_callsite_get_common(tc, MVM_CALLSITE_ID_NULL_ARGS);
         code = MVM_frame_find_invokee(tc, code, NULL);
         MVM_args_setup_thunk(tc, res_reg, MVM_RETURN_OBJ, null_args_callsite);
-        tc->cur_frame->special_return = clear_tag;
-        tc->cur_frame->special_return_data = tag_record;
+        MVM_frame_special_return(tc, tc->cur_frame, clear_tag, NULL, tag_record, NULL);
         STABLE(code)->invoke(tc, code, null_args_callsite, tc->cur_frame->args);
     }
+
+    MVM_CHECK_CALLER_CHAIN(tc, tc->cur_frame);
 }
 
 void MVM_continuation_control(MVMThreadContext *tc, MVMint64 protect,
@@ -43,21 +45,28 @@ void MVM_continuation_control(MVMThreadContext *tc, MVMint64 protect,
     MVMObject *cont;
     MVMCallsite *inv_arg_callsite;
 
-    /* Hunt the tag on the stack; mark frames as being incorporated into a
-     * continuation as we go to avoid a second pass. */
-    MVMFrame           *jump_frame  = tc->cur_frame;
+    /* Hunt the tag on the stack. Also toss any dynamic variable cache
+     * entries, as they may be invalid once the continuation is invoked (the
+     * Perl 6 $*THREAD is a good example of a problematic one). */
     MVMFrame           *root_frame  = NULL;
     MVMContinuationTag *tag_record  = NULL;
+    MVMFrame            *jump_frame;
+    MVMROOT2(tc, tag, code, {
+        jump_frame = MVM_frame_force_to_heap(tc, tc->cur_frame);
+    });
     while (jump_frame) {
-        jump_frame->in_continuation = 1;
-        tag_record = jump_frame->continuation_tags;
-        while (tag_record) {
-            if (MVM_is_null(tc, tag) || tag_record->tag == tag)
+        MVMFrameExtra *e = jump_frame->extra;
+        if (e) {
+            e->dynlex_cache_name = NULL;
+            tag_record = e->continuation_tags;
+            while (tag_record) {
+                if (MVM_is_null(tc, tag) || tag_record->tag == tag)
+                    break;
+                tag_record = tag_record->next;
+            }
+            if (tag_record)
                 break;
-            tag_record = tag_record->next;
         }
-        if (tag_record)
-            break;
         root_frame = jump_frame;
         jump_frame = jump_frame->caller;
     }
@@ -67,12 +76,14 @@ void MVM_continuation_control(MVMThreadContext *tc, MVMint64 protect,
         MVM_exception_throw_adhoc(tc, "No continuation root frame found");
 
     /* Create continuation. */
-    MVMROOT(tc, code, {
+    MVMROOT3(tc, code, jump_frame, root_frame, {
         cont = MVM_repr_alloc_init(tc, tc->instance->boot_types.BOOTContinuation);
-        ((MVMContinuation *)cont)->body.top     = MVM_frame_inc_ref(tc, tc->cur_frame);
+        MVM_ASSIGN_REF(tc, &(cont->header), ((MVMContinuation *)cont)->body.top,
+            tc->cur_frame);
+        MVM_ASSIGN_REF(tc, &(cont->header), ((MVMContinuation *)cont)->body.root,
+            root_frame);
         ((MVMContinuation *)cont)->body.addr    = *tc->interp_cur_op;
         ((MVMContinuation *)cont)->body.res_reg = res_reg;
-        ((MVMContinuation *)cont)->body.root    = MVM_frame_inc_ref(tc, root_frame);
         if (tc->instance->profiling)
             ((MVMContinuation *)cont)->body.prof_cont =
                 MVM_profile_log_continuation_control(tc, root_frame);
@@ -94,23 +105,18 @@ void MVM_continuation_control(MVMThreadContext *tc, MVMint64 protect,
         }
     }
 
-    /* Move back to the frame with the reset in it (which is already on the
-     * call stack, so has a "I'm running" ref count already). Frames from the
-     * current one through to the root are no longer running, so get their
-     * reference count decremented by 1 as a result. */
-    while (tc->cur_frame != jump_frame) {
-        MVM_frame_dec_ref(tc, tc->cur_frame);
-        tc->cur_frame = tc->cur_frame->caller;
-    }
+    /* Move back to the frame with the reset in it. */
+    tc->cur_frame = jump_frame;
+    tc->current_frame_nr = jump_frame->sequence_nr;
+
     *(tc->interp_cur_op) = tc->cur_frame->return_address;
-    *(tc->interp_bytecode_start) = tc->cur_frame->effective_bytecode;
+    *(tc->interp_bytecode_start) = MVM_frame_effective_bytecode(tc->cur_frame);
     *(tc->interp_reg_base) = tc->cur_frame->work;
     *(tc->interp_cu) = tc->cur_frame->static_info->body.cu;
 
     /* Clear special return handler, given we didn't just fall out of the
      * reset. */
-    tc->cur_frame->special_return = NULL;
-    tc->cur_frame->special_return_data = NULL;
+    MVM_frame_clear_special_return(tc, tc->cur_frame);
 
     /* If we're not protecting the follow-up call, remove the tag record. */
     if (!protect)
@@ -124,33 +130,37 @@ void MVM_continuation_control(MVMThreadContext *tc, MVMint64 protect,
     MVM_args_setup_thunk(tc, tc->cur_frame->return_value, tc->cur_frame->return_type, inv_arg_callsite);
     tc->cur_frame->args[0].o = cont;
     STABLE(code)->invoke(tc, code, inv_arg_callsite, tc->cur_frame->args);
+
+    MVM_CHECK_CALLER_CHAIN(tc, tc->cur_frame);
 }
 
 void MVM_continuation_invoke(MVMThreadContext *tc, MVMContinuation *cont,
                              MVMObject *code, MVMRegister *res_reg) {
+    /* First of all do a repr id check */
+    if (REPR(cont)->ID != MVM_REPR_ID_MVMContinuation)
+        MVM_exception_throw_adhoc(tc, "continuationinvoke expects an MVMContinuation");
+
+    /* Ensure we are the only invoker of the continuation. */
+    if (!MVM_trycas(&(cont->body.invoked), 0, 1))
+        MVM_exception_throw_adhoc(tc, "This continuation has already been invoked");
+
     /* Switch caller of the root to current invoker. */
-    MVMFrame *orig_caller = cont->body.root->caller;
-    cont->body.root->caller = MVM_frame_inc_ref(tc, tc->cur_frame);
-    MVM_frame_dec_ref(tc, orig_caller);
+    MVMROOT2(tc, cont, code, {
+        MVM_frame_force_to_heap(tc, tc->cur_frame);
+    });
+    MVM_ASSIGN_REF(tc, &(cont->body.root->header), cont->body.root->caller, tc->cur_frame);
 
     /* Set up current frame to receive result. */
     tc->cur_frame->return_value = res_reg;
     tc->cur_frame->return_type = MVM_RETURN_OBJ;
     tc->cur_frame->return_address = *(tc->interp_cur_op);
 
-    /* Switch to the target frame; bump ref count of all frames we just added
-     * back into the call chain as they are active again. */
+    /* Switch to the target frame. */
     tc->cur_frame = cont->body.top;
-    {
-        MVMFrame *cur  = tc->cur_frame;
-        MVMFrame *stop = cont->body.root->caller;
-        while (cur != stop) {
-            MVM_frame_inc_ref(tc, cur);
-            cur = cur->caller;
-        }
-    }
+    tc->current_frame_nr = cont->body.top->sequence_nr;
+
     *(tc->interp_cur_op) = cont->body.addr;
-    *(tc->interp_bytecode_start) = tc->cur_frame->effective_bytecode;
+    *(tc->interp_bytecode_start) = MVM_frame_effective_bytecode(tc->cur_frame);
     *(tc->interp_reg_base) = tc->cur_frame->work;
     *(tc->interp_cu) = tc->cur_frame->static_info->body.cu;
 
@@ -182,54 +192,16 @@ void MVM_continuation_invoke(MVMThreadContext *tc, MVMContinuation *cont,
         MVM_args_setup_thunk(tc, cont->body.res_reg, MVM_RETURN_OBJ, null_args_callsite);
         STABLE(code)->invoke(tc, code, null_args_callsite, tc->cur_frame->args);
     }
-}
 
-MVMContinuation * MVM_continuation_clone(MVMThreadContext *tc, MVMContinuation *cont) {
-    MVMContinuation *result;
-    MVMFrame *cur_to_clone = NULL;
-    MVMFrame *last_clone   = NULL;
-    MVMFrame *cloned_top   = NULL;
-    MVMFrame *cloned_root  = NULL;
-
-    /* Allocate resulting continuation. We do this before cloning frames, as
-     * doing it after could cause them to contain stale memory addresses. */
-    MVMROOT(tc, cont, {
-        result = (MVMContinuation *)MVM_repr_alloc_init(tc, tc->instance->boot_types.BOOTContinuation);
-    });
-
-    /* Clone all the frames. */
-    cur_to_clone = cont->body.top;
-    while (!cloned_root) {
-        MVMFrame *clone = MVM_frame_clone(tc, cur_to_clone);
-        if (!cloned_top)
-            cloned_top = clone;
-        if (cur_to_clone == cont->body.root)
-            cloned_root = clone;
-        if (last_clone)
-            last_clone->caller = clone;
-        last_clone   = clone;
-        cur_to_clone = cur_to_clone->caller;
-    }
-
-    /* Increment ref-count of caller of root, since there's now an extra
-     * frame pointing at it. */
-    MVM_frame_inc_ref(tc, cloned_root->caller);
-
-    /* Set up the new continuation. */
-    result->body.top     = cloned_top;
-    result->body.addr    = cont->body.addr;
-    result->body.res_reg = cont->body.res_reg;
-    result->body.root    = cloned_root;
-
-    return result;
+    MVM_CHECK_CALLER_CHAIN(tc, tc->cur_frame);
 }
 
 void MVM_continuation_free_tags(MVMThreadContext *tc, MVMFrame *f) {
-    MVMContinuationTag *tag = f->continuation_tags;
+    MVMContinuationTag *tag = f->extra->continuation_tags;
     while (tag) {
         MVMContinuationTag *next = tag->next;
         MVM_free(tag);
         tag = next;
     }
-    f->continuation_tags = NULL;
+    f->extra->continuation_tags = NULL;
 }

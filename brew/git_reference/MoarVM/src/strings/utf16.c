@@ -34,11 +34,13 @@ MVMString * MVM_string_utf16_decode(MVMThreadContext *tc,
             low = 0;
             high = 1;
             utf16 += 2;
+            bytes -= 2;
         }
         else if (!memcmp(utf16, BOM_UTF16BE, 2)) {
             low = 1;
             high = 0;
             utf16 += 2;
+            bytes -= 2;
         }
     }
     utf16_end = utf16 + bytes;
@@ -107,6 +109,7 @@ char * MVM_string_utf16_encode_substr(MVMThreadContext *tc, MVMString *str, MVMu
     MVMuint8 *repl_bytes = NULL;
     MVMuint64 repl_length = 0;
     MVMint32 alloc_size;
+    MVMuint64 scratch_space = 0;
 
     /* must check start first since it's used in the length check */
     if (start < 0 || start > strgraphs)
@@ -121,7 +124,7 @@ char * MVM_string_utf16_encode_substr(MVMThreadContext *tc, MVMString *str, MVMu
     alloc_size = lengthu * 2;
     result = MVM_malloc(alloc_size + 2);
     result_pos = result;
-    MVM_string_ci_init(tc, &ci, str, translate_newlines);
+    MVM_string_ci_init(tc, &ci, str, translate_newlines, 0);
     while (MVM_string_ci_has_more(tc, &ci)) {
         int bytes_needed;
         MVMCodepoint value = MVM_string_ci_get_codepoint(tc, &ci);
@@ -169,8 +172,9 @@ char * MVM_string_utf16_encode_substr(MVMThreadContext *tc, MVMString *str, MVMu
         }
     }
     result_pos[0] = 0;
-    if (output_size)
-        *output_size = (char *)result_pos - (char *)result;
+    if (!output_size)
+        output_size = &scratch_space;
+    *output_size = (char *)result_pos - (char *)result;
     result = MVM_realloc(result, *output_size);
     MVM_free(repl_bytes);
     return (char *)result;

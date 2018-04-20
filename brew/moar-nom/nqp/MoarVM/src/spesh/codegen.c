@@ -156,6 +156,9 @@ static void write_instructions(MVMThreadContext *tc, MVMSpeshGraph *g, SpeshWrit
                     case MVM_operand_int32:
                         write_int32(ws, ins->operands[i].lit_i32);
                         break;
+                    case MVM_operand_uint32:
+                        write_int32(ws, ins->operands[i].lit_ui32);
+                        break;
                     case MVM_operand_int64:
                         write_int64(ws, ins->operands[i].lit_i64);
                         break;
@@ -175,7 +178,11 @@ static void write_instructions(MVMThreadContext *tc, MVMSpeshGraph *g, SpeshWrit
                         write_int32(ws, ins->operands[i].lit_str_idx);
                         break;
                     case MVM_operand_ins: {
-                        MVMint32 offset = ws->bb_offsets[ins->operands[i].ins_bb->idx];
+                        MVMint32 bb_idx = ins->operands[i].ins_bb->idx;
+                        MVMint32 offset;
+                        if (bb_idx >= g->num_bbs)
+                            MVM_panic(1, "Spesh codegen: out of range BB index %d", bb_idx);
+                        offset = ws->bb_offsets[bb_idx];
                         if (offset >= 0) {
                             /* Already know where it is, so just write it. */
                             write_int32(ws, offset);
@@ -282,21 +289,34 @@ MVMSpeshCode * MVM_spesh_codegen(MVMThreadContext *tc, MVMSpeshGraph *g) {
         *((MVMuint32 *)(ws->bytecode + ws->fixup_locations[i])) =
             ws->bb_offsets[ws->fixup_bbs[i]->idx];
 
-    /* Ensure all handlers got fixed up. */
+    /* Ensure all handlers that are reachable got fixed up. */
     for (i = 0; i < g->num_handlers; i++) {
-        if (ws->handlers[i].start_offset == -1 ||
-            ws->handlers[i].end_offset   == -1 ||
-            ws->handlers[i].goto_offset  == -1)
+        if (g->unreachable_handlers && g->unreachable_handlers[i]) {
+            ws->handlers[i].start_offset = -1;
+            ws->handlers[i].end_offset = -1;
+            ws->handlers[i].goto_offset = -1;
+        }
+        else if (ws->handlers[i].start_offset == -1 ||
+                 ws->handlers[i].end_offset   == -1 ||
+                 ws->handlers[i].goto_offset  == -1) {
             MVM_oops(tc, "Spesh: failed to fix up handlers (%d, %d, %d)",
                 (int)ws->handlers[i].start_offset,
                 (int)ws->handlers[i].end_offset,
                 (int)ws->handlers[i].goto_offset);
+        }
     }
 
     /* Ensure all inlines got fixed up. */
-    for (i = 0; i < g->num_inlines; i++)
-        if (g->inlines[i].start == -1 || g->inlines[i].end == -1)
-            MVM_oops(tc, "Spesh: failed to fix up inline %d", i);
+    for (i = 0; i < g->num_inlines; i++) {
+        if (g->inlines[i].unreachable) {
+            g->inlines[i].start = -1;
+            g->inlines[i].end = -1;
+        }
+        else {
+            if (g->inlines[i].start == -1 || g->inlines[i].end == -1)
+                MVM_oops(tc, "Spesh: failed to fix up inline %d", i);
+        }
+    }
 
     /* Produce result data structure. */
     res                = MVM_malloc(sizeof(MVMSpeshCode));

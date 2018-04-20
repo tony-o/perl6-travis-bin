@@ -1,13 +1,43 @@
-function NQPException(message) {
-  this.name = 'NQPException';
-  this.message = message;
-}
+class NQPException extends Error {
+  constructor(message) {
+    super(message);
+    this.$$message = message;
+  }
 
-NQPException.prototype = Object.create(Error.prototype);
-NQPException.prototype.constructor = NQPException;
+  Str(ctx, _NAMED, self) {
+    return this.$$message;
+  }
 
-NQPException.prototype.Str = function(ctx, _NAMED) {
-  return this.message;
+  $$toBool(ctx) {
+    return 1;
+  }
+
+  $$decont(ctx) {
+    return this;
+  }
+
+  $$istype(ctx, type) {
+    return 0;
+  }
+
+  $$isrwcont() {
+    return 0;
+  }
+};
+
+const proto = NQPException.prototype; /* Avoid gjslint warning */
+proto._STable = {
+  HOW: {
+    name: function(ctx, _NAMED, how, obj) {
+      return 'BOOTException';
+    },
+    $$decont(ctx) {
+      return this;
+    },
+  },
+  REPR: {
+    name: 'NQPException',
+  },
 };
 
 module.exports = NQPException;

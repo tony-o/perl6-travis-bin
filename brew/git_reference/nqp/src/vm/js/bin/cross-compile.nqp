@@ -11,13 +11,23 @@ class HLL::Backend::JavaScriptAndMoar {
         $obj.BUILD($js);
         $obj
     }
+
+    method ast($source, *%adverbs) {
+        $!js.ast($source, |%adverbs);
+    }
+
+    method optimize($ast, *%adverbs) {
+        $!js.optimize($ast, |%adverbs);
+    }
+
     method stages() {
         'js ' ~ 'mast mbc moar'
     }
+
     method js($qast, *%adverbs) {
-        my $js_code := $!js.js($qast);
+        my $js_code := $!js.js($qast, :output(%adverbs<js-output>), :source-map);
         say($js_code);
-        $qast;
+        $qast.ast;
     }
 }
 
@@ -25,10 +35,10 @@ class HLL::Backend::JavaScriptAndMoar {
 class FreshMonkeyPatchedCompiler {
     has $!instance;
     has $!operations;
-    method to_mast($qast) {
+    method to_mast(*@args) {
         my $new := $!instance.new;
         $new.HOW.mixin($new, SerializeOnce);
-        $new.to_mast($qast)
+        $new.to_mast(|@args)
     }
 
     method operations() {
@@ -54,14 +64,18 @@ sub MAIN(*@ARGS, *%ARGS) {
     nqp::bindcomp('QAST', $monkey_patched);
 
     my $moar := $nqpcomp-cc.backend;
-    my $js := HLLBackend::JavaScript.new();
+    my $js := JavaScriptBackend.new(compiler => $nqpcomp-cc);
 
     my $combined := HLL::Backend::JavaScriptAndMoar.new($js);
 
 
     $combined.HOW.reparent($combined, $moar);
 
+    my @clo := $nqpcomp-cc.commandline_options();
+    @clo.push('js-output=s');
+
     $nqpcomp-cc.backend($combined);
+    $nqpcomp-cc.addstage('optimize', :after<ast>); # we need to re-add optimize after .backend removes it
 
     $nqpcomp-cc.command_line(@ARGS,:module-path('gen/js/stage2'),
         :setting-path('gen/js/stage2'),

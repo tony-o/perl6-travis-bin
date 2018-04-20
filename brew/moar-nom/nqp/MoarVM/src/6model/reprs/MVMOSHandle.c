@@ -1,12 +1,12 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps MVMOSHandle_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st  = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st  = MVM_gc_allocate_stable(tc, &MVMOSHandle_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -44,8 +44,10 @@ static void gc_mark(MVMThreadContext *tc, MVMSTable *st, void *data, MVMGCWorkli
 /* Called by the VM in order to free memory associated with this object. */
 static void gc_free(MVMThreadContext *tc, MVMObject *obj) {
     MVMOSHandle *handle = (MVMOSHandle *)obj;
-    if (handle->body.ops && handle->body.ops->gc_free)
+    if (handle->body.ops && handle->body.ops->gc_free) {
         handle->body.ops->gc_free(tc, obj, handle->body.data);
+        handle->body.data = NULL;
+    }
     if (handle->body.mutex) {
         uv_mutex_destroy(handle->body.mutex);
         MVM_free(handle->body.mutex);
@@ -75,10 +77,10 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info) {
 
 /* Initializes the representation. */
 const MVMREPROps * MVMOSHandle_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &MVMOSHandle_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps MVMOSHandle_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     initialize,
@@ -104,5 +106,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "MVMOSHandle", /* name */
     MVM_REPR_ID_MVMOSHandle,
-    0, /* refs_frames */
+    NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

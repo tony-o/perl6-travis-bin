@@ -1,5 +1,44 @@
 #include "moar.h"
 
+typedef struct {
+    MVMuint32 items;
+    MVMuint32 start;
+    MVMuint32 alloc;
+
+    MVMProfileCallNode **list;
+} NodeWorklist;
+
+static void add_node(MVMThreadContext *tc, NodeWorklist *list, MVMProfileCallNode *node) {
+    if (list->start + list->items + 1 < list->alloc) {
+        /* Add at the end */
+        list->items++;
+        list->list[list->start + list->items] = node;
+    } else if (list->start > 0) {
+        /* End reached, add to the start now */
+        list->start--;
+        list->list[list->start] = node;
+    } else {
+        /* Filled up the whole list. Make it bigger */
+        list->alloc *= 2;
+        list->list = MVM_realloc(list->list, list->alloc * sizeof(MVMProfileCallNode *));
+    }
+}
+
+static MVMProfileCallNode *take_node(MVMThreadContext *tc, NodeWorklist *list) {
+    MVMProfileCallNode *result = NULL;
+    if (list->items == 0) {
+        MVM_panic(1, "profiler: tried to take a node from an empty node worklist");
+    }
+    if (list->start > 0) {
+        result = list->list[list->start];
+        list->start++;
+    } else {
+        result = list->list[list->start + list->items];
+        list->items--;
+    }
+    return result;
+}
+
 /* Adds an instruction to log an allocation. */
 static void add_allocation_logging(MVMThreadContext *tc, MVMSpeshGraph *g, MVMSpeshBB *bb, MVMSpeshIns *ins) {
     MVMSpeshIns *alloc_ins = MVM_spesh_alloc(tc, g, sizeof(MVMSpeshIns));
@@ -130,9 +169,6 @@ static void instrument_graph(MVMThreadContext *tc, MVMSpeshGraph *g) {
                     add_allocation_logging(tc, g, bb, ins);
                 break;
             }
-            case MVM_OP_getregref_i:
-            case MVM_OP_getregref_n:
-            case MVM_OP_getregref_s:
             case MVM_OP_getlexref_i:
             case MVM_OP_getlexref_n:
             case MVM_OP_getlexref_s:
@@ -179,7 +215,7 @@ static void instrument_graph(MVMThreadContext *tc, MVMSpeshGraph *g) {
 static void add_instrumentation(MVMThreadContext *tc, MVMStaticFrame *sf) {
     MVMSpeshCode  *sc;
     MVMStaticFrameInstrumentation *ins;
-    MVMSpeshGraph *sg = MVM_spesh_graph_create(tc, sf, 1);
+    MVMSpeshGraph *sg = MVM_spesh_graph_create(tc, sf, 1, 0);
     instrument_graph(tc, sg);
     sc = MVM_spesh_codegen(tc, sg);
     ins = MVM_calloc(1, sizeof(MVMStaticFrameInstrumentation));
@@ -205,10 +241,9 @@ void MVM_profile_instrument(MVMThreadContext *tc, MVMStaticFrame *sf) {
         sf->body.handlers      = sf->body.instrumentation->instrumented_handlers;
         sf->body.bytecode_size = sf->body.instrumentation->instrumented_bytecode_size;
 
-        /* Throw away any specializations; we'll need to reproduce them as
-         * instrumented versions. */
-        sf->body.num_spesh_candidates = 0;
-        sf->body.spesh_candidates     = NULL;
+        /* Throw away any argument guard so we'll never resolve prior
+         * specializations again. */
+        MVM_spesh_arg_guard_discard(tc, sf);
     }
 }
 
@@ -221,19 +256,23 @@ void MVM_profile_ensure_uninstrumented(MVMThreadContext *tc, MVMStaticFrame *sf)
         sf->body.bytecode_size = sf->body.instrumentation->uninstrumented_bytecode_size;
 
         /* Throw away specializations, which may also be instrumented. */
-        sf->body.num_spesh_candidates = 0;
-        sf->body.spesh_candidates     = NULL;
+        MVM_spesh_arg_guard_discard(tc, sf);
 
         /* XXX For now, due to bugs, disable spesh here. */
         tc->instance->spesh_enabled = 0;
     }
 }
 
-/* Starts instrumted profiling. */
+/* Starts instrumented profiling. */
 void MVM_profile_instrumented_start(MVMThreadContext *tc, MVMObject *config) {
-    /* Enable profiling. */
+    /* Wait for specialization thread to stop working, so it won't trip over
+     * bytecode instrumentation, then enable profiling. */
+    uv_mutex_lock(&(tc->instance->mutex_spesh_sync));
+    while (tc->instance->spesh_working != 0)
+        uv_cond_wait(&(tc->instance->cond_spesh_sync), &(tc->instance->mutex_spesh_sync));
     tc->instance->profiling = 1;
     tc->instance->instrumentation_level++;
+    uv_mutex_unlock(&(tc->instance->mutex_spesh_sync));
 }
 
 /* Simple allocation functions. */
@@ -276,14 +315,18 @@ typedef struct {
     MVMString *gcs;
     MVMString *time;
     MVMString *full;
+    MVMString *sequence;
+    MVMString *responsible;
     MVMString *cleared_bytes;
     MVMString *retained_bytes;
     MVMString *promoted_bytes;
     MVMString *gen2_roots;
+    MVMString *start_time;
     MVMString *osr;
     MVMString *deopt_one;
     MVMString *deopt_all;
     MVMString *spesh_time;
+    MVMString *thread;
     MVMString *native_lib;
 } ProfDumpStrs;
 
@@ -418,10 +461,15 @@ static MVMObject * dump_call_graph_node(MVMThreadContext *tc, ProfDumpStrs *pds,
 
 /* Dumps data from a single thread. */
 static MVMObject * dump_thread_data(MVMThreadContext *tc, ProfDumpStrs *pds,
+                                    MVMThreadContext *othertc,
                                     const MVMProfileThreadData *ptd) {
     MVMObject *thread_hash = new_hash(tc);
     MVMObject *thread_gcs  = new_array(tc);
+    MVMuint64 absolute_start_time;
     MVMuint32  i;
+
+    /* Use the main thread's start time for absolute timings */
+    absolute_start_time = tc->instance->main_thread->prof_data->start_time;
 
     /* Add time. */
     MVM_repr_bind_key_o(tc, thread_hash, pds->total_time,
@@ -439,6 +487,10 @@ static MVMObject * dump_thread_data(MVMThreadContext *tc, ProfDumpStrs *pds,
             box_i(tc, ptd->gcs[i].time / 1000));
         MVM_repr_bind_key_o(tc, gc_hash, pds->full,
             box_i(tc, ptd->gcs[i].full));
+        MVM_repr_bind_key_o(tc, gc_hash, pds->sequence,
+            box_i(tc, ptd->gcs[i].gc_seq_num - 2));
+        MVM_repr_bind_key_o(tc, gc_hash, pds->responsible,
+            box_i(tc, ptd->gcs[i].responsible));
         MVM_repr_bind_key_o(tc, gc_hash, pds->cleared_bytes,
             box_i(tc, ptd->gcs[i].cleared_bytes));
         MVM_repr_bind_key_o(tc, gc_hash, pds->retained_bytes,
@@ -447,6 +499,8 @@ static MVMObject * dump_thread_data(MVMThreadContext *tc, ProfDumpStrs *pds,
             box_i(tc, ptd->gcs[i].promoted_bytes));
         MVM_repr_bind_key_o(tc, gc_hash, pds->gen2_roots,
             box_i(tc, ptd->gcs[i].num_gen2roots));
+        MVM_repr_bind_key_o(tc, gc_hash, pds->start_time,
+            box_i(tc, (ptd->gcs[i].abstime - absolute_start_time) / 1000));
         MVM_repr_push_o(tc, thread_gcs, gc_hash);
     }
     MVM_repr_bind_key_o(tc, thread_hash, pds->gcs, thread_gcs);
@@ -455,75 +509,119 @@ static MVMObject * dump_thread_data(MVMThreadContext *tc, ProfDumpStrs *pds,
     MVM_repr_bind_key_o(tc, thread_hash, pds->spesh_time,
         box_i(tc, ptd->spesh_time / 1000));
 
+    /* Add thread id. */
+    MVM_repr_bind_key_o(tc, thread_hash, pds->thread,
+        box_i(tc, othertc->thread_id));
+
     return thread_hash;
+}
+
+void MVM_profile_dump_instrumented_data(MVMThreadContext *tc) {
+    if (tc->prof_data && tc->prof_data->collected_data) {
+        ProfDumpStrs pds;
+        MVMThread *thread;
+
+        /* We'll allocate the data in gen2, but as we want to keep it, but to be
+         * sure we don't trigger a GC run. */
+        MVM_gc_allocate_gen2_default_set(tc);
+
+        /* Some string constants to re-use. */
+        pds.total_time      = str(tc, "total_time");
+        pds.call_graph      = str(tc, "call_graph");
+        pds.name            = str(tc, "name");
+        pds.id              = str(tc, "id");
+        pds.file            = str(tc, "file");
+        pds.line            = str(tc, "line");
+        pds.entries         = str(tc, "entries");
+        pds.spesh_entries   = str(tc, "spesh_entries");
+        pds.jit_entries     = str(tc, "jit_entries");
+        pds.inlined_entries = str(tc, "inlined_entries");
+        pds.inclusive_time  = str(tc, "inclusive_time");
+        pds.exclusive_time  = str(tc, "exclusive_time");
+        pds.callees         = str(tc, "callees");
+        pds.allocations     = str(tc, "allocations");
+        pds.type            = str(tc, "type");
+        pds.count           = str(tc, "count");
+        pds.spesh           = str(tc, "spesh");
+        pds.jit             = str(tc, "jit");
+        pds.gcs             = str(tc, "gcs");
+        pds.time            = str(tc, "time");
+        pds.full            = str(tc, "full");
+        pds.sequence        = str(tc, "sequence");
+        pds.responsible     = str(tc, "responsible");
+        pds.cleared_bytes   = str(tc, "cleared_bytes");
+        pds.retained_bytes  = str(tc, "retained_bytes");
+        pds.promoted_bytes  = str(tc, "promoted_bytes");
+        pds.gen2_roots      = str(tc, "gen2_roots");
+        pds.start_time      = str(tc, "start_time");
+        pds.osr             = str(tc, "osr");
+        pds.deopt_one       = str(tc, "deopt_one");
+        pds.deopt_all       = str(tc, "deopt_all");
+        pds.spesh_time      = str(tc, "spesh_time");
+        pds.thread          = str(tc, "thread");
+        pds.native_lib      = str(tc, "native library");
+
+        /* Record end time. */
+        tc->prof_data->end_time = uv_hrtime();
+
+        MVM_repr_push_o(tc, tc->prof_data->collected_data, dump_thread_data(tc, &pds, tc, tc->prof_data));
+        while (tc->prof_data->current_call)
+            MVM_profile_log_exit(tc);
+
+        /* Get all thread's data */
+        thread = tc->instance->threads;
+
+        while (thread) {
+            MVMThreadContext *othertc = thread->body.tc;
+            /* Check for othertc to exist because joining threads nulls out
+             * the tc entry in the thread object. */
+            if (othertc && othertc->prof_data && othertc != tc) {
+                /* If we have any call frames still on the profile stack, exit them. */
+                while (othertc->prof_data->current_call)
+                    MVM_profile_log_exit(othertc);
+
+                /* Record end time. */
+                othertc->prof_data->end_time = uv_hrtime();
+
+                MVM_gc_allocate_gen2_default_set(othertc);
+                MVM_repr_push_o(tc, tc->prof_data->collected_data, dump_thread_data(tc, &pds, othertc, othertc->prof_data));
+                MVM_gc_allocate_gen2_default_clear(othertc);
+            }
+            thread = thread->body.next;
+        }
+        MVM_gc_allocate_gen2_default_clear(tc);
+    }
 }
 
 /* Dumps data from all threads into an array of per-thread data. */
 static MVMObject * dump_data(MVMThreadContext *tc) {
-    MVMObject *threads_array;
-    ProfDumpStrs pds;
-
-    /* We'll allocate the data in gen2, but as we want to keep it, but to be
-     * sure we don't trigger a GC run. */
-    MVM_gc_allocate_gen2_default_set(tc);
-
-    /* Some string constants to re-use. */
-    pds.total_time      = str(tc, "total_time");
-    pds.call_graph      = str(tc, "call_graph");
-    pds.name            = str(tc, "name");
-    pds.id              = str(tc, "id");
-    pds.file            = str(tc, "file");
-    pds.line            = str(tc, "line");
-    pds.entries         = str(tc, "entries");
-    pds.spesh_entries   = str(tc, "spesh_entries");
-    pds.jit_entries     = str(tc, "jit_entries");
-    pds.inlined_entries = str(tc, "inlined_entries");
-    pds.inclusive_time  = str(tc, "inclusive_time");
-    pds.exclusive_time  = str(tc, "exclusive_time");
-    pds.callees         = str(tc, "callees");
-    pds.allocations     = str(tc, "allocations");
-    pds.type            = str(tc, "type");
-    pds.count           = str(tc, "count");
-    pds.spesh           = str(tc, "spesh");
-    pds.jit             = str(tc, "jit");
-    pds.gcs             = str(tc, "gcs");
-    pds.time            = str(tc, "time");
-    pds.full            = str(tc, "full");
-    pds.cleared_bytes   = str(tc, "cleared_bytes");
-    pds.retained_bytes  = str(tc, "retained_bytes");
-    pds.promoted_bytes  = str(tc, "promoted_bytes");
-    pds.gen2_roots      = str(tc, "gen2_roots");
-    pds.osr             = str(tc, "osr");
-    pds.deopt_one       = str(tc, "deopt_one");
-    pds.deopt_all       = str(tc, "deopt_all");
-    pds.spesh_time      = str(tc, "spesh_time");
-    pds.native_lib      = str(tc, "native library");
+    MVMObject *collected_data;
 
     /* Build up threads array. */
     /* XXX Only main thread for now. */
-    threads_array = new_array(tc);
-    if (tc->prof_data)
-        MVM_repr_push_o(tc, threads_array, dump_thread_data(tc, &pds, tc->prof_data));
 
-    /* Switch back to default allocation and return result; */
-    MVM_gc_allocate_gen2_default_clear(tc);
-    return threads_array;
+    tc->prof_data->collected_data = new_array(tc);
+
+    /* We rely on the GC orchestration to stop all threads and the
+     * "main" gc thread to dump all thread data for us */
+    MVM_gc_enter_from_allocator(tc);
+
+    collected_data = tc->prof_data->collected_data;
+    tc->prof_data->collected_data = NULL;
+
+    return collected_data;
 }
 
 /* Ends profiling, builds the result data structure, and returns it. */
 MVMObject * MVM_profile_instrumented_end(MVMThreadContext *tc) {
-    /* If we have any call frames still on the profile stack, exit them. */
-    while (tc->prof_data->current_call)
-        MVM_profile_log_exit(tc);
 
     /* Disable profiling. */
-    /* XXX Needs to account for multiple threads. */
+    uv_mutex_lock(&(tc->instance->mutex_spesh_sync));
+    while (tc->instance->spesh_working != 0)
+        uv_cond_wait(&(tc->instance->cond_spesh_sync), &(tc->instance->mutex_spesh_sync));
     tc->instance->profiling = 0;
     tc->instance->instrumentation_level++;
-
-    /* Record end time. */
-    if (tc->prof_data)
-        tc->prof_data->end_time = uv_hrtime();
+    uv_mutex_unlock(&(tc->instance->mutex_spesh_sync));
 
     /* Build and return result data structure. */
     return dump_data(tc);
@@ -531,15 +629,33 @@ MVMObject * MVM_profile_instrumented_end(MVMThreadContext *tc) {
 
 
 /* Marks objects held in the profiling graph. */
-static void mark_call_graph_node(MVMThreadContext *tc, MVMProfileCallNode *node, MVMGCWorklist *worklist) {
+static void mark_call_graph_node(MVMThreadContext *tc, MVMProfileCallNode *node, NodeWorklist *nodelist, MVMGCWorklist *worklist) {
     MVMuint32 i;
     MVM_gc_worklist_add(tc, worklist, &(node->sf));
     for (i = 0; i < node->num_alloc; i++)
         MVM_gc_worklist_add(tc, worklist, &(node->alloc[i].type));
     for (i = 0; i < node->num_succ; i++)
-        mark_call_graph_node(tc, node->succ[i], worklist);
+        add_node(tc, nodelist, node->succ[i]);
 }
 void MVM_profile_instrumented_mark_data(MVMThreadContext *tc, MVMGCWorklist *worklist) {
-    if (tc->prof_data)
-        mark_call_graph_node(tc, tc->prof_data->call_graph, worklist);
+    if (tc->prof_data) {
+        /* Allocate our worklist on the stack. */
+        NodeWorklist nodelist;
+        nodelist.items = 0;
+        nodelist.start = 0;
+        nodelist.alloc = 256;
+        nodelist.list = MVM_malloc(nodelist.alloc * sizeof(MVMProfileCallNode *));
+
+        add_node(tc, &nodelist, tc->prof_data->call_graph);
+
+        while (nodelist.items) {
+            MVMProfileCallNode *node = take_node(tc, &nodelist);
+            if (node)
+                mark_call_graph_node(tc, node, &nodelist, worklist);
+        }
+
+        MVM_gc_worklist_add(tc, worklist, &(tc->prof_data->collected_data));
+
+        MVM_free(nodelist.list);
+    }
 }

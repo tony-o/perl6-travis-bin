@@ -27,10 +27,6 @@ my @clo := $nqpcomp.commandline_options();
 @clo.push('no-regex-lib');
 @clo.push('stable-sc');
 @clo.push('optimize=s');
-#?if parrot
-@clo.push('vmlibs=s');
-@clo.push('dynext=s');
-#?endif
 #?if jvm
 @clo.push('javaclass=s');
 @clo.push('bootstrap');
@@ -41,17 +37,9 @@ $nqpcomp.addstage('classname', :after<start>);
 @clo.push('bootstrap');
 #?endif
 #?if js
-@clo.push('source-map');
-@clo.push('source-map-debug');
-@clo.push('beautify');
-@clo.push('cps=s');
 @clo.push('nyi=s');
 #?endif
 
-#?if parrot
-# XXX FIX ME
-sub MAIN(@ARGS) {
-#?endif
 #?if moar
 # XXX FIX ME
 sub MAIN(@ARGS) {

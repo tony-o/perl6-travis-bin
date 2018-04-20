@@ -5,10 +5,30 @@
 
 #if MVM_TRACING
 #  define TRACING_OPT "[--tracing] "
-#  define TRACING_USAGE "\n    --tracing  output a line to stderr on every interpreter instr"
+#  define TRACING_USAGE "\n    --tracing         output a line to stderr on every interpreter instr"
 #else
 #  define TRACING_OPT ""
 #  define TRACING_USAGE ""
+#endif
+
+#ifdef HAVE_TELEMEH
+#  define TELEMEH_USAGE "    MVM_TELEMETRY_LOG           Log internal events at high precision to this file\n"
+#else
+#  define TELEMEH_USAGE ""
+#endif
+
+#ifndef _WIN32
+#  include "signal.h"
+#endif
+
+#ifndef _WIN32
+#  include <unistd.h>
+#else
+#  include <process.h>
+#endif
+
+#ifdef _WIN32
+#  define snprintf _snprintf
 #endif
 
 /* flags need to be sorted alphabetically */
@@ -54,15 +74,22 @@ USAGE: moar [--crash] [--libpath=...] " TRACING_OPT "input.moarvm [program args]
 The following environment variables are respected:\n\
 \n\
     MVM_SPESH_DISABLE           Disables all dynamic optimization\n\
-    MVM_SPESH_NODELAY           Run dynamic optimization even for cold frames\n\
     MVM_SPESH_INLINE_DISABLE    Disables inlining\n\
     MVM_SPESH_OSR_DISABLE       Disables on-stack replacement\n\
+    MVM_SPESH_BLOCKING          Blocks log-sending thread while specializer runs\n\
+    MVM_SPESH_LOG               Specifies a dynamic optimizer log file\n\
+    MVM_SPESH_NODELAY           Run dynamic optimization even for cold frames\n\
+    MVM_SPESH_LIMIT             Limit the maximum number of specializations\n\
     MVM_JIT_DISABLE             Disables JITting to machine code\n\
+    MVM_JIT_EXPR_DISABLE        Disable advanced 'expression' JIT\n\
     MVM_SPESH_LOG               Specifies a dynamic optimizer log file\n\
     MVM_JIT_LOG                 Specifies a JIT-compiler log file\n\
     MVM_JIT_BYTECODE_DIR        Specifies a directory for JIT bytecode dumps\n\
     MVM_CROSS_THREAD_WRITE_LOG  Log unprotected cross-thread object writes to stderr\n\
-";
+    MVM_COVERAGE_LOG            Append (de-duped by default) line-by-line coverage messages to this file\n\
+    MVM_COVERAGE_CONTROL        If set to 1, non-de-duping coverage started with nqp::coveragecontrol(1),\n\
+                                  if set to 2, non-de-duping coverage started right away\n"
+    TELEMEH_USAGE;
 
 static int cmp_flag(const void *key, const void *value)
 {
@@ -96,18 +123,30 @@ static int parse_flag(const char *arg)
         return UNKNOWN_FLAG;
 }
 
+#ifndef _WIN32
 int main(int argc, char *argv[])
+#else
+int wmain(int argc, wchar_t *wargv[])
+#endif
 {
     MVMInstance *instance;
     const char  *input_file;
     const char  *executable_name = NULL;
     const char  *lib_path[8];
 
+#ifdef _WIN32
+    char **argv = MVM_UnicodeToUTF8_argv(argc, wargv);
+#endif
+
     int dump         = 0;
     int full_cleanup = 0;
     int argi         = 1;
     int lib_path_i   = 0;
     int flag;
+
+    unsigned int interval_id;
+    char telemeh_inited = 0;
+
     for (; (flag = parse_flag(argv[argi])) != NOT_A_FLAG; ++argi) {
         switch (flag) {
             case FLAG_CRASH:
@@ -171,6 +210,26 @@ int main(int argc, char *argv[])
         }
     }
 
+#ifdef HAVE_TELEMEH
+    if (getenv("MVM_TELEMETRY_LOG")) {
+        char path[256];
+        FILE *fp;
+        snprintf(path, 255, "%s.%d", getenv("MVM_TELEMETRY_LOG"),
+#ifdef _WIN32
+             _getpid()
+#else
+             getpid()
+#endif
+             );
+        fp = fopen(path, "w");
+        if (fp) {
+            MVM_telemetry_init(fp);
+            telemeh_inited = 1;
+            interval_id = MVM_telemetry_interval_start(0, "moarvm startup");
+        }
+    }
+#endif
+
     lib_path[lib_path_i] = NULL;
 
     if (argi >= argc) {
@@ -187,8 +246,20 @@ int main(int argc, char *argv[])
     MVM_vm_set_exec_name(instance, executable_name);
     MVM_vm_set_lib_path(instance, lib_path_i, lib_path);
 
+    /* Ignore SIGPIPE by default, since we error-check reads/writes. This does
+     * not prevent users from setting up their own signal handler for SIGPIPE,
+     * which will take precedence over this ignore. */
+#ifndef _WIN32
+    signal(SIGPIPE, SIG_IGN);
+#endif
+
     if (dump) MVM_vm_dump_file(instance, input_file);
     else MVM_vm_run_file(instance, input_file);
+
+    if (getenv("MVM_TELEMETRY_LOG") && telemeh_inited) {
+        MVM_telemetry_interval_stop(0, interval_id, "moarvm teardown");
+        MVM_telemetry_finish();
+    }
 
     if (full_cleanup) {
         MVM_vm_destroy_instance(instance);

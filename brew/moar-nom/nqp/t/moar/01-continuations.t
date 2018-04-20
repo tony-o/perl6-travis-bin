@@ -2,7 +2,7 @@
 
 # continuations.
 
-plan(22);
+plan(24);
 
 {
     # unique objects
@@ -66,8 +66,6 @@ plan(22);
     ok( $log eq '54', 'continuation invoke "returns" from control');
     ok( $shift_returned == 15, 'continuation invoke argument is shift return value' );
     ok( $reset_returned == 30, 'reset block return value is continuation invoke return value' );
-
-    ok( nqp::continuationinvoke($savecont, {25}) == 50, 'continuation can be used more than once' );
 
     ok( nqp::continuationreset($A, {
         nqp::continuationcontrol(0, $A, -> $c { 42 });
@@ -133,71 +131,28 @@ plan(22);
 }
 
 {
-    # should be 3 * 3 * 10 = 90
-    # will infinite loop if the clones are removed
-    my $cont := nqp::continuationreset(nqp::null(), {
-        3 * nqp::continuationcontrol(0, nqp::null(), -> $k { $k });
-    });
-    my $val := nqp::continuationinvoke(nqp::continuationclone($cont),
-        { nqp::continuationinvoke(nqp::continuationclone($cont), { 10 }) });
+    my $log := '';
 
-    todo('unknown bug with clone', 1);
-    ok($val == 90, "restacking cont twice with clones works");
-}
-
-# scheme call/cc example: amby thing, needs to use control, not control0
-{
-    # for proper R5RS semantics, run this once wrapping your main function
-    sub run_main($f) {
-        nqp::continuationreset(nqp::null(), $f);
-    }
-
-    sub callcc($f) {
-        # first get the current continuation
-        nqp::continuationcontrol(1, nqp::null(), -> $dcont {
-            my $scheme_cont := -> $val {
-                # when the scheme continuation is invoked, we need to *replace*
-                # the current continuation with this one
-                nqp::continuationcontrol(1, nqp::null(), -> $c {
-                    nqp::continuationinvoke($dcont, { $val })
-                });
-            };
-            nqp::continuationinvoke($dcont, { $f($scheme_cont) });
-        });
-    }
-
-    my $backtrack_cont := sub ($ig) { nqp::die("Out of options!"); };
-
-    sub amb(*@options) {
-        my $old_back := $backtrack_cont;
-        my $here;
-        callcc(-> $c { $here := $c });
-        while @options {
-            my $next := nqp::shift(@options);
-            $backtrack_cont := $here;
-            return $next;
-        }
-        $old_back(0);
-    }
-
-    # 4-queens
-    my $queens := run_main({
-        sub check($a, $b, $dist) { amb() if $a-$b == $dist || $a-$b == -$dist || $a == $b }
-        my $q1 := amb(1,2,3,4);
-        my $q2 := amb(1,2,3,4);
-        check($q1,$q2,1);
-        my $q3 := amb(1,2,3,4);
-        check($q1,$q3,2);
-        check($q2,$q3,1);
-        my $q4 := amb(1,2,3,4);
-        check($q1,$q4,3);
-        check($q2,$q4,2);
-        check($q3,$q4,1);
-        "$q1$q2$q3$q4";
+    my $next;
+    nqp::continuationreset(nqp::null(), {
+        $log := $log ~ 1;
+        nqp::continuationcontrol(0, nqp::null(), -> $cont { $next := $cont });
+        $log := $log ~ 2;
+        nqp::continuationcontrol(0, nqp::null(), -> $cont { $next := $cont });
+        $log := $log ~ 3;
+        nqp::continuationcontrol(0, nqp::null(), -> $cont { $next := $cont });
+        $log := $log ~ 4;
+        777;
     });
 
-    todo('probably bug with protect', 1);
-    ok($queens eq '2413', 'n-queens callcc example');
+    is($log, '1', 'passing a continuation to nqp::continuationreset 1/4');
+    nqp::continuationreset(nqp::null(), $next);
+    is($log, '12', 'passing a continuation to nqp::continuationreset 2/4');
+    nqp::continuationreset(nqp::null(), $next);
+    is($log, '123', 'passing a continuation to nqp::continuationreset 3/4');
+    my $ret := nqp::continuationreset(nqp::null(), $next);
+    is($log, '1234', 'passing a continuation to nqp::continuationreset 4/4');
+    is($ret, 777, 'passing a continuation to nqp::continuationreset - correct return value');
 }
 
 # gather/take example

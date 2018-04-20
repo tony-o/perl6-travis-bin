@@ -23,7 +23,12 @@ static MVMObject * get_method_cache(MVMThreadContext *tc, MVMSTable *st) {
 
 /* Locates a method by name, checking in the method cache only. */
 MVMObject * MVM_6model_find_method_cache_only(MVMThreadContext *tc, MVMObject *obj, MVMString *name) {
-    MVMObject *cache = get_method_cache(tc, STABLE(obj));
+    MVMObject *cache;
+
+    MVMROOT(tc, name, {
+        cache = get_method_cache(tc, STABLE(obj));
+    });
+
     if (cache && IS_CONCRETE(cache))
         return MVM_repr_at_key_o(tc, cache, name);
     return NULL;
@@ -51,8 +56,8 @@ static void die_over_missing_method(MVMThreadContext *tc, MVMObject *obj, MVMStr
         char *c_name = MVM_string_utf8_encode_C_string(tc, name);
         char *waste[] = { c_name, NULL };
         MVM_exception_throw_adhoc_free(tc, waste,
-            "Cannot find method '%s'",
-            c_name);
+            "Cannot find method '%s' on object of type %s",
+            c_name, MVM_6model_get_debug_name(tc, obj));
     }
 }
 static void late_bound_find_method_return(MVMThreadContext *tc, void *sr_data) {
@@ -68,7 +73,7 @@ static void late_bound_find_method_return(MVMThreadContext *tc, void *sr_data) {
     }
 }
 static void mark_find_method_sr_data(MVMThreadContext *tc, MVMFrame *frame, MVMGCWorklist *worklist) {
-    FindMethodSRData *fm = (FindMethodSRData *)frame->special_return_data;
+    FindMethodSRData *fm = (FindMethodSRData *)frame->extra->special_return_data;
     MVM_gc_worklist_add(tc, worklist, &fm->obj);
     MVM_gc_worklist_add(tc, worklist, &fm->name);
 }
@@ -86,7 +91,12 @@ void MVM_6model_find_method(MVMThreadContext *tc, MVMObject *obj, MVMString *nam
 
     /* First try to find it in the cache. If we find it, we have a result.
      * If we don't find it, but the cache is authoritative, then error. */
-    cache = get_method_cache(tc, STABLE(obj));
+    MVMROOT(tc, obj, {
+        MVMROOT(tc, name, {
+            cache = get_method_cache(tc, STABLE(obj));
+        });
+    });
+
     if (cache && IS_CONCRETE(cache)) {
         MVMObject *meth = MVM_repr_at_key_o(tc, cache, name);
         if (!MVM_is_null(tc, meth)) {
@@ -101,9 +111,16 @@ void MVM_6model_find_method(MVMThreadContext *tc, MVMObject *obj, MVMString *nam
 
     /* Otherwise, need to call the find_method method. We make the assumption
      * that the invocant's meta-object's type is composed. */
-    HOW = MVM_6model_get_how(tc, STABLE(obj));
-    find_method = MVM_6model_find_method_cache_only(tc, HOW,
-        tc->instance->str_consts.find_method);
+    MVMROOT(tc, obj, {
+        MVMROOT(tc, name, {
+            HOW = MVM_6model_get_how(tc, STABLE(obj));
+            MVMROOT(tc, HOW, {
+                 find_method = MVM_6model_find_method_cache_only(tc, HOW,
+                      tc->instance->str_consts.find_method);
+            });
+        });
+    });
+
     if (MVM_is_null(tc, find_method)) {
         char *c_name  = MVM_string_utf8_encode_C_string(tc, name);
         char *waste[] = { c_name, NULL };
@@ -121,9 +138,8 @@ void MVM_6model_find_method(MVMThreadContext *tc, MVMObject *obj, MVMString *nam
         fm->obj  = obj;
         fm->name = name;
         fm->res  = res;
-        tc->cur_frame->special_return           = late_bound_find_method_return;
-        tc->cur_frame->special_return_data      = fm;
-        tc->cur_frame->mark_special_return_data = mark_find_method_sr_data;
+        MVM_frame_special_return(tc, tc->cur_frame, late_bound_find_method_return,
+            NULL, fm, mark_find_method_sr_data);
     }
     tc->cur_frame->args[0].o = HOW;
     tc->cur_frame->args[1].o = obj;
@@ -133,19 +149,28 @@ void MVM_6model_find_method(MVMThreadContext *tc, MVMObject *obj, MVMString *nam
 
 MVMint32 MVM_6model_find_method_spesh(MVMThreadContext *tc, MVMObject *obj, MVMString *name,
                                       MVMint32 ss_idx, MVMRegister *res) {
+    MVMObject *meth;
+
     /* Missed mono-morph; try cache-only lookup. */
-    MVMObject *meth = MVM_6model_find_method_cache_only(tc, obj, name);
+
+    MVMROOT(tc, obj, {
+        MVMROOT(tc, name, {
+            meth = MVM_6model_find_method_cache_only(tc, obj, name);
+        });
+    });
+
     if (!MVM_is_null(tc, meth)) {
         /* Got it; cache. Must be careful due to threads
          * reading, races, etc. */
         MVMStaticFrame *sf = tc->cur_frame->static_info;
         uv_mutex_lock(&tc->instance->mutex_spesh_install);
         if (!tc->cur_frame->effective_spesh_slots[ss_idx + 1]) {
-            MVM_ASSIGN_REF(tc, &(sf->common.header),
+            MVMStaticFrameSpesh *spesh = sf->body.spesh;
+            MVM_ASSIGN_REF(tc, &(spesh->common.header),
                            tc->cur_frame->effective_spesh_slots[ss_idx + 1],
                            (MVMCollectable *)meth);
             MVM_barrier();
-            MVM_ASSIGN_REF(tc, &(sf->common.header),
+            MVM_ASSIGN_REF(tc, &(spesh->common.header),
                            tc->cur_frame->effective_spesh_slots[ss_idx],
                            (MVMCollectable *)STABLE(obj));
         }
@@ -180,7 +205,13 @@ MVMint64 MVM_6model_can_method_cache_only(MVMThreadContext *tc, MVMObject *obj, 
     }
 
     /* Consider the method cache. */
-    cache = get_method_cache(tc, STABLE(obj));
+
+    MVMROOT(tc, obj, {
+        MVMROOT(tc, name, {
+            cache = get_method_cache(tc, STABLE(obj));
+        });
+    });
+
     if (cache && IS_CONCRETE(cache)) {
         MVMObject *meth = MVM_repr_at_key_o(tc, cache, name);
         if (!MVM_is_null(tc, meth)) {
@@ -197,7 +228,13 @@ void MVM_6model_can_method(MVMThreadContext *tc, MVMObject *obj, MVMString *name
     MVMObject *HOW, *find_method, *code;
     MVMCallsite *findmeth_callsite;
 
-    MVMint64 can_cached = MVM_6model_can_method_cache_only(tc, obj, name);
+    MVMint64 can_cached;
+
+    MVMROOT(tc, obj, {
+        MVMROOT(tc, name, {
+            can_cached = MVM_6model_can_method_cache_only(tc, obj, name);
+        });
+    });
 
     if (can_cached == 0 || can_cached == 1) {
         res->i64 = can_cached;
@@ -206,9 +243,16 @@ void MVM_6model_can_method(MVMThreadContext *tc, MVMObject *obj, MVMString *name
 
     /* If no method in cache and the cache is not authoritative, need to make
      * a late-bound call to find_method. */
-    HOW = MVM_6model_get_how(tc, STABLE(obj));
-    find_method = MVM_6model_find_method_cache_only(tc, HOW,
-        tc->instance->str_consts.find_method);
+    MVMROOT(tc, obj, {
+        MVMROOT(tc, name, {
+            HOW = MVM_6model_get_how(tc, STABLE(obj));
+            MVMROOT(tc, HOW, {
+                find_method = MVM_6model_find_method_cache_only(tc, HOW,
+                     tc->instance->str_consts.find_method);
+            });
+       });
+    });
+
     if (MVM_is_null(tc, find_method)) {
         /* This'll count as a "no"... */
         res->i64 = 0;
@@ -220,8 +264,7 @@ void MVM_6model_can_method(MVMThreadContext *tc, MVMObject *obj, MVMString *name
     code = MVM_frame_find_invokee(tc, find_method, NULL);
     findmeth_callsite = MVM_callsite_get_common(tc, MVM_CALLSITE_ID_FIND_METHOD);
     MVM_args_setup_thunk(tc, res, MVM_RETURN_OBJ, findmeth_callsite);
-    tc->cur_frame->special_return      = late_bound_can_return;
-    tc->cur_frame->special_return_data = res;
+    MVM_frame_special_return(tc, tc->cur_frame, late_bound_can_return, NULL, res, NULL);
     tc->cur_frame->args[0].o = HOW;
     tc->cur_frame->args[1].o = obj;
     tc->cur_frame->args[2].s = name;
@@ -231,9 +274,18 @@ void MVM_6model_can_method(MVMThreadContext *tc, MVMObject *obj, MVMString *name
 /* Checks if an object has a given type, delegating to the type_check or
  * accepts_type methods as needed. */
 static void do_accepts_type_check(MVMThreadContext *tc, MVMObject *obj, MVMObject *type, MVMRegister *res) {
-    MVMObject *HOW = MVM_6model_get_how(tc, STABLE(type));
-    MVMObject *meth = MVM_6model_find_method_cache_only(tc, HOW,
-        tc->instance->str_consts.accepts_type);
+    MVMObject *HOW, *meth;
+
+    MVMROOT(tc, obj, {
+        MVMROOT(tc, type, {
+            HOW = MVM_6model_get_how(tc, STABLE(type));
+            MVMROOT(tc, HOW, {
+                meth = MVM_6model_find_method_cache_only(tc, HOW,
+                    tc->instance->str_consts.accepts_type);
+            });
+        });
+    });
+
     if (!MVM_is_null(tc, meth)) {
         /* Set up the call, using the result register as the target. */
         MVMObject *code = MVM_frame_find_invokee(tc, meth, NULL);
@@ -268,7 +320,7 @@ static void accepts_type_sr(MVMThreadContext *tc, void *sr_data) {
 }
 
 static void mark_sr_data(MVMThreadContext *tc, MVMFrame *frame, MVMGCWorklist *worklist) {
-    AcceptsTypeSRData *atd = (AcceptsTypeSRData *)frame->special_return_data;
+    AcceptsTypeSRData *atd = (AcceptsTypeSRData *)frame->extra->special_return_data;
     MVM_gc_worklist_add(tc, worklist, &atd->obj);
     MVM_gc_worklist_add(tc, worklist, &atd->type);
 }
@@ -310,9 +362,17 @@ void MVM_6model_istype(MVMThreadContext *tc, MVMObject *obj, MVMObject *type, MV
     /* If we get here, need to call .^type_check on the value we're
      * checking, unless it's an accepts check. */
     if (!cache || (mode & MVM_TYPE_CHECK_CACHE_THEN_METHOD)) {
-        MVMObject *HOW = MVM_6model_get_how(tc, st);
-        MVMObject *meth = MVM_6model_find_method_cache_only(tc, HOW,
-            tc->instance->str_consts.type_check);
+        MVMObject *HOW, *meth;
+
+        MVMROOT(tc, obj, {
+             MVMROOT(tc, type, {
+                 HOW = MVM_6model_get_how(tc, st);
+                 MVMROOT(tc, HOW, {
+                     meth = MVM_6model_find_method_cache_only(tc, HOW,
+                         tc->instance->str_consts.type_check);
+                 });
+             });
+        });
         if (!MVM_is_null(tc, meth)) {
             /* Set up the call, using the result register as the target. */
             MVMObject *code = MVM_frame_find_invokee(tc, meth, NULL);
@@ -327,9 +387,8 @@ void MVM_6model_istype(MVMThreadContext *tc, MVMObject *obj, MVMObject *type, MV
                 atd->obj = obj;
                 atd->type = type;
                 atd->res = res;
-                tc->cur_frame->special_return           = accepts_type_sr;
-                tc->cur_frame->special_return_data      = atd;
-                tc->cur_frame->mark_special_return_data = mark_sr_data;
+                MVM_frame_special_return(tc, tc->cur_frame, accepts_type_sr, NULL,
+                    atd, mark_sr_data);
             }
             STABLE(code)->invoke(tc, code, typecheck_callsite, tc->cur_frame->args);
             return;
@@ -389,7 +448,7 @@ MVMint64 MVM_6model_try_cache_type_check(MVMThreadContext *tc, MVMObject *obj, M
 
 /* Default invoke function on STables; for non-invokable objects */
 void MVM_6model_invoke_default(MVMThreadContext *tc, MVMObject *invokee, MVMCallsite *callsite, MVMRegister *args) {
-    MVM_exception_throw_adhoc(tc, "Cannot invoke this object (REPR: %s)", REPR(invokee)->name);
+    MVM_exception_throw_adhoc(tc, "Cannot invoke this object (REPR: %s; %s)", REPR(invokee)->name, MVM_6model_get_debug_name(tc, invokee));
 }
 
 /* Clean up STable memory. */
@@ -404,6 +463,7 @@ void MVM_6model_stable_gc_free(MVMThreadContext *tc, MVMSTable *st) {
         st->container_spec->gc_free_data(tc, st);
     MVM_free(st->invocation_spec);
     MVM_free(st->boolification_spec);
+    MVM_free(st->debug_name);
 }
 
 /* Get the next type cache ID for a newly created STable. */

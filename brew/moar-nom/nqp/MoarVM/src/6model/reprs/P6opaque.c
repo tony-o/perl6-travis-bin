@@ -6,9 +6,10 @@
 
 #define P6OMAX(x, y) ((y) > (x) ? (y) : (x))
 #define REFVAR_VM_HASH_STR_VAR 10
+#define MVM_P6OPAQUE_NO_UNBOX_SLOT 0xFFFF
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps P6opaque_this_repr;
 
 /* Helpers for reading/writing values. */
 MVM_STATIC_INLINE MVMObject * get_obj_at_offset(void *data, MVMint64 offset) {
@@ -42,7 +43,7 @@ static MVMint64 try_get_slot(MVMThreadContext *tc, MVMP6opaqueREPRData *repr_dat
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st = MVM_gc_allocate_stable(tc, &P6opaque_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -58,7 +59,7 @@ static MVMObject * allocate(MVMThreadContext *tc, MVMSTable *st) {
     if (st->size)
         return MVM_gc_allocate_object(tc, st);
     else
-        MVM_exception_throw_adhoc(tc, "P6opaque: must compose before allocating");
+        MVM_exception_throw_adhoc(tc, "P6opaque: must compose %s before allocating", MVM_6model_get_stable_debug_name(tc, st));
 }
 
 /* Initializes a new instance. */
@@ -74,7 +75,7 @@ static void initialize(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, voi
         }
     }
     else {
-        MVM_exception_throw_adhoc(tc, "P6opaque: must compose before using initialize");
+        MVM_exception_throw_adhoc(tc, "P6opaque: must compose %s before using initialize", MVM_6model_get_stable_debug_name(tc, st));
     }
 }
 
@@ -206,7 +207,14 @@ MVM_NO_RETURN
 static void no_such_attribute(MVMThreadContext *tc, const char *action, MVMObject *class_handle, MVMString *name) {
     char *c_name = MVM_string_utf8_encode_C_string(tc, name);
     char *waste[] = { c_name, NULL };
-    MVM_exception_throw_adhoc_free(tc, waste, "P6opaque: no such attribute '%s'", c_name);
+    MVM_exception_throw_adhoc_free(tc, waste, "P6opaque: no such attribute '%s' in type %s when trying to %s", c_name, MVM_6model_get_debug_name(tc, class_handle), action);
+}
+
+MVM_NO_RETURN
+static void invalid_access_kind(MVMThreadContext *tc, const char *action, MVMObject *class_handle, MVMString *name, const char *kind_desc) {
+    char *c_name = MVM_string_utf8_encode_C_string(tc, name);
+    char *waste[] = { c_name, NULL };
+    MVM_exception_throw_adhoc_free(tc, waste, "P6opaque: invalid %s attribute '%s' in type %s for kind %s", action, c_name, MVM_6model_get_debug_name(tc, class_handle), kind_desc);
 }
 
 /* Gets the current value for an attribute. */
@@ -218,10 +226,10 @@ static void get_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
     data = MVM_p6opaque_real_data(tc, data);
 
     if (!repr_data)
-        MVM_exception_throw_adhoc(tc, "P6opaque: must compose before using get_attribute");
+        MVM_exception_throw_adhoc(tc, "P6opaque: must compose %s before using get_attribute", MVM_6model_get_stable_debug_name(tc, st));
 
     /* Try the slot allocation first. */
-    slot = hint >= 0 && !(repr_data->mi) ? hint :
+    slot = hint >= 0 && hint < repr_data->num_attributes && !(repr_data->mi) ? hint :
         try_get_slot(tc, repr_data, class_handle, name);
     if (slot >= 0) {
         MVMSTable *attr_st = repr_data->flattened_stables[slot];
@@ -291,7 +299,7 @@ static void get_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
                 result_reg->i64 = attr_st->REPR->box_funcs.get_int(tc, attr_st, root,
                     (char *)data + repr_data->attribute_offsets[slot]);
             else
-                MVM_exception_throw_adhoc(tc, "P6opaque: invalid native access to object attribute");
+                invalid_access_kind(tc, "native access", class_handle, name, "int64");
             break;
         }
         case MVM_reg_num64: {
@@ -299,7 +307,7 @@ static void get_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
                 result_reg->n64 = attr_st->REPR->box_funcs.get_num(tc, attr_st, root,
                     (char *)data + repr_data->attribute_offsets[slot]);
             else
-                MVM_exception_throw_adhoc(tc, "P6opaque: invalid native access to object attribute");
+                invalid_access_kind(tc, "native access", class_handle, name, "num64");
             break;
         }
         case MVM_reg_str: {
@@ -307,17 +315,17 @@ static void get_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
                 result_reg->s = attr_st->REPR->box_funcs.get_str(tc, attr_st, root,
                     (char *)data + repr_data->attribute_offsets[slot]);
             else
-                MVM_exception_throw_adhoc(tc, "P6opaque: invalid native access to object attribute");
+                invalid_access_kind(tc, "native access", class_handle, name, "str");
             break;
         }
         default: {
-            MVM_exception_throw_adhoc(tc, "P6opaque: invalid kind in attribute lookup");
+            MVM_exception_throw_adhoc(tc, "P6opaque: invalid kind in attribute lookup in %s", MVM_6model_get_stable_debug_name(tc, st));
         }
         }
     }
     else {
         /* Otherwise, complain that the attribute doesn't exist. */
-        no_such_attribute(tc, "get", class_handle, name);
+        no_such_attribute(tc, "get a value", class_handle, name);
     }
 }
 
@@ -330,10 +338,10 @@ static void bind_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
     data = MVM_p6opaque_real_data(tc, data);
 
     if (!repr_data)
-        MVM_exception_throw_adhoc(tc, "P6opaque: must compose before using bind_attribute_boxed");
+        MVM_exception_throw_adhoc(tc, "P6opaque: must compose %s before using bind_attribute_boxed", MVM_6model_get_stable_debug_name(tc, st));
 
     /* Try the slot allocation first. */
-    slot = hint >= 0 && !(repr_data->mi) ? hint :
+    slot = hint >= 0 && hint < repr_data->num_attributes && !(repr_data->mi) ? hint :
         try_get_slot(tc, repr_data, class_handle, name);
     if (slot >= 0) {
         MVMSTable *attr_st = repr_data->flattened_stables[slot];
@@ -341,12 +349,14 @@ static void bind_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
         case MVM_reg_obj: {
             MVMObject *value = value_reg.o;
             if (attr_st) {
-                if (attr_st == STABLE(value))
-                    st->REPR->copy_to(tc, attr_st, OBJECT_BODY(value), root,
+                MVMSTable *value_st = STABLE(value);
+                if (attr_st == value_st)
+                    value_st->REPR->copy_to(tc, attr_st, OBJECT_BODY(value), root,
                         (char *)data + repr_data->attribute_offsets[slot]);
                 else
                     MVM_exception_throw_adhoc(tc,
-                        "P6opaque: representation mismatch when storing value to attribute");
+                        "P6opaque: representation mismatch when storing value (of type %s) to attribute (of type %s)",
+                        MVM_6model_get_stable_debug_name(tc, value_st), MVM_6model_get_stable_debug_name(tc, attr_st));
             }
             else {
                 set_obj_at_offset(tc, root, data, repr_data->attribute_offsets[slot], value);
@@ -359,7 +369,7 @@ static void bind_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
                     (char *)data + repr_data->attribute_offsets[slot],
                     value_reg.i64);
             else
-                MVM_exception_throw_adhoc(tc, "P6opaque: invalid native binding to object attribute");
+                invalid_access_kind(tc, "native bind to", class_handle, name, "int64");
             break;
         }
         case MVM_reg_num64: {
@@ -368,7 +378,7 @@ static void bind_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
                     (char *)data + repr_data->attribute_offsets[slot],
                     value_reg.n64);
             else
-                MVM_exception_throw_adhoc(tc, "P6opaque: invalid native binding to object attribute");
+                invalid_access_kind(tc, "native bind to", class_handle, name, "num64");
             break;
         }
         case MVM_reg_str: {
@@ -377,29 +387,38 @@ static void bind_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
                     (char *)data + repr_data->attribute_offsets[slot],
                     value_reg.s);
             else
-                MVM_exception_throw_adhoc(tc, "P6opaque: invalid native binding to object attribute");
+                invalid_access_kind(tc, "native bind to", class_handle, name, "str");
             break;
         }
         default: {
-            MVM_exception_throw_adhoc(tc, "P6opaque: invalid kind in attribute bind");
+            MVM_exception_throw_adhoc(tc, "P6opaque: invalid kind in attribute bind in %s", MVM_6model_get_stable_debug_name(tc, st));
         }
         }
     }
     else {
         /* Otherwise, complain that the attribute doesn't exist. */
-        no_such_attribute(tc, "bind", class_handle, name);
+        no_such_attribute(tc, "bind a value", class_handle, name);
     }
 }
 
 /* Checks if an attribute has been initialized. */
 static MVMint64 is_attribute_initialized(MVMThreadContext *tc, MVMSTable *st, void *data, MVMObject *class_handle, MVMString *name, MVMint64 hint) {
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
-    MVMint64 slot = try_get_slot(tc, repr_data, class_handle, name);
+    MVMint64 slot;
+
+    if (!repr_data)
+        MVM_exception_throw_adhoc(tc, "P6opaque: must compose %s before using bind_attribute_boxed", MVM_6model_get_stable_debug_name(tc, st));
+
     data = MVM_p6opaque_real_data(tc, data);
+    /* This can stay commented out until we actually pass something other than NO_HINT
+    slot = hint >= 0 && hint < repr_data->num_attributes && !(repr_data->mi) ? hint :
+        try_get_slot(tc, repr_data, class_handle, name);
+    */
+    slot = try_get_slot(tc, repr_data, class_handle, name);
     if (slot >= 0)
         return NULL != get_obj_at_offset(data, repr_data->attribute_offsets[slot]);
     else
-        no_such_attribute(tc, "initializedness check", class_handle, name);
+        no_such_attribute(tc, "check if it's initialized", class_handle, name);
     return 0;
 }
 
@@ -413,6 +432,33 @@ static MVMint64 hint_for(MVMThreadContext *tc, MVMSTable *st, MVMObject *class_k
     return slot >= 0 ? slot : MVM_NO_HINT;
 }
 
+/* Gets an architecture atomic sized native integer attribute as an atomic
+ * reference. */
+static AO_t * attribute_as_atomic(MVMThreadContext *tc, MVMSTable *st, void *data,
+                                  MVMObject *class_handle, MVMString *name) {
+    MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
+    MVMint64 slot;
+    data = MVM_p6opaque_real_data(tc, data);
+    if (!repr_data)
+        MVM_exception_throw_adhoc(tc,
+            "P6opaque: must compose %s before using get_attribute", MVM_6model_get_stable_debug_name(tc, st));
+    slot = try_get_slot(tc, repr_data, class_handle, name);
+    if (slot >= 0) {
+        MVMSTable *attr_st = repr_data->flattened_stables[slot];
+        if (attr_st) {
+            const MVMStorageSpec *ss = attr_st->REPR->get_storage_spec(tc, attr_st);
+            if (ss->inlineable && ss->boxed_primitive == MVM_STORAGE_SPEC_BP_INT &&
+                    ss->bits / 8 == sizeof(AO_t))
+                return (AO_t *)((char *)data + repr_data->attribute_offsets[slot]);
+        }
+        MVM_exception_throw_adhoc(tc,
+            "Can only do an atomic integer operation on an atomicint attribute");
+    }
+    else {
+        no_such_attribute(tc, "get atomic reference to", class_handle, name);
+    }
+}
+
 /* Used with boxing. Sets an integer value, for representations that can hold
  * one. */
 static void set_int(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMint64 value) {
@@ -424,7 +470,7 @@ static void set_int(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *
     }
     else {
         MVM_exception_throw_adhoc(tc,
-            "This type cannot box a native integer");
+            "This type cannot box a native integer: P6opaque, %s", MVM_6model_get_stable_debug_name(tc, st));
     }
 }
 
@@ -439,7 +485,7 @@ static MVMint64 get_int(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, vo
     }
     else {
         MVM_exception_throw_adhoc(tc,
-            "This type cannot unbox to a native integer");
+            "This type cannot unbox to a native integer: P6opaque, %s", MVM_6model_get_stable_debug_name(tc, st));
     }
 }
 
@@ -454,7 +500,7 @@ static void set_num(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *
     }
     else {
         MVM_exception_throw_adhoc(tc,
-            "This type cannot box a native number");
+            "This type cannot box a native number: P6opaque, %s", MVM_6model_get_stable_debug_name(tc, st));
     }
 }
 
@@ -469,7 +515,7 @@ static MVMnum64 get_num(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, vo
     }
     else {
         MVM_exception_throw_adhoc(tc,
-            "This type cannot unbox to a native number");
+            "This type cannot unbox to a native number: P6opaque, %s", MVM_6model_get_stable_debug_name(tc, st));
     }
 }
 
@@ -484,7 +530,7 @@ static void set_str(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *
     }
     else {
         MVM_exception_throw_adhoc(tc,
-            "This type cannot box a native string");
+            "This type cannot box a native string: P6opaque, %s", MVM_6model_get_stable_debug_name(tc, st));
     }
 }
 
@@ -499,7 +545,7 @@ static MVMString * get_str(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
     }
     else {
         MVM_exception_throw_adhoc(tc,
-            "This type cannot unbox to a native string");
+            "This type cannot unbox to a native string: P6opaque, %s", MVM_6model_get_stable_debug_name(tc, st));
     }
 }
 
@@ -514,7 +560,7 @@ static void set_uint(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void 
     }
     else {
         MVM_exception_throw_adhoc(tc,
-            "This type cannot box a native integer");
+            "This type cannot box a native integer: P6opaque, %s", MVM_6model_get_stable_debug_name(tc, st));
     }
 }
 
@@ -529,7 +575,7 @@ static MVMuint64 get_uint(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, 
     }
     else {
         MVM_exception_throw_adhoc(tc,
-            "This type cannot unbox to a native integer");
+            "This type cannot unbox to a native integer: P6opaque, %s", MVM_6model_get_stable_debug_name(tc, st));
     }
 }
 
@@ -537,17 +583,13 @@ static void * get_boxed_ref(MVMThreadContext *tc, MVMSTable *st, MVMObject *root
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     data = MVM_p6opaque_real_data(tc, data);
     if (repr_data->unbox_slots) {
-        int i;
-        for (i = 0; i < repr_data->num_attributes; i++) {
-            if (repr_data->unbox_slots[i].repr_id == repr_id)
-                return (char *)data + repr_data->attribute_offsets[repr_data->unbox_slots[i].slot];
-            else if (repr_data->unbox_slots[i].repr_id == 0)
-                break;
-        }
+        MVMuint16 offset = repr_data->unbox_slots[repr_id];
+        if (offset != MVM_P6OPAQUE_NO_UNBOX_SLOT)
+            return (char *)data + repr_data->attribute_offsets[offset];
     }
 
     MVM_exception_throw_adhoc(tc,
-        "P6opaque: get_boxed_ref could not unbox for the representation '%d'", repr_id);
+        "P6opaque: get_boxed_ref could not unbox for the representation '%d' of type %s", repr_id, MVM_6model_get_stable_debug_name(tc, st));
 }
 
 static const MVMStorageSpec default_storage_spec = {
@@ -583,12 +625,20 @@ static void mk_storage_spec(MVMThreadContext *tc, MVMP6opaqueREPRData * repr_dat
 }
 
 /* Compose the representation. */
+static MVMuint16 * allocate_unbox_slots() {
+    MVMuint16 *slots = MVM_malloc(MVM_REPR_MAX_COUNT * sizeof(MVMuint16));
+    MVMuint16 i;
+    for (i = 0; i < MVM_REPR_MAX_COUNT; i++)
+        slots[i] = MVM_P6OPAQUE_NO_UNBOX_SLOT;
+    return slots;
+}
 static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
     MVMint64   mro_pos, mro_count, num_parents, total_attrs, num_attrs,
                cur_slot, cur_type, cur_alloc_addr, cur_obj_attr,
-               cur_init_slot, cur_mark_slot, cur_cleanup_slot, cur_unbox_slot,
+               cur_init_slot, cur_mark_slot, cur_cleanup_slot,
                unboxed_type, i;
     MVMObject *info;
+    MVMP6opaqueREPRData *repr_data;
 
     MVMStringConsts       str_consts = tc->instance->str_consts;
     MVMString        * const str_avc = str_consts.auto_viv_container;
@@ -599,17 +649,20 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
     MVMString  * const str_attribute = str_consts.attribute;
     MVMString * const str_box_target = str_consts.box_target;
 
+    /* Check not already composed. */
+    if (st->REPR_data)
+        MVM_exception_throw_adhoc(tc, "Type %s is already composed", MVM_6model_get_stable_debug_name(tc, st));
+
     /* Allocate the representation data. */
-    MVMP6opaqueREPRData *repr_data = MVM_malloc(sizeof(MVMP6opaqueREPRData));
-    memset(repr_data, 0, sizeof(MVMP6opaqueREPRData));
+    repr_data = (MVMP6opaqueREPRData *)MVM_calloc(1, sizeof(MVMP6opaqueREPRData));
 
     /* Find attribute information. */
     info = MVM_repr_at_key_o(tc, info_hash, str_attribute);
     if (MVM_is_null(tc, info))
-        MVM_exception_throw_adhoc(tc, "P6opaque: missing attribute protocol in compose");
+        MVM_exception_throw_adhoc(tc, "P6opaque: missing attribute protocol in compose of %s", MVM_6model_get_stable_debug_name(tc, st));
 
-    /* In this first pass, we'll over the MRO entries, looking for if
-     * there is any multiple inheritance and counting the number of
+    /* In this first pass, we'll loop over the MRO entries, looking for
+     * if there is any multiple inheritance and counting the number of
      * attributes. */
     mro_count   = REPR(info)->elems(tc, STABLE(info), info, OBJECT_BODY(info));
     mro_pos     = mro_count;
@@ -638,17 +691,14 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
     repr_data->num_attributes = total_attrs;
     if (total_attrs) {
         repr_data->attribute_offsets   = MVM_malloc(total_attrs * sizeof(MVMuint16));
-        repr_data->flattened_stables   = MVM_malloc(total_attrs * sizeof(MVMSTable *));
-        repr_data->auto_viv_values     = MVM_malloc(total_attrs * sizeof(MVMObject *));
+        repr_data->flattened_stables   = (MVMSTable **)MVM_calloc(total_attrs, sizeof(MVMSTable *));
+        repr_data->auto_viv_values     = (MVMObject **)MVM_calloc(total_attrs, sizeof(MVMObject *));
         repr_data->gc_obj_mark_offsets = MVM_malloc(total_attrs * sizeof(MVMuint16));
-        memset(repr_data->flattened_stables, 0, total_attrs * sizeof(MVMSTable *));
-        memset(repr_data->auto_viv_values, 0, total_attrs * sizeof(MVMObject *));
     }
-    repr_data->name_to_index_mapping = MVM_malloc((mro_count + 1) * sizeof(MVMP6opaqueNameMap));
+    repr_data->name_to_index_mapping = (MVMP6opaqueNameMap *)MVM_calloc((mro_count + 1), sizeof(MVMP6opaqueNameMap));
     repr_data->initialize_slots      = MVM_malloc((total_attrs + 1) * sizeof(MVMuint16));
     repr_data->gc_mark_slots         = MVM_malloc((total_attrs + 1) * sizeof(MVMuint16));
     repr_data->gc_cleanup_slots      = MVM_malloc((total_attrs + 1) * sizeof(MVMuint16));
-    memset(repr_data->name_to_index_mapping, 0, (mro_count + 1) * sizeof(MVMP6opaqueNameMap));
 
     /* -1 indicates no unboxing or delegate possible for a type. */
     repr_data->unbox_int_slot = -1;
@@ -666,7 +716,6 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
     cur_init_slot    = 0;
     cur_mark_slot    = 0;
     cur_cleanup_slot = 0;
-    cur_unbox_slot   = 0;
     while (mro_pos--) {
         /* Get info for the class at the current position. */
         MVMObject *class_info = MVM_repr_at_pos_o(tc, info, mro_pos);
@@ -699,7 +748,7 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
 
             /* Ensure we have a name. */
             if (MVM_is_null(tc, name_obj))
-                MVM_exception_throw_adhoc(tc, "P6opaque: missing attribute name");
+                MVM_exception_throw_adhoc(tc, "P6opaque: %s missing attribute name for attribute %"PRId64, MVM_6model_get_stable_debug_name(tc, st), i);
 
             if (REPR(name_obj)->ID == MVM_REPR_ID_MVMString) {
                 MVM_ASSIGN_REF(tc, &(st->header), name_map->names[i], (MVMString *)name_obj);
@@ -747,19 +796,19 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
                             case MVM_STORAGE_SPEC_BP_INT:
                                 if (repr_data->unbox_int_slot >= 0)
                                     MVM_exception_throw_adhoc(tc,
-                                        "Duplicate box_target for native int");
+                                        "While composing %s: Duplicate box_target for native int: attributes %d and %"PRId64, MVM_6model_get_stable_debug_name(tc, st), repr_data->unbox_int_slot, i);
                                 repr_data->unbox_int_slot = cur_slot;
                                 break;
                             case MVM_STORAGE_SPEC_BP_NUM:
                                 if (repr_data->unbox_num_slot >= 0)
                                     MVM_exception_throw_adhoc(tc,
-                                        "Duplicate box_target for native num");
+                                        "While composing %s: Duplicate box_target for native num: attributes %d and %"PRId64, MVM_6model_get_stable_debug_name(tc, st), repr_data->unbox_num_slot, i);
                                 repr_data->unbox_num_slot = cur_slot;
                                 break;
                             case MVM_STORAGE_SPEC_BP_STR:
                                 if (repr_data->unbox_str_slot >= 0)
                                     MVM_exception_throw_adhoc(tc,
-                                        "Duplicate box_target for native str");
+                                        "While composing %s: Duplicate box_target for native str: attributes %d and %"PRId64, MVM_6model_get_stable_debug_name(tc, st), repr_data->unbox_str_slot, i);
                                 repr_data->unbox_str_slot = cur_slot;
                                 break;
                             default:
@@ -769,10 +818,8 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
 
                         /* Also list in the by-repr unbox list. */
                         if (repr_data->unbox_slots == NULL)
-                            repr_data->unbox_slots = (MVMP6opaqueBoxedTypeMap *)MVM_calloc(total_attrs, sizeof(MVMP6opaqueBoxedTypeMap));
-                        repr_data->unbox_slots[cur_unbox_slot].repr_id = REPR(type)->ID;
-                        repr_data->unbox_slots[cur_unbox_slot].slot = cur_slot;
-                        cur_unbox_slot++;
+                            repr_data->unbox_slots = allocate_unbox_slots();
+                        repr_data->unbox_slots[REPR(type)->ID] = cur_slot;
                     }
                 }
             }
@@ -800,22 +847,22 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
             if (MVM_repr_exists_key(tc, attr_info, str_pos_del)) {
                 if (repr_data->pos_del_slot != -1)
                     MVM_exception_throw_adhoc(tc,
-                        "Duplicate positional delegate attribute");
+                        "While composing %s: Duplicate positional delegate attributes: %d and %"PRId64"", MVM_6model_get_stable_debug_name(tc, st), repr_data->pos_del_slot, cur_slot);
                 if (unboxed_type == MVM_STORAGE_SPEC_BP_NONE)
                     repr_data->pos_del_slot = cur_slot;
                 else
                     MVM_exception_throw_adhoc(tc,
-                        "Positional delegate attribute must be a reference type");
+                        "While composing %s: Positional delegate attribute must be a reference type", MVM_6model_get_stable_debug_name(tc, st));
             }
             if (MVM_repr_exists_key(tc, attr_info, str_ass_del)) {
                 if (repr_data->ass_del_slot != -1)
                     MVM_exception_throw_adhoc(tc,
-                        "Duplicate associative delegate attribute");
+                        "While composing %s: Duplicate associative delegate attributes: %d and %"PRId64, MVM_6model_get_stable_debug_name(tc, st), repr_data->pos_del_slot, cur_slot);
                 if (unboxed_type == MVM_STORAGE_SPEC_BP_NONE)
                     repr_data->ass_del_slot = cur_slot;
                 else
                     MVM_exception_throw_adhoc(tc,
-                        "Associative delegate attribute must be a reference type");
+                        "While composing %s: Associative delegate attribute must be a reference type", MVM_6model_get_stable_debug_name(tc, st));
             }
 
             /* Add the required space for this type. */
@@ -849,11 +896,11 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
 static void deserialize_stable_size(MVMThreadContext *tc, MVMSTable *st, MVMSerializationReader *reader) {
     /* To calculate size, we need number of attributes and to know about
      * anything flattend in. */
-    MVMint64  num_attributes = MVM_serialization_read_varint(tc, reader);
+    MVMint64  num_attributes = MVM_serialization_read_int(tc, reader);
     MVMuint32 cur_offset = sizeof(MVMP6opaque);
     MVMint64  i;
     for (i = 0; i < num_attributes; i++) {
-        if (MVM_serialization_read_varint(tc, reader)) {
+        if (MVM_serialization_read_int(tc, reader)) {
             MVMSTable *st = MVM_serialization_read_stable_ref(tc, reader);
             const MVMStorageSpec *ss = st->REPR->get_storage_spec(tc, st);
             if (ss->inlineable) {
@@ -879,62 +926,70 @@ static void serialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerializ
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMuint16 i, num_classes;
 
-    if (!repr_data->name_to_index_mapping)
+    if (!repr_data)
         MVM_exception_throw_adhoc(tc,
-            "Representation must be composed before it can be serialized");
+            "Representation for %s must be composed before it can be serialized", MVM_6model_get_stable_debug_name(tc, st));
 
-    MVM_serialization_write_varint(tc, writer, repr_data->num_attributes);
+    MVM_serialization_write_int(tc, writer, repr_data->num_attributes);
 
     for (i = 0; i < repr_data->num_attributes; i++) {
-        MVM_serialization_write_varint(tc, writer, repr_data->flattened_stables[i] != NULL);
+        MVM_serialization_write_int(tc, writer, repr_data->flattened_stables[i] != NULL);
         if (repr_data->flattened_stables[i])
             MVM_serialization_write_stable_ref(tc, writer, repr_data->flattened_stables[i]);
     }
 
-    MVM_serialization_write_varint(tc, writer, repr_data->mi);
+    MVM_serialization_write_int(tc, writer, repr_data->mi);
 
     if (repr_data->auto_viv_values) {
-        MVM_serialization_write_varint(tc, writer, 1);
+        MVM_serialization_write_int(tc, writer, 1);
         for (i = 0; i < repr_data->num_attributes; i++)
             MVM_serialization_write_ref(tc, writer, repr_data->auto_viv_values[i]);
     }
     else {
-        MVM_serialization_write_varint(tc, writer, 0);
+        MVM_serialization_write_int(tc, writer, 0);
     }
 
-    MVM_serialization_write_varint(tc, writer, repr_data->unbox_int_slot);
-    MVM_serialization_write_varint(tc, writer, repr_data->unbox_num_slot);
-    MVM_serialization_write_varint(tc, writer, repr_data->unbox_str_slot);
+    MVM_serialization_write_int(tc, writer, repr_data->unbox_int_slot);
+    MVM_serialization_write_int(tc, writer, repr_data->unbox_num_slot);
+    MVM_serialization_write_int(tc, writer, repr_data->unbox_str_slot);
 
     if (repr_data->unbox_slots) {
-        MVM_serialization_write_varint(tc, writer, 1);
-        for (i = 0; i < repr_data->num_attributes; i++) {
-            MVM_serialization_write_varint(tc, writer, repr_data->unbox_slots[i].repr_id);
-            MVM_serialization_write_varint(tc, writer, repr_data->unbox_slots[i].slot);
+        MVMuint32 num_written = 0;
+        MVM_serialization_write_int(tc, writer, 1);
+        for (i = 0; i < MVM_REPR_MAX_COUNT; i++) {
+            if (repr_data->unbox_slots[i] != MVM_P6OPAQUE_NO_UNBOX_SLOT) {
+                MVM_serialization_write_int(tc, writer, i);
+                MVM_serialization_write_int(tc, writer, repr_data->unbox_slots[i]);
+                num_written++;
+            }
+        }
+        for (i = num_written; i < repr_data->num_attributes; i++) {
+            MVM_serialization_write_int(tc, writer, 0);
+            MVM_serialization_write_int(tc, writer, 0);
         }
     }
     else {
-        MVM_serialization_write_varint(tc, writer, 0);
+        MVM_serialization_write_int(tc, writer, 0);
     }
 
     i = 0;
     while (repr_data->name_to_index_mapping[i].class_key)
         i++;
     num_classes = i;
-    MVM_serialization_write_varint(tc, writer, num_classes);
+    MVM_serialization_write_int(tc, writer, num_classes);
     for (i = 0; i < num_classes; i++) {
         const MVMuint32 num_attrs = repr_data->name_to_index_mapping[i].num_attrs;
         MVMuint32 j;
         MVM_serialization_write_ref(tc, writer, repr_data->name_to_index_mapping[i].class_key);
-        MVM_serialization_write_varint(tc, writer, num_attrs);
+        MVM_serialization_write_int(tc, writer, num_attrs);
         for (j = 0; j < num_attrs; j++) {
             MVM_serialization_write_str(tc, writer, repr_data->name_to_index_mapping[i].names[j]);
-            MVM_serialization_write_varint(tc, writer, repr_data->name_to_index_mapping[i].slots[j]);
+            MVM_serialization_write_int(tc, writer, repr_data->name_to_index_mapping[i].slots[j]);
         }
     }
 
-    MVM_serialization_write_varint(tc, writer, repr_data->pos_del_slot);
-    MVM_serialization_write_varint(tc, writer, repr_data->ass_del_slot);
+    MVM_serialization_write_int(tc, writer, repr_data->pos_del_slot);
+    MVM_serialization_write_int(tc, writer, repr_data->ass_del_slot);
 }
 
 /* Deserializes representation data. */
@@ -944,20 +999,20 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
 
     MVMP6opaqueREPRData *repr_data = MVM_malloc(sizeof(MVMP6opaqueREPRData));
 
-    repr_data->num_attributes = (MVMuint16)MVM_serialization_read_varint(tc, reader);
+    repr_data->num_attributes = (MVMuint16)MVM_serialization_read_int(tc, reader);
 
     repr_data->flattened_stables = (MVMSTable **)MVM_malloc(P6OMAX(repr_data->num_attributes, 1) * sizeof(MVMSTable *));
     for (i = 0; i < repr_data->num_attributes; i++)
-        if (MVM_serialization_read_varint(tc, reader)) {
+        if (MVM_serialization_read_int(tc, reader)) {
             MVM_ASSIGN_REF(tc, &(st->header), repr_data->flattened_stables[i], MVM_serialization_read_stable_ref(tc, reader));
         }
         else {
             repr_data->flattened_stables[i] = NULL;
         }
 
-    repr_data->mi = MVM_serialization_read_varint(tc, reader);
+    repr_data->mi = MVM_serialization_read_int(tc, reader);
 
-    if (MVM_serialization_read_varint(tc, reader)) {
+    if (MVM_serialization_read_int(tc, reader)) {
         repr_data->auto_viv_values = (MVMObject **)MVM_malloc(P6OMAX(repr_data->num_attributes, 1) * sizeof(MVMObject *));
         for (i = 0; i < repr_data->num_attributes; i++)
             MVM_ASSIGN_REF(tc, &(st->header), repr_data->auto_viv_values[i], MVM_serialization_read_ref(tc, reader));
@@ -965,21 +1020,23 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
         repr_data->auto_viv_values = NULL;
     }
 
-    repr_data->unbox_int_slot = MVM_serialization_read_varint(tc, reader);
-    repr_data->unbox_num_slot = MVM_serialization_read_varint(tc, reader);
-    repr_data->unbox_str_slot = MVM_serialization_read_varint(tc, reader);
+    repr_data->unbox_int_slot = MVM_serialization_read_int(tc, reader);
+    repr_data->unbox_num_slot = MVM_serialization_read_int(tc, reader);
+    repr_data->unbox_str_slot = MVM_serialization_read_int(tc, reader);
 
-    if (MVM_serialization_read_varint(tc, reader)) {
-        repr_data->unbox_slots = (MVMP6opaqueBoxedTypeMap *)MVM_malloc(P6OMAX(repr_data->num_attributes, 1) * sizeof(MVMP6opaqueBoxedTypeMap));
+    if (MVM_serialization_read_int(tc, reader)) {
+        repr_data->unbox_slots = allocate_unbox_slots();
         for (i = 0; i < repr_data->num_attributes; i++) {
-            repr_data->unbox_slots[i].repr_id = MVM_serialization_read_varint(tc, reader);
-            repr_data->unbox_slots[i].slot = MVM_serialization_read_varint(tc, reader);
+            MVMuint16 repr_id = MVM_serialization_read_int(tc, reader);
+            MVMuint16 slot = MVM_serialization_read_int(tc, reader);
+            if (repr_id)
+                repr_data->unbox_slots[repr_id] = slot;
         }
     } else {
         repr_data->unbox_slots = NULL;
     }
 
-    num_classes = (MVMuint16)MVM_serialization_read_varint(tc, reader);
+    num_classes = (MVMuint16)MVM_serialization_read_int(tc, reader);
     repr_data->name_to_index_mapping = (MVMP6opaqueNameMap *)MVM_malloc((num_classes + 1) * sizeof(MVMP6opaqueNameMap));
     for (i = 0; i < num_classes; i++) {
         MVMint32 num_attrs = 0;
@@ -987,14 +1044,14 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
         MVM_ASSIGN_REF(tc, &(st->header), repr_data->name_to_index_mapping[i].class_key,
             MVM_serialization_read_ref(tc, reader));
 
-        num_attrs = MVM_serialization_read_varint(tc, reader);
+        num_attrs = MVM_serialization_read_int(tc, reader);
         repr_data->name_to_index_mapping[i].names = (MVMString **)MVM_malloc(P6OMAX(num_attrs, 1) * sizeof(MVMString *));
         repr_data->name_to_index_mapping[i].slots = (MVMuint16 *)MVM_malloc(P6OMAX(num_attrs, 1) * sizeof(MVMuint16));
         for (j = 0; j < num_attrs; j++) {
             MVM_ASSIGN_REF(tc, &(st->header), repr_data->name_to_index_mapping[i].names[j],
                 MVM_serialization_read_str(tc, reader));
 
-            repr_data->name_to_index_mapping[i].slots[j] = (MVMuint16)MVM_serialization_read_varint(tc, reader);
+            repr_data->name_to_index_mapping[i].slots[j] = (MVMuint16)MVM_serialization_read_int(tc, reader);
         }
 
         repr_data->name_to_index_mapping[i].num_attrs = num_attrs;
@@ -1003,8 +1060,8 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
     /* set the last one to be NULL */
     repr_data->name_to_index_mapping[i].class_key = NULL;
 
-    repr_data->pos_del_slot = (MVMint16)MVM_serialization_read_varint(tc, reader);
-    repr_data->ass_del_slot = (MVMint16)MVM_serialization_read_varint(tc, reader);
+    repr_data->pos_del_slot = (MVMint16)MVM_serialization_read_int(tc, reader);
+    repr_data->ass_del_slot = (MVMint16)MVM_serialization_read_int(tc, reader);
 
     /* Re-calculate the remaining info, which is platform specific or
      * derived information. */
@@ -1041,6 +1098,10 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
                 repr_data->gc_mark_slots[cur_gc_mark_slot++] = i;
             if (cur_st->REPR->gc_cleanup)
                 repr_data->gc_cleanup_slots[cur_gc_cleanup_slot++] = i;
+
+            if (spec->align == 0) {
+                MVM_exception_throw_adhoc(tc, "Serialization error: Storage Spec of P6opaque must not have align set to 0.");
+            }
 
             if (cur_offset % spec->align) {
                 cur_offset += spec->align - cur_offset % spec->align;
@@ -1079,12 +1140,14 @@ static void deserialize(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, vo
 /* Serializes the object's body. */
 static void serialize(MVMThreadContext *tc, MVMSTable *st, void *data, MVMSerializationWriter *writer) {
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
-    MVMuint16 num_attributes = repr_data->num_attributes;
+    MVMuint16 num_attributes;
     MVMuint16 i;
 
-    if (!repr_data->name_to_index_mapping)
+    if (!repr_data)
         MVM_exception_throw_adhoc(tc,
-            "Representation must be composed before it can be serialized");
+            "Representation of %s must be composed before it can be serialized", MVM_6model_get_stable_debug_name(tc, st));
+
+    num_attributes = repr_data->num_attributes;
 
     data = MVM_p6opaque_real_data(tc, data);
 
@@ -1095,7 +1158,7 @@ static void serialize(MVMThreadContext *tc, MVMSTable *st, void *data, MVMSerial
             if (a_st->REPR->serialize)
                 a_st->REPR->serialize(tc, a_st, (char *)data + a_offset, writer);
             else
-                MVM_exception_throw_adhoc(tc, "Missing serialize REPR function for REPR %s", a_st->REPR->name);
+                MVM_exception_throw_adhoc(tc, "Missing serialize REPR function for REPR %s in type %s", a_st->REPR->name, MVM_6model_get_stable_debug_name(tc, a_st));
         }
         else
             MVM_serialization_write_ref(tc, writer, get_obj_at_offset(data, a_offset));
@@ -1111,12 +1174,12 @@ static void change_type(MVMThreadContext *tc, MVMObject *obj, MVMObject *new_typ
     /* Ensure we don't have a type object. */
     if (!IS_CONCRETE(obj))
         MVM_exception_throw_adhoc(tc,
-            "Cannot change the type of a type object");
+            "Cannot change the type of a %s type object", MVM_6model_get_debug_name(tc, obj));
 
     /* Ensure that the REPR of the new type is also P6opaque. */
     if (REPR(new_type)->ID != REPR(obj)->ID)
         MVM_exception_throw_adhoc(tc,
-            "New type must have a matching representation");
+            "New type for %s must have a matching representation (P6opaque vs %s)", MVM_6model_get_debug_name(tc, obj), REPR(new_type)->name);
 
     /* Ensure the MRO prefixes match up. */
     cur_map_entry = cur_repr_data->name_to_index_mapping;
@@ -1128,7 +1191,7 @@ static void change_type(MVMThreadContext *tc, MVMObject *obj, MVMObject *new_typ
     while (cur_map_entry->class_key != NULL) {
         if (new_map_entry->class_key == NULL || new_map_entry->class_key != cur_map_entry->class_key)
             MVM_exception_throw_adhoc(tc,
-                "Incompatible MROs in P6opaque rebless");
+                "Incompatible MROs in P6opaque rebless for types %s and %s", MVM_6model_get_debug_name(tc, obj), MVM_6model_get_debug_name(tc, new_type));
         cur_map_entry++;
         new_map_entry++;
     }
@@ -1163,15 +1226,15 @@ static void change_type(MVMThreadContext *tc, MVMObject *obj, MVMObject *new_typ
     MVM_ASSIGN_REF(tc, &(obj->header), obj->st, STABLE(new_type));
 }
 
-static void die_no_pos_del(MVMThreadContext *tc) {
-    MVM_exception_throw_adhoc(tc, "This type does not support positional operations");
+static void die_no_pos_del(MVMThreadContext *tc, MVMSTable *st) {
+    MVM_exception_throw_adhoc(tc, "This type (%s) does not support positional operations", MVM_6model_get_stable_debug_name(tc, st));
 }
 
 static void at_pos(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMint64 index, MVMRegister *value, MVMuint16 kind) {
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->pos_del_slot == -1)
-        die_no_pos_del(tc);
+        die_no_pos_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->pos_del_slot]);
     REPR(del)->pos_funcs.at_pos(tc, STABLE(del), del, OBJECT_BODY(del), index, value, kind);
@@ -1181,7 +1244,7 @@ static void bind_pos(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void 
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->pos_del_slot == -1)
-        die_no_pos_del(tc);
+        die_no_pos_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->pos_del_slot]);
     REPR(del)->pos_funcs.bind_pos(tc, STABLE(del), del, OBJECT_BODY(del), index, value, kind);
@@ -1191,7 +1254,7 @@ static void set_elems(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->pos_del_slot == -1)
-        die_no_pos_del(tc);
+        die_no_pos_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->pos_del_slot]);
     REPR(del)->pos_funcs.set_elems(tc, STABLE(del), del, OBJECT_BODY(del), count);
@@ -1201,7 +1264,7 @@ static void push(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *dat
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->pos_del_slot == -1)
-        die_no_pos_del(tc);
+        die_no_pos_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->pos_del_slot]);
     REPR(del)->pos_funcs.push(tc, STABLE(del), del, OBJECT_BODY(del), value, kind);
@@ -1211,7 +1274,7 @@ static void pop(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->pos_del_slot == -1)
-        die_no_pos_del(tc);
+        die_no_pos_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->pos_del_slot]);
     REPR(del)->pos_funcs.pop(tc, STABLE(del), del, OBJECT_BODY(del), value, kind);
@@ -1221,7 +1284,7 @@ static void unshift(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->pos_del_slot == -1)
-        die_no_pos_del(tc);
+        die_no_pos_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->pos_del_slot]);
     REPR(del)->pos_funcs.unshift(tc, STABLE(del), del, OBJECT_BODY(del), value, kind);
@@ -1231,7 +1294,7 @@ static void shift(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *da
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->pos_del_slot == -1)
-        die_no_pos_del(tc);
+        die_no_pos_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->pos_del_slot]);
     REPR(del)->pos_funcs.shift(tc, STABLE(del), del, OBJECT_BODY(del), value, kind);
@@ -1241,21 +1304,21 @@ static void osplice(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->pos_del_slot == -1)
-        die_no_pos_del(tc);
+        die_no_pos_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->pos_del_slot]);
     REPR(del)->pos_funcs.splice(tc, STABLE(del), del, OBJECT_BODY(del), target_array, offset, elems);
 }
 
-static void die_no_ass_del(MVMThreadContext *tc) {
-    MVM_exception_throw_adhoc(tc, "This type does not support associative operations");
+static void die_no_ass_del(MVMThreadContext *tc, MVMSTable *st) {
+    MVM_exception_throw_adhoc(tc, "This type (%s) does not support associative operations", MVM_6model_get_stable_debug_name(tc, st));
 }
 
 static void at_key(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMObject *key, MVMRegister *result, MVMuint16 kind) {
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->ass_del_slot == -1)
-        die_no_ass_del(tc);
+        die_no_ass_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->ass_del_slot]);
     REPR(del)->ass_funcs.at_key(tc, STABLE(del), del, OBJECT_BODY(del), key, result, kind);
@@ -1265,7 +1328,7 @@ static void bind_key(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void 
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->ass_del_slot == -1)
-        die_no_ass_del(tc);
+        die_no_ass_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->ass_del_slot]);
     REPR(del)->ass_funcs.bind_key(tc, STABLE(del), del, OBJECT_BODY(del), key, value, kind);
@@ -1275,7 +1338,7 @@ static MVMint64 exists_key(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->ass_del_slot == -1)
-        die_no_ass_del(tc);
+        die_no_ass_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->ass_del_slot]);
     return REPR(del)->ass_funcs.exists_key(tc, STABLE(del), del, OBJECT_BODY(del), key);
@@ -1285,7 +1348,7 @@ static void delete_key(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, voi
     MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)st->REPR_data;
     MVMObject *del;
     if (repr_data->ass_del_slot == -1)
-        die_no_ass_del(tc);
+        die_no_ass_del(tc, st);
     data = MVM_p6opaque_real_data(tc, data);
     del = get_obj_at_offset(data, repr_data->attribute_offsets[repr_data->ass_del_slot]);
     REPR(del)->ass_funcs.delete_key(tc, STABLE(del), del, OBJECT_BODY(del), key);
@@ -1303,7 +1366,7 @@ static MVMuint64 elems(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, voi
         return REPR(del)->elems(tc, STABLE(del), del, OBJECT_BODY(del));
     }
     else {
-        MVM_exception_throw_adhoc(tc, "This type does not support elems");
+        MVM_exception_throw_adhoc(tc, "This type (%s) does not support elems", MVM_6model_get_stable_debug_name(tc, st));
     }
 }
 
@@ -1346,7 +1409,7 @@ static void spesh(MVMThreadContext *tc, MVMSTable *st, MVMSpeshGraph *g, MVMSpes
         MVMString     *name     = spesh_attr_name(tc, g, ins->operands[3], opcode == MVM_OP_getattrs_o);
         if (name && ch_facts->flags & MVM_SPESH_FACT_KNOWN_TYPE && ch_facts->type) {
             MVMint64 slot = try_get_slot(tc, repr_data, ch_facts->type, name);
-            if (slot >= 0 && !repr_data->mi && !repr_data->flattened_stables[slot]) {
+            if (slot >= 0 && !repr_data->flattened_stables[slot]) {
                 if (repr_data->auto_viv_values && repr_data->auto_viv_values[slot]) {
                     MVMObject *av_value = repr_data->auto_viv_values[slot];
                     if (IS_CONCRETE(av_value)) {
@@ -1516,10 +1579,10 @@ static void spesh(MVMThreadContext *tc, MVMSTable *st, MVMSpeshGraph *g, MVMSpes
 
 /* Initializes the representation. */
 const MVMREPROps * MVMP6opaque_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &P6opaque_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps P6opaque_this_repr = {
     type_object_for,
     allocate,
     initialize,
@@ -1528,7 +1591,8 @@ static const MVMREPROps this_repr = {
         get_attribute,
         bind_attribute,
         hint_for,
-        is_attribute_initialized
+        is_attribute_initialized,
+        attribute_as_atomic
     },    /* attr_funcs */
     {
         set_int,
@@ -1550,7 +1614,13 @@ static const MVMREPROps this_repr = {
         unshift,
         shift,
         osplice,
-        NULL
+        MVM_REPR_DEFAULT_AT_POS_MULTIDIM,
+        MVM_REPR_DEFAULT_BIND_POS_MULTIDIM,
+        MVM_REPR_DEFAULT_DIMENSIONS,
+        MVM_REPR_DEFAULT_SET_DIMENSIONS,
+        MVM_REPR_DEFAULT_GET_ELEM_STORAGE_SPEC,
+        MVM_REPR_DEFAULT_POS_AS_ATOMIC,
+        MVM_REPR_DEFAULT_POS_AS_ATOMIC_MULTIDIM
     },    /* pos_funcs */
     {
         at_key,
@@ -1576,5 +1646,77 @@ static const MVMREPROps this_repr = {
     spesh,
     "P6opaque", /* name */
     MVM_REPR_ID_P6opaque,
-    0, /* refs_frames */
+    NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };
+
+/* Get the pointer offset of an attribute. Used for optimizing access to it on
+ * precisely known types. */
+size_t MVM_p6opaque_attr_offset(MVMThreadContext *tc, MVMObject *type,
+                                MVMObject *class_handle, MVMString *name) {
+    MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)type->st->REPR_data;
+    size_t slot = try_get_slot(tc, repr_data, class_handle, name);
+    return repr_data->attribute_offsets[slot];
+}
+
+#ifdef DEBUG_HELPERS
+/* This is meant to be called in a debugging session and not used anywhere else.
+ * Plese don't delete. */
+static void dump_p6opaque(MVMThreadContext *tc, MVMObject *obj, int nested) {
+    MVMP6opaqueREPRData *repr_data = (MVMP6opaqueREPRData *)STABLE(obj)->REPR_data;
+    MVMP6opaqueBody *data = MVM_p6opaque_real_data(tc, OBJECT_BODY(obj));
+    if (repr_data) {
+        MVMint16 const num_attributes = repr_data->num_attributes;
+        MVMint16 cur_attribute = 0;
+        MVMP6opaqueNameMap * const name_to_index_mapping = repr_data->name_to_index_mapping;
+        fprintf(stderr, "%s.new(", MVM_6model_get_debug_name(tc, obj));
+        if (name_to_index_mapping != NULL) {
+            MVMint16 i;
+            MVMP6opaqueNameMap *cur_map_entry = name_to_index_mapping;
+
+            while (cur_map_entry->class_key != NULL) {
+                MVMint16 i;
+                MVMint64 slot;
+                if (cur_map_entry->num_attrs > 0) {
+                    fprintf(stderr, "#`(from %s) ", MVM_6model_get_stable_debug_name(tc, cur_map_entry->class_key->st));
+                }
+                for (i = 0; i < cur_map_entry->num_attrs; i++) {
+                    char * name = MVM_string_utf8_encode_C_string(tc, cur_map_entry->names[i]);
+                    fprintf(stderr, "%s", name);
+                    MVM_free(name);
+
+                    slot = cur_map_entry->slots[i];
+                    if (slot >= 0) {
+                        MVMuint16 const offset = repr_data->attribute_offsets[slot];
+                        MVMSTable * const attr_st = repr_data->flattened_stables[slot];
+                        if (attr_st == NULL) {
+                            MVMObject *value = get_obj_at_offset(data, offset);
+                            if (value != NULL) {
+                                fprintf(stderr, "=");
+                                dump_p6opaque(tc, value, 1);
+                            }
+                        }
+                        else {
+                            MVMString * const s = attr_st->REPR->box_funcs.get_str(tc, attr_st, obj, (char *)data + offset);
+                            char * const str = MVM_string_utf8_encode_C_string(tc, s);
+                            fprintf(stderr, "='%s'", str);
+                            MVM_free(str);
+                        }
+                    }
+                    if (cur_attribute++ < num_attributes - 1)
+                        fprintf(stderr, ", ");
+                }
+                cur_map_entry++;
+            }
+        }
+        fprintf(stderr, nested ? ")" : ")\n");
+    }
+    else {
+        fprintf(stderr, "%s%s", MVM_6model_get_debug_name(tc, obj), nested ? "" : "\n");
+    }
+}
+
+void MVM_dump_p6opaque(MVMThreadContext *tc, MVMObject *obj) {
+    dump_p6opaque(tc, obj, 0);
+}
+#endif

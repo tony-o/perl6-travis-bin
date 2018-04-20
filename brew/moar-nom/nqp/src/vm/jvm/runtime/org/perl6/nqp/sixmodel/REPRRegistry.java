@@ -17,7 +17,6 @@ import org.perl6.nqp.sixmodel.reprs.IOHandle;
 import org.perl6.nqp.sixmodel.reprs.JavaWrap;
 import org.perl6.nqp.sixmodel.reprs.KnowHOWAttribute;
 import org.perl6.nqp.sixmodel.reprs.KnowHOWREPR;
-import org.perl6.nqp.sixmodel.reprs.Lexotic;
 import org.perl6.nqp.sixmodel.reprs.MultiCache;
 import org.perl6.nqp.sixmodel.reprs.NativeCall;
 import org.perl6.nqp.sixmodel.reprs.NFA;
@@ -40,6 +39,7 @@ import org.perl6.nqp.sixmodel.reprs.ConditionVariable;
 import org.perl6.nqp.sixmodel.reprs.AsyncTask;
 import org.perl6.nqp.sixmodel.reprs.NativeRef;
 import org.perl6.nqp.sixmodel.reprs.MultiDimArray;
+import org.perl6.nqp.sixmodel.reprs.Decoder;
 
 public class REPRRegistry {
     private static HashMap<String, Integer> reprIdMap = new HashMap<String, Integer>();
@@ -81,7 +81,6 @@ public class REPRRegistry {
         addREPR("JavaWrap", new JavaWrap());
         addREPR("ContextRef", new ContextRef());
         addREPR("Continuation", new Continuation());
-        addREPR("Lexotic", new Lexotic());
         addREPR("CodeRef", new CodeRefREPR());
         addREPR("CallCapture", new CallCapture());
         addREPR("NFA", new NFA());
@@ -104,5 +103,6 @@ public class REPRRegistry {
         addREPR("AsyncTask", new AsyncTask());
         addREPR("NativeRef", new NativeRef());
         addREPR("MultiDimArray", new MultiDimArray());
+        addREPR("Decoder", new Decoder());
     }
 }

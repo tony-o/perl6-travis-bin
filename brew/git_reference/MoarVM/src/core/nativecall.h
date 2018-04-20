@@ -28,6 +28,10 @@
 #define MVM_NATIVECALL_ARG_NO_FREE_STR     0
 #define MVM_NATIVECALL_ARG_FREE_STR        1
 #define MVM_NATIVECALL_ARG_FREE_STR_MASK   1
+/* Flag for whether we need to refresh a CArray after passing or not. */
+#define MVM_NATIVECALL_ARG_NO_REFRESH      0
+#define MVM_NATIVECALL_ARG_REFRESH         1
+#define MVM_NATIVECALL_ARG_REFRESH_MASK    1
 #define MVM_NATIVECALL_ARG_NO_RW           0
 #define MVM_NATIVECALL_ARG_RW              256
 #define MVM_NATIVECALL_ARG_RW_MASK         256
@@ -43,8 +47,8 @@ struct MVMNativeCallback {
     /* The routine that we will call. */
     MVMObject *target;
 
-    /* Thread context we expect to run the callback on. */
-    MVMThreadContext *tc;
+    /* The VM instance. */
+    MVMInstance *instance;
 
     /* Return and argument type flags. */
     MVMint16 *typeinfos;
@@ -84,10 +88,11 @@ struct MVMNativeCallbackCacheHead {
 /* Functions for working with native callsites. */
 MVMNativeCallBody * MVM_nativecall_get_nc_body(MVMThreadContext *tc, MVMObject *obj);
 MVMint16 MVM_nativecall_get_arg_type(MVMThreadContext *tc, MVMObject *info, MVMint16 is_return);
-void MVM_nativecall_build(MVMThreadContext *tc, MVMObject *site, MVMString *lib,
+MVMint8 MVM_nativecall_build(MVMThreadContext *tc, MVMObject *site, MVMString *lib,
     MVMString *sym, MVMString *conv, MVMObject *arg_spec, MVMObject *ret_spec);
 MVMObject * MVM_nativecall_invoke(MVMThreadContext *tc, MVMObject *res_type,
     MVMObject *site, MVMObject *args);
+void MVM_nativecall_invoke_jit(MVMThreadContext *tc, MVMObject *site);
 MVMObject * MVM_nativecall_global(MVMThreadContext *tc, MVMString *lib, MVMString *sym,
     MVMObject *target_spec, MVMObject *target_type);
 MVMObject * MVM_nativecall_cast(MVMThreadContext *tc, MVMObject *target_spec,
@@ -126,3 +131,12 @@ void * MVM_nativecall_unmarshal_cpointer(MVMThreadContext *tc, MVMObject *value)
 void * MVM_nativecall_unmarshal_carray(MVMThreadContext *tc, MVMObject *value);
 void * MVM_nativecall_unmarshal_vmarray(MVMThreadContext *tc, MVMObject *value);
 void * MVM_nativecall_unmarshal_cunion(MVMThreadContext *tc, MVMObject *value);
+MVMThreadContext * MVM_nativecall_find_thread_context(MVMInstance *instance);
+MVMJitGraph *MVM_nativecall_jit_graph_for_caller_code(
+    MVMThreadContext   *tc,
+    MVMSpeshGraph      *sg,
+    MVMNativeCallBody  *body,
+    MVMint16            restype,
+    MVMint16            dst,
+    MVMSpeshIns       **arg_ins
+);

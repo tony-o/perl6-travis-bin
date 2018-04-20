@@ -1,7 +1,7 @@
 /* Representation used by VM-level strings.
  *
  * Strings come in one of 3 forms today, with 1 expected future form:
- *   - 32-bit someday-NFG buffer of codepoints, maybe with synthetics
+ *   - 32-bit buffer of graphemes (Unicode codepoints or synthetic codepoints)
  *   - 8-bit buffer of codepoints that all fall in the ASCII range
  *   - Buffer of strands
  *   - (LATER) 8-bit buffer of codepoints with negatives as synthetics (we
@@ -52,7 +52,7 @@ struct MVMStringBody {
 
 /* A strand of a string. */
 struct MVMStringStrand {
-    /* Another string that must some kind of grapheme string. */
+    /* Another string that must be some kind of grapheme string. */
     MVMString *blob_string;
 
     /* Start and end indexes we refer to in the blob string. */

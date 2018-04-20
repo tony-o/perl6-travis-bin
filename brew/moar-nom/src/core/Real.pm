@@ -64,30 +64,32 @@ my role Real does Numeric {
 
     method polymod(Real:D: +@mods) {
         my $more = self;
-        my $inf = @mods.is-lazy;
+        my $lazy = @mods.is-lazy;
         fail X::OutOfRange.new(
-          what => 'invocant to polymod', got => $more, range => "0..*"
+          :what('invocant to polymod'), :got($more), :range<0..Inf>
         ) if $more < 0;
         gather {
             for @mods -> $mod {
-                last if $inf and not $more;
-                fail X::Numeric::DivideByZero.new(
+                last if $lazy and not $more;
+                Failure.new(X::Numeric::DivideByZero.new:
                   using => 'polymod', numerator => $more
                 ) unless $mod;
                 take my $rem = $more % $mod;
                 $more -= $rem;
                 $more /= $mod;
             }
-            take $more unless $inf;
+            take $more if ($lazy and $more) or not $lazy;
         }
     }
 
-    method base(Int:D $base, $digits?) {
+    method base(Int:D $base, $digits? is copy) {
+        $digits = Nil if nqp::istype($digits, Whatever);
         fail X::OutOfRange.new(
-                what => 'digits argument to base', got => $digits, range => "0..*"
+                :what('digits argument to base'), :got($digits),
+                :range<0..1073741824>
             ) if $digits.defined and $digits < 0;
         my $prec = $digits // 1e8.log($base.Num).Int;
-        my Int $int_part = self.Int;
+        my Int $int_part = self.Int.self; # .self blows up Failures
         my $frac = abs(self - $int_part);
         my @frac_digits;
         my @conversion := <0 1 2 3 4 5 6 7 8 9
@@ -147,10 +149,12 @@ multi sub infix:<==>(Real \a, Real \b)  { a.Bridge == b.Bridge }
 multi sub infix:«<»(Real \a, Real \b)   { a.Bridge < b.Bridge }
 
 multi sub infix:«<=»(Real \a, Real \b)  { a.Bridge <= b.Bridge }
+multi sub infix:«≤» (Real \a, Real \b)  { a.Bridge  ≤ b.Bridge }
 
 multi sub infix:«>»(Real \a, Real \b)   { a.Bridge > b.Bridge }
 
 multi sub infix:«>=»(Real \a, Real \b)  { a.Bridge >= b.Bridge }
+multi sub infix:«≥» (Real \a, Real \b)  { a.Bridge  ≥ b.Bridge }
 
 multi sub prefix:<->(Real:D \a)            { -a.Bridge }
 

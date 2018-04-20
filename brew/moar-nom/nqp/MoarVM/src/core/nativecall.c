@@ -2,6 +2,8 @@
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
+#include <platform/threads.h>
+#include <platform/time.h>
 
 /* Grabs a NativeCall body. */
 MVMNativeCallBody * MVM_nativecall_get_nc_body(MVMThreadContext *tc, MVMObject *obj) {
@@ -146,7 +148,7 @@ MVMObject * MVM_nativecall_make_cstruct(MVMThreadContext *tc, MVMObject *type, v
         MVMCStructREPRData *repr_data = (MVMCStructREPRData *)STABLE(type)->REPR_data;
         if (REPR(type)->ID != MVM_REPR_ID_MVMCStruct)
             MVM_exception_throw_adhoc(tc,
-                "Native call expected return type with CStruct representation, but got a %s", REPR(type)->name);
+                "Native call expected return type with CStruct representation, but got a %s (%s)", REPR(type)->name, MVM_6model_get_debug_name(tc, type));
         result = REPR(type)->allocate(tc, STABLE(type));
         ((MVMCStruct *)result)->body.cstruct = cstruct;
         if (repr_data->num_child_objs)
@@ -162,7 +164,7 @@ MVMObject * MVM_nativecall_make_cunion(MVMThreadContext *tc, MVMObject *type, vo
         MVMCUnionREPRData *repr_data = (MVMCUnionREPRData *)STABLE(type)->REPR_data;
         if (REPR(type)->ID != MVM_REPR_ID_MVMCUnion)
             MVM_exception_throw_adhoc(tc,
-                "Native call expected return type with CUnion representation, but got a %s", REPR(type)->name);
+                "Native call expected return type with CUnion representation, but got a %s (%s)", REPR(type)->name, MVM_6model_get_debug_name(tc, type));
         result = REPR(type)->allocate(tc, STABLE(type));
         ((MVMCUnion *)result)->body.cunion = cunion;
         if (repr_data->num_child_objs)
@@ -177,7 +179,7 @@ MVMObject * MVM_nativecall_make_cppstruct(MVMThreadContext *tc, MVMObject *type,
         MVMCPPStructREPRData *repr_data = (MVMCPPStructREPRData *)STABLE(type)->REPR_data;
         if (REPR(type)->ID != MVM_REPR_ID_MVMCPPStruct)
             MVM_exception_throw_adhoc(tc,
-                "Native call expected return type with CPPStruct representation, but got a %s", REPR(type)->name);
+                "Native call expected return type with CPPStruct representation, but got a %s (%s)", REPR(type)->name, MVM_6model_get_debug_name(tc, type));
         result = REPR(type)->allocate(tc, STABLE(type));
         ((MVMCPPStruct *)result)->body.cppstruct = cppstruct;
         if (repr_data->num_child_objs)
@@ -192,7 +194,7 @@ MVMObject * MVM_nativecall_make_cpointer(MVMThreadContext *tc, MVMObject *type, 
     if (ptr && type) {
         if (REPR(type)->ID != MVM_REPR_ID_MVMCPointer)
             MVM_exception_throw_adhoc(tc,
-                "Native call expected return type with CPointer representation, but got a %s", REPR(type)->name);
+                "Native call expected return type with CPointer representation, but got a %s (%s)", REPR(type)->name, MVM_6model_get_debug_name(tc, type));
         result = REPR(type)->allocate(tc, STABLE(type));
         ((MVMCPointer *)result)->body.ptr = ptr;
     }
@@ -205,7 +207,7 @@ MVMObject * MVM_nativecall_make_carray(MVMThreadContext *tc, MVMObject *type, vo
     if (carray && type) {
         if (REPR(type)->ID != MVM_REPR_ID_MVMCArray)
             MVM_exception_throw_adhoc(tc,
-                "Native call expected return type with CArray representation, but got a %s", REPR(type)->name);
+                "Native call expected return type with CArray representation, but got a %s (%s)", REPR(type)->name, MVM_6model_get_debug_name(tc, type));
         result = REPR(type)->allocate(tc, STABLE(type));
         ((MVMCArray *)result)->body.storage = carray;
     }
@@ -301,7 +303,7 @@ void * MVM_nativecall_unmarshal_cstruct(MVMThreadContext *tc, MVMObject *value) 
         return ((MVMCStruct *)value)->body.cstruct;
     else
         MVM_exception_throw_adhoc(tc,
-            "Native call expected return type with CStruct representation, but got a %s", REPR(value)->name);
+            "Native call expected return type with CStruct representation, but got a %s (%s)", REPR(value)->name, MVM_6model_get_debug_name(tc, value));
 }
 
 void * MVM_nativecall_unmarshal_cppstruct(MVMThreadContext *tc, MVMObject *value) {
@@ -311,7 +313,7 @@ void * MVM_nativecall_unmarshal_cppstruct(MVMThreadContext *tc, MVMObject *value
         return ((MVMCPPStruct *)value)->body.cppstruct;
     else
         MVM_exception_throw_adhoc(tc,
-            "Native call expected return type with CPPStruct representation, but got a %s", REPR(value)->name);
+            "Native call expected return type with CPPStruct representation, but got a %s (%s)", REPR(value)->name, MVM_6model_get_debug_name(tc, value));
 }
 
 void * MVM_nativecall_unmarshal_cpointer(MVMThreadContext *tc, MVMObject *value) {
@@ -321,7 +323,7 @@ void * MVM_nativecall_unmarshal_cpointer(MVMThreadContext *tc, MVMObject *value)
         return ((MVMCPointer *)value)->body.ptr;
     else
         MVM_exception_throw_adhoc(tc,
-            "Native call expected return type with CPointer representation, but got a %s", REPR(value)->name);
+            "Native call expected return type with CPointer representation, but got a %s (%s)", REPR(value)->name, MVM_6model_get_debug_name(tc, value));
 }
 
 void * MVM_nativecall_unmarshal_carray(MVMThreadContext *tc, MVMObject *value) {
@@ -331,13 +333,13 @@ void * MVM_nativecall_unmarshal_carray(MVMThreadContext *tc, MVMObject *value) {
         return ((MVMCArray *)value)->body.storage;
     else
         MVM_exception_throw_adhoc(tc,
-            "Native call expected return type with CArray representation, but got a %s", REPR(value)->name);
+            "Native call expected return type with CArray representation, but got a %s (%s)", REPR(value)->name, MVM_6model_get_debug_name(tc, value));
 }
 
 void * MVM_nativecall_unmarshal_vmarray(MVMThreadContext *tc, MVMObject *value) {
     if (!IS_CONCRETE(value))
         return NULL;
-    else if (REPR(value)->ID == MVM_REPR_ID_MVMArray) {
+    else if (REPR(value)->ID == MVM_REPR_ID_VMArray) {
         MVMArrayBody *body          = &((MVMArray *)value)->body;
         MVMArrayREPRData *repr_data = (MVMArrayREPRData *)STABLE(value)->REPR_data;
         size_t start_pos            = body->start * repr_data->elem_size;
@@ -345,7 +347,7 @@ void * MVM_nativecall_unmarshal_vmarray(MVMThreadContext *tc, MVMObject *value) 
     }
     else
         MVM_exception_throw_adhoc(tc,
-            "Native call expected object with Array representation, but got a %s", REPR(value)->name);
+            "Native call expected object with Array representation, but got a %s (%s)", REPR(value)->name, MVM_6model_get_debug_name(tc, value));
 }
 
 void * MVM_nativecall_unmarshal_cunion(MVMThreadContext *tc, MVMObject *value) {
@@ -355,7 +357,7 @@ void * MVM_nativecall_unmarshal_cunion(MVMThreadContext *tc, MVMObject *value) {
         return ((MVMCUnion *)value)->body.cunion;
     else
         MVM_exception_throw_adhoc(tc,
-            "Native call expected return type with CUnion representation, but got a %s", REPR(value)->name);
+            "Native call expected return type with CUnion representation, but got a %s (%s)", REPR(value)->name, MVM_6model_get_debug_name(tc, value));
 }
 
 #ifdef _WIN32
@@ -365,17 +367,193 @@ static const char *dlerror(void)
     DWORD dw = GetLastError();
     if (dw == 0)
         return NULL;
-    sprintf(buf, "error 0x%x", (unsigned int)dw);
+    snprintf(buf, 32, "error 0x%"PRIx32"", (MVMuint32)dw);
     return buf;
 }
 #endif
 
+void init_c_call_node(MVMThreadContext *tc, MVMSpeshGraph *sg, MVMJitNode *node, void *func_ptr, MVMint16 num_args, MVMJitCallArg *args) {
+    node->type = MVM_JIT_NODE_CALL_C;
+    node->u.call.func_ptr = func_ptr;
+    if (0 < num_args) {
+        node->u.call.args = MVM_spesh_alloc(tc, sg, num_args * sizeof(MVMJitCallArg));
+        memcpy(node->u.call.args, args, num_args * sizeof(MVMJitCallArg));
+    }
+    else {
+        node->u.call.args = NULL;
+    }
+    node->u.call.num_args = num_args;
+    node->u.call.has_vargs = 0;
+    node->u.call.rv_mode = MVM_JIT_RV_VOID;
+    node->u.call.rv_idx = -1;
+}
+
+void init_box_call_node(MVMThreadContext *tc, MVMSpeshGraph *sg, MVMJitNode *box_rv_node, void *func_ptr, MVMint16 restype, MVMint16 dst) {
+    MVMJitCallArg args[] = { { MVM_JIT_INTERP_VAR , { MVM_JIT_INTERP_TC } },
+                             { MVM_JIT_REG_DYNIDX, { 2 } },
+                             { MVM_JIT_SAVED_RV, { 0 } }};
+    init_c_call_node(tc, sg, box_rv_node, func_ptr, 3, args);
+    box_rv_node->next = NULL;
+    if (dst == -1) {
+        box_rv_node->u.call.rv_mode = MVM_JIT_RV_DYNIDX;
+        box_rv_node->u.call.rv_idx = 0;
+    }
+    else {
+        box_rv_node->u.call.args[1].type = MVM_JIT_REG_VAL;
+        box_rv_node->u.call.args[1].v.reg = restype;
+
+        box_rv_node->u.call.rv_mode = MVM_JIT_RV_PTR;
+        box_rv_node->u.call.rv_idx = dst;
+    }
+}
+
+MVMJitGraph *MVM_nativecall_jit_graph_for_caller_code(
+    MVMThreadContext   *tc,
+    MVMSpeshGraph      *sg,
+    MVMNativeCallBody  *body,
+    MVMint16            restype,
+    MVMint16            dst,
+    MVMSpeshIns       **arg_ins
+) {
+    MVMJitGraph *jg = MVM_spesh_alloc(tc, sg, sizeof(MVMJitGraph)); /* will actually calloc */
+    MVMJitNode *block_gc_node = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+    MVMJitNode *unblock_gc_node = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+    MVMJitNode *call_node = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+    MVMJitNode *save_rv_node = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+    MVMJitNode *box_rv_node = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+    MVMJitCode *jitcode = NULL;
+    MVMJitCallArg block_gc_args[] = { { MVM_JIT_INTERP_VAR , { MVM_JIT_INTERP_TC } } };
+
+    jg->sg = sg;
+    jg->first_node = block_gc_node;
+
+    save_rv_node->type = MVM_JIT_NODE_SAVE_RV;
+    save_rv_node->next = unblock_gc_node;
+
+    init_c_call_node(tc, sg, block_gc_node,   &MVM_gc_mark_thread_blocked, 1, block_gc_args);
+    block_gc_node->next = call_node;
+
+    init_c_call_node(tc, sg, unblock_gc_node, &MVM_gc_mark_thread_unblocked, 1, block_gc_args);
+
+    init_c_call_node(tc, sg, call_node, body->entry_point, 0, NULL); /* we handle args manually */
+    call_node->next = save_rv_node;
+    call_node->u.call.num_args = body->num_args;
+    jg->last_node = unblock_gc_node->next = box_rv_node;
+
+    if (0 < body->num_args) {
+        MVMuint16 i = 0;
+        call_node->u.call.args = MVM_spesh_alloc(tc, sg, body->num_args * sizeof(MVMJitCallArg));
+        for (i = 0; i < body->num_args; i++) {
+            MVMJitArgType arg_type;
+            switch (body->arg_types[i]) {
+                case MVM_NATIVECALL_ARG_CHAR:
+                case MVM_NATIVECALL_ARG_UCHAR:
+                case MVM_NATIVECALL_ARG_SHORT:
+                case MVM_NATIVECALL_ARG_USHORT:
+                case MVM_NATIVECALL_ARG_INT:
+                case MVM_NATIVECALL_ARG_UINT:
+                case MVM_NATIVECALL_ARG_LONG:
+                case MVM_NATIVECALL_ARG_ULONG:
+                case MVM_NATIVECALL_ARG_LONGLONG:
+                case MVM_NATIVECALL_ARG_ULONGLONG:
+                    arg_type = dst == -1 ? MVM_JIT_ARG_I64 : MVM_JIT_PARAM_I64;
+                    break;
+                case MVM_NATIVECALL_ARG_CPOINTER:
+                    arg_type = dst == -1 ? MVM_JIT_ARG_PTR : MVM_JIT_PARAM_PTR;
+                    break;
+                case MVM_NATIVECALL_ARG_VMARRAY:
+                    arg_type = dst == -1 ? MVM_JIT_ARG_VMARRAY : MVM_JIT_PARAM_VMARRAY;
+                    break;
+                default:
+                    goto fail;
+            }
+            call_node->u.call.args[i].type = arg_type;
+            call_node->u.call.args[i].v.lit_i64 = dst == -1 ? i : arg_ins[i]->operands[1].reg.orig;
+        }
+    }
+
+    if (body->ret_type == MVM_NATIVECALL_ARG_CHAR
+        || body->ret_type == MVM_NATIVECALL_ARG_UCHAR
+        || body->ret_type == MVM_NATIVECALL_ARG_SHORT
+        || body->ret_type == MVM_NATIVECALL_ARG_USHORT
+        || body->ret_type == MVM_NATIVECALL_ARG_INT
+        || body->ret_type == MVM_NATIVECALL_ARG_UINT
+        || body->ret_type == MVM_NATIVECALL_ARG_LONG
+        || body->ret_type == MVM_NATIVECALL_ARG_ULONG
+        || body->ret_type == MVM_NATIVECALL_ARG_LONGLONG
+        || body->ret_type == MVM_NATIVECALL_ARG_ULONGLONG
+    ) {
+        call_node->next = save_rv_node;
+        jg->last_node = unblock_gc_node->next = box_rv_node;
+
+        init_box_call_node(tc, sg, box_rv_node, &MVM_nativecall_make_int, restype, dst);
+    }
+    else if (body->ret_type == MVM_NATIVECALL_ARG_CPOINTER) {
+        init_box_call_node(tc, sg, box_rv_node, &MVM_nativecall_make_cpointer, restype, dst);
+    }
+    else if (body->ret_type == MVM_NATIVECALL_ARG_UTF8STR) {
+        MVMJitCallArg args[] = { { MVM_JIT_INTERP_VAR , { MVM_JIT_INTERP_TC } },
+                                 { MVM_JIT_REG_DYNIDX, { 2 } },
+                                 { MVM_JIT_LITERAL, { MVM_NATIVECALL_ARG_UTF8STR } },
+                                 { MVM_JIT_SAVED_RV, { 0 } }};
+        init_c_call_node(tc, sg, box_rv_node, &MVM_nativecall_make_str, 4, args);
+        box_rv_node->next = NULL;
+        if (dst == -1) {
+            box_rv_node->u.call.rv_mode = MVM_JIT_RV_DYNIDX;
+            box_rv_node->u.call.rv_idx = 0;
+        }
+        else {
+            box_rv_node->u.call.args[1].type = MVM_JIT_REG_VAL;
+            box_rv_node->u.call.args[1].v.reg = restype;
+
+            box_rv_node->u.call.rv_mode = MVM_JIT_RV_PTR;
+            box_rv_node->u.call.rv_idx = dst;
+        }
+    }
+    else if (body->ret_type == MVM_NATIVECALL_ARG_VOID) {
+        call_node->next = unblock_gc_node;
+        unblock_gc_node->next = NULL;
+        jg->last_node = unblock_gc_node;
+    }
+    else {
+        goto fail;
+    }
+
+    return jg;
+fail:
+    return NULL;
+}
+
+MVMJitCode *create_caller_code(MVMThreadContext *tc, MVMNativeCallBody *body) {
+    MVMSpeshGraph *sg = MVM_calloc(1, sizeof(MVMSpeshGraph));
+    MVMJitGraph *jg = MVM_nativecall_jit_graph_for_caller_code(tc, sg, body, -1, -1, NULL);
+    MVMJitCode *jitcode;
+    if (jg != NULL) {
+        MVMJitNode *entry_label = MVM_spesh_alloc(tc, sg, sizeof(MVMJitNode));
+        entry_label->next = jg->first_node;
+        jg->first_node = entry_label;
+        jg->num_labels = 1;
+
+        entry_label->type = MVM_JIT_NODE_LABEL;
+        entry_label->u.label.name = 0;
+        jitcode = MVM_jit_compile_graph(tc, jg);
+    }
+    else {
+        jitcode = NULL;
+    }
+    MVM_spesh_graph_destroy(tc, sg);
+    return jitcode;
+}
+
 /* Builds up a native call site out of the supplied arguments. */
-void MVM_nativecall_build(MVMThreadContext *tc, MVMObject *site, MVMString *lib,
+MVMint8 MVM_nativecall_build(MVMThreadContext *tc, MVMObject *site, MVMString *lib,
         MVMString *sym, MVMString *conv, MVMObject *arg_info, MVMObject *ret_info) {
     char *lib_name = MVM_string_utf8_c8_encode_C_string(tc, lib);
     char *sym_name = MVM_string_utf8_c8_encode_C_string(tc, sym);
+    MVMint8  keep_sym_name = 0;
     MVMint16 i;
+
+    unsigned int interval_id = MVM_telemetry_interval_start(tc, "building native call");
 
     MVMObject *entry_point_o = (MVMObject *)MVM_repr_at_key_o(tc, ret_info,
         tc->instance->str_consts.entry_point);
@@ -385,11 +563,12 @@ void MVM_nativecall_build(MVMThreadContext *tc, MVMObject *site, MVMString *lib,
 
     /* Try to load the library. */
     body->lib_name = lib_name;
-    body->lib_handle = MVM_nativecall_load_lib(strlen(lib_name) ? lib_name : NULL);
+    body->lib_handle = MVM_nativecall_load_lib(lib_name[0] ? lib_name : NULL);
 
     if (!body->lib_handle) {
         char *waste[] = { lib_name, NULL };
         MVM_free(sym_name);
+        MVM_telemetry_interval_stop(tc, interval_id, "error building native call");
         MVM_exception_throw_adhoc_free(tc, waste, "Cannot locate native library '%s': %s", lib_name, dlerror());
     }
 
@@ -397,16 +576,25 @@ void MVM_nativecall_build(MVMThreadContext *tc, MVMObject *site, MVMString *lib,
     if (entry_point_o) {
         body->entry_point = MVM_nativecall_unmarshal_cpointer(tc, entry_point_o);
         body->sym_name    = sym_name;
+        keep_sym_name     = 1;
     }
 
     if (!body->entry_point) {
         body->entry_point = MVM_nativecall_find_sym(body->lib_handle, sym_name);
         if (!body->entry_point) {
             char *waste[] = { sym_name, lib_name, NULL };
+            MVM_telemetry_interval_stop(tc, interval_id, "error building native call");
             MVM_exception_throw_adhoc_free(tc, waste, "Cannot locate symbol '%s' in native library '%s'",
                 sym_name, lib_name);
         }
         body->sym_name = sym_name;
+        keep_sym_name     = 1;
+    }
+
+    MVM_telemetry_interval_annotate_dynamic((uintptr_t)body->entry_point, interval_id, body->sym_name);
+
+    if (keep_sym_name == 0) {
+        MVM_free(sym_name);
     }
 
     /* Set calling convention, if any. */
@@ -439,6 +627,15 @@ void MVM_nativecall_build(MVMThreadContext *tc, MVMObject *site, MVMString *lib,
 #ifdef HAVE_LIBFFI
     body->ffi_ret_type = MVM_nativecall_get_ffi_type(tc, body->ret_type);
 #endif
+    if (tc->instance->jit_enabled) {
+        body->jitcode = create_caller_code(tc, body);
+    }
+    else
+        body->jitcode = NULL;
+
+    MVM_telemetry_interval_stop(tc, interval_id, "nativecall built");
+
+    return body->jitcode != NULL;
 }
 
 static MVMObject * nativecall_cast(MVMThreadContext *tc, MVMObject *target_spec, MVMObject *target_type, void *cpointer_body) {
@@ -594,7 +791,7 @@ MVMObject * MVM_nativecall_global(MVMThreadContext *tc, MVMString *lib, MVMStrin
     MVMObject *ret = NULL;
 
     /* Try to load the library. */
-    lib_handle = MVM_nativecall_load_lib(strlen(lib_name) ? lib_name : NULL);
+    lib_handle = MVM_nativecall_load_lib(lib_name[0] ? lib_name : NULL);
     if (!lib_handle) {
         char *waste[] = { lib_name, NULL };
         MVM_free(sym_name);
@@ -639,11 +836,11 @@ MVMObject * MVM_nativecall_cast(MVMThreadContext *tc, MVMObject *target_spec, MV
         data_body = MVM_nativecall_unmarshal_cpointer(tc, source);
     else if (REPR(source)->ID == MVM_REPR_ID_MVMCArray)
         data_body = MVM_nativecall_unmarshal_carray(tc, source);
-    else if (REPR(source)->ID == MVM_REPR_ID_MVMArray)
+    else if (REPR(source)->ID == MVM_REPR_ID_VMArray)
         data_body = MVM_nativecall_unmarshal_vmarray(tc, source);
     else
         MVM_exception_throw_adhoc(tc,
-            "Native call expected return type with CPointer, CStruct, CArray, or VMArray representation, but got a %s", REPR(source)->name);
+            "Native call expected return type with CPointer, CStruct, CArray, or VMArray representation, but got a %s (%s)", REPR(source)->name, MVM_6model_get_debug_name(tc, source));
     return nativecall_cast(tc, target_spec, target_type, data_body);
 }
 
@@ -665,8 +862,8 @@ MVMint64 MVM_nativecall_sizeof(MVMThreadContext *tc, MVMObject *obj) {
         return sizeof(void *);
     else
         MVM_exception_throw_adhoc(tc,
-            "NativeCall op sizeof expected type with CPointer, CStruct, CArray, P6int or P6num representation, but got a %s",
-            REPR(obj)->name);
+            "NativeCall op sizeof expected type with CPointer, CStruct, CArray, P6int or P6num representation, but got a %s (%s)",
+            REPR(obj)->name, MVM_6model_get_debug_name(tc, obj));
 }
 
 /* Write-barriers a dyncall object so that delayed changes to the C-side of
@@ -737,13 +934,13 @@ void MVM_nativecall_refresh(MVMThreadContext *tc, MVMObject *cthingy) {
         for (i = 0; i < repr_data->num_attributes; i++) {
             MVMint32 kind = repr_data->attribute_locations[i] & MVM_CSTRUCT_ATTR_MASK;
             MVMint32 slot = repr_data->attribute_locations[i] >> MVM_CSTRUCT_ATTR_SHIFT;
-            void *cptr;   /* The pointer in the C storage. */
-            void *objptr; /* The pointer in the object representing the C object. */
+            void *cptr = NULL;   /* The pointer in the C storage. */
+            void *objptr = NULL; /* The pointer in the object representing the C object. */
 
             if (kind == MVM_CSTRUCT_ATTR_IN_STRUCT || !body->child_objs[slot])
                 continue;
 
-            cptr = *((void **)(storage + repr_data->struct_offsets[i]));
+            cptr = (void*)((uintptr_t)storage + (uintptr_t)repr_data->struct_offsets[i]);
             if (IS_CONCRETE(body->child_objs[slot])) {
                 switch (kind) {
                     case MVM_CSTRUCT_ATTR_CARRAY:
@@ -786,13 +983,13 @@ void MVM_nativecall_refresh(MVMThreadContext *tc, MVMObject *cthingy) {
         for (i = 0; i < repr_data->num_attributes; i++) {
             MVMint32 kind = repr_data->attribute_locations[i] & MVM_CPPSTRUCT_ATTR_MASK;
             MVMint32 slot = repr_data->attribute_locations[i] >> MVM_CPPSTRUCT_ATTR_SHIFT;
-            void *cptr;   /* The pointer in the C storage. */
-            void *objptr; /* The pointer in the object representing the C object. */
+            void *cptr = NULL;   /* The pointer in the C storage. */
+            void *objptr = NULL; /* The pointer in the object representing the C object. */
 
             if (kind == MVM_CPPSTRUCT_ATTR_IN_STRUCT || !body->child_objs[slot])
                 continue;
 
-            cptr = *((void **)(storage + repr_data->struct_offsets[i]));
+            cptr = (void*)((uintptr_t)storage + (uintptr_t)repr_data->struct_offsets[i]);
             if (IS_CONCRETE(body->child_objs[slot])) {
                 switch (kind) {
                     case MVM_CPPSTRUCT_ATTR_CARRAY:
@@ -823,4 +1020,47 @@ void MVM_nativecall_refresh(MVMThreadContext *tc, MVMObject *cthingy) {
                 MVM_nativecall_refresh(tc, body->child_objs[slot]);
         }
     }
+}
+
+/* Locate the thread that a callback should be run on. */
+MVMThreadContext * MVM_nativecall_find_thread_context(MVMInstance *instance) {
+    MVMint64 wanted_thread_id = MVM_platform_thread_id();
+    MVMThreadContext *tc = NULL;
+    while (1) {
+        uv_mutex_lock(&(instance->mutex_threads));
+        if (instance->in_gc) {
+            /* VM is in GC; free lock since the GC will acquire it again to
+             * clear the in_gc flag, and sleep a bit until it's safe to read
+             * the threads list. */
+            uv_mutex_unlock(&(instance->mutex_threads));
+            MVM_platform_sleep(0.0001);
+        }
+        else {
+            /* Not in GC. If a GC starts while we are reading this, then we
+             * are holding mutex_threads, and the GC will block on it before
+             * it gets to a stage where it can move things. */
+            MVMThread *thread = instance->threads;
+            while (thread) {
+                if (thread->body.native_thread_id == wanted_thread_id) {
+                    tc = thread->body.tc;
+                    if (tc)
+                        break;
+                }
+                thread = thread->body.next;
+            }
+            if (!tc)
+                MVM_panic(1, "native callback ran on thread (%"PRId64") unknown to MoarVM",
+                    wanted_thread_id);
+            uv_mutex_unlock(&(instance->mutex_threads));
+            break;
+        }
+    }
+    return tc;
+}
+
+void MVM_nativecall_invoke_jit(MVMThreadContext *tc, MVMObject *site) {
+    MVMNativeCallBody *body = MVM_nativecall_get_nc_body(tc, site);
+    MVMJitCode * const jitcode = body->jitcode;
+
+    jitcode->func_ptr(tc, *tc->interp_cu, jitcode->labels[0]);
 }

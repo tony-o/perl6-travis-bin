@@ -41,13 +41,8 @@ public class LibraryLoader {
             }
 
             Class<?> c = loadFile(filename, tc.gc.sharingHint);
+            loadClass(tc, c);
 
-            // Load the class.
-            CompilationUnit cu = (CompilationUnit)c.newInstance();
-            cu.shared = tc.gc.sharingHint;
-            cu.initializeCompilationUnit(tc);
-            cu.runLoadIfAvailable(tc);
-            
             // Note that we already loaded it.
             tc.gc.loaded.add(origFilename);
         }
@@ -57,6 +52,49 @@ public class LibraryLoader {
         catch (Throwable e) {
             throw ExceptionHandling.dieInternal(tc, e.toString());
         }
+    }
+
+    public void load(ThreadContext tc, byte[] buffer) {
+        try {
+            Class<?> c = loadJar(buffer);
+            loadClass(tc, c);
+        }
+        catch (ControlException e) {
+            throw e;
+        }
+        catch (Throwable e) {
+            throw ExceptionHandling.dieInternal(tc, e.toString());
+        }
+    }
+
+    private static void loadClass(ThreadContext tc, Class<?> c) throws Throwable {
+        CompilationUnit cu = (CompilationUnit)c.newInstance();
+        cu.shared = tc.gc.sharingHint;
+        cu.initializeCompilationUnit(tc);
+        cu.runLoadIfAvailable(tc);
+    }
+
+    private static Class<?> loadJar(byte[] buffer) throws Exception {
+        // This is a (non-empty, non-self-extracting) zip file
+        // These are quite constrained for now
+
+        JarEntry je;
+        JarInputStream jis = new JarInputStream(new ByteArrayInputStream(buffer));
+        byte[] kl = null;
+        byte[] ser = null;
+
+        while ((je = jis.getNextJarEntry()) != null) {
+            byte[] data = readEverything(jis);
+
+            if (je.getName().endsWith(".class") && kl == null) kl = data;
+            else if (je.getName().endsWith(".serialized") && ser == null) ser = data;
+            else throw new RuntimeException("Bytecode jar contains unexpected file "+je.getName());
+        }
+
+        if (kl == null) throw new RuntimeException("Bytecode jar lacks class file");
+        if (ser == null) throw new RuntimeException("Bytecode jar lacks serialization file");
+
+        return loadNew(kl, ser);
     }
 
     public static Class<?> loadFile(String cf, boolean shared) throws Exception {
@@ -80,44 +118,26 @@ public class LibraryLoader {
 
             return loadNew(b, null);
         } else if (sig == 0x504B0304) {
-            // This is a (non-empty, non-self-extracting) zip file
-            // These are quite constrained for now
-
-            JarEntry je;
-            JarInputStream jis = new JarInputStream(new ByteArrayInputStream(b));
-            byte[] kl = null;
-            byte[] ser = null;
-
-            while ((je = jis.getNextJarEntry()) != null) {
-                byte[] data = readEverything(jis);
-
-                if (je.getName().endsWith(".class") && kl == null) kl = data;
-                else if (je.getName().endsWith(".serialized") && ser == null) ser = data;
-                else throw new RuntimeException("Bytecode jar contains unexpected file "+je.getName());
-            }
-
-            if (kl == null) throw new RuntimeException("Bytecode jar lacks class file");
-            if (ser == null) throw new RuntimeException("Bytecode jar lacks serialization file");
-
-            return loadNew(kl, ser);
+            return loadJar(b);
         } else {
             throw new RuntimeException("Unrecognized bytecode format in "+cf);
         }
     }
 
     public static Class<?> loadNew(byte[] bytes, byte[] serial) {
-        return new IgnoreNameClassLoader(bytes, serial).loadClass();
+        IgnoreNameClassLoader incl = new IgnoreNameClassLoader(bytes, serial);
+        return incl.loadClass();
     }
-    
+
     private static class IgnoreNameClassLoader extends ClassLoader {
         private byte[] bytes;
         private byte[] serial;
-        
+
         public IgnoreNameClassLoader(byte[] bytes, byte[] serial) {
             this.bytes = bytes;
             this.serial = serial;
         }
-        
+
         public Class<?> loadClass() {
             return defineClass(null, this.bytes, 0, this.bytes.length);
         }

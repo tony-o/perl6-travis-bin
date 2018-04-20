@@ -17,7 +17,6 @@ import org.perl6.nqp.sixmodel.reprs.IOHandle;
 import org.perl6.nqp.sixmodel.reprs.JavaWrap;
 import org.perl6.nqp.sixmodel.reprs.KnowHOWAttribute;
 import org.perl6.nqp.sixmodel.reprs.KnowHOWREPR;
-import org.perl6.nqp.sixmodel.reprs.Lexotic;
 import org.perl6.nqp.sixmodel.reprs.MultiCache;
 import org.perl6.nqp.sixmodel.reprs.NativeCall;
 import org.perl6.nqp.sixmodel.reprs.NFA;
@@ -40,32 +39,33 @@ import org.perl6.nqp.sixmodel.reprs.ConditionVariable;
 import org.perl6.nqp.sixmodel.reprs.AsyncTask;
 import org.perl6.nqp.sixmodel.reprs.NativeRef;
 import org.perl6.nqp.sixmodel.reprs.MultiDimArray;
+import org.perl6.nqp.sixmodel.reprs.Decoder;
 
 public class REPRRegistry {
     private static HashMap<String, Integer> reprIdMap = new HashMap<String, Integer>();
     private static ArrayList<REPR> reprs = new ArrayList<REPR>();
-    
+
     public static REPR getByName(String name) {
         Integer idx = reprIdMap.get(name);
         if (idx == null)
             throw new RuntimeException("No REPR " + name);
         return getById(idx);
     }
-    
+
     public static REPR getById(int id) {
         if (id < reprs.size())
             return reprs.get(id);
         else
             throw new RuntimeException("No REPR " + new Integer(id).toString());
     }
-    
+
     private static void addREPR(String name, REPR REPR) {
         REPR.ID = reprs.size();
         REPR.name = name;
         reprIdMap.put(name, reprs.size());
         reprs.add(REPR);
     }
-    
+
     static {
         addREPR("KnowHOWREPR", new KnowHOWREPR());
         addREPR("KnowHOWAttribute", new KnowHOWAttribute());
@@ -81,7 +81,6 @@ public class REPRRegistry {
         addREPR("JavaWrap", new JavaWrap());
         addREPR("ContextRef", new ContextRef());
         addREPR("Continuation", new Continuation());
-        addREPR("Lexotic", new Lexotic());
         addREPR("CodeRef", new CodeRefREPR());
         addREPR("CallCapture", new CallCapture());
         addREPR("NFA", new NFA());
@@ -104,5 +103,6 @@ public class REPRRegistry {
         addREPR("AsyncTask", new AsyncTask());
         addREPR("NativeRef", new NativeRef());
         addREPR("MultiDimArray", new MultiDimArray());
+        addREPR("Decoder", new Decoder());
     }
 }

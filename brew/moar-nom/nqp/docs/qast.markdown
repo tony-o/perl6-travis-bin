@@ -328,14 +328,11 @@ Parameter declarations can also be given:
 Finally, there are a couple of other values of decl that work with lexicals.
 
 * static - means that the lexical should be given the value specified in the
-  :value(...) argument. Useful for things that wish to install symbols in the
-  lexical scope with the intention they'll not be mutated (for example, a type
-  declaration may be installed using this). No attempt is made to ensure you
-  do not re-bind such a symbol, but do not do this; runtimes are free to turn
-  lookups of static lexical symbols into direct references to the symbol.
+  :value(...) argument. There are no restrictions on re-binding.
 * contvar - means that the lexical should be initialized to a clone of the
   :value(...) argument. Presumably, this represents some kind of container
   type. There are no restrictions on re-binding.
+* typevar - means that the implementation is allowed to assume that the type of the variable doesn't change
 * statevar - same as for contvar, except the container created will be used
   for all given closure clones. To be clear, cloning a code ref doesn't bring
   state variables along. On the initial call, containers are formed in the way
@@ -384,7 +381,15 @@ don't yet know in what context it will be used, like 123.
 Each sub-node of the Want provides a value for one context out of int, str,
 num, object and void. When a context is known, the last of the matching
 sub-nodes will be used, or the first one if none match. In the case of 123,
-it may be a boxed integer or a native integer value
+it may be a boxed integer or a native integer value:
+    
+    QAST::Want.new(
+      QAST::WVal.new( :value($boxed_constant) ), # default boxed value
+      'Ii', QAST::IVal.new( :value($the_value) ) # native int value
+    )
+
+The type indicators are `Ii`, `Nn`, and `Ss` for native int, num, and str,
+respectively. The `v` indicates void context.
 
 This notion of context is very code-generation centric, so a want-value of 123
 would not create a sub-node for string context, or else
@@ -395,19 +400,20 @@ would work without complaining.
 
 ##QAST::ParamTypeCheck
 
-Used by rakudo to generate code to multidispatch or
-enforce signatures at runtime.
+Used by rakudo to enforce signatures at runtime.
 
-For example C<sub f(Mu:D) { ... }> leads to the generation of
-the following code where C<$name> is the name of the checked variable.
-Probably the first because the binder does a check too. That would be
-redundant.
+It is placed inside QAST::Vars with a 'param' decls. If the assertion inside
+returns 0 the 'bind_error' of the current HLL is called.
 
-    $var.push(QAST::ParamTypeCheck.new(QAST::Op.new(
-        :op('isconcrete'),
-         QAST::Var.new( :name($name), :scope('local') )
-    )));
-
+    QAST::Var.new(
+        :decl('param'), :scope('lexical')
+        QAST::ParamTypeCheck.new(
+            QAST::Op.new(
+                :op('isconcrete'),
+                QAST::Var.new( :name($name), :scope('local') )
+            )
+        )
+    )
 
 
 ## QAST::VM

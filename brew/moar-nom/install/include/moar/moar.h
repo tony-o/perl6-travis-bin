@@ -91,7 +91,10 @@ MVM_PUBLIC const MVMint32 MVM_jit_support(void);
 
 /* Headers for various other data structures and APIs. */
 #include "6model/6model.h"
+#include "gc/collect.h"
+#include "gc/debug.h"
 #include "gc/wb.h"
+#include "core/vector.h"
 #include "core/threadcontext.h"
 #include "core/instance.h"
 #include "core/interp.h"
@@ -100,6 +103,7 @@ MVM_PUBLIC const MVMint32 MVM_jit_support(void);
 #include "core/exceptions.h"
 #include "core/alloc.h"
 #include "core/frame.h"
+#include "core/callstack.h"
 #include "core/validation.h"
 #include "core/bytecode.h"
 #include "core/bytecodedump.h"
@@ -107,6 +111,7 @@ MVM_PUBLIC const MVMint32 MVM_jit_support(void);
 #include "core/threads.h"
 #include "core/hll.h"
 #include "core/loadbytecode.h"
+#include "core/bitmap.h"
 #include "math/num.h"
 #include "core/coerce.h"
 #include "core/ext.h"
@@ -129,11 +134,11 @@ MVM_PUBLIC const MVMint32 MVM_jit_support(void);
 #include "gc/gen2.h"
 #include "gc/allocation.h"
 #include "gc/worklist.h"
-#include "gc/collect.h"
 #include "gc/orchestrate.h"
 #include "gc/roots.h"
 #include "gc/objectid.h"
 #include "gc/finalize.h"
+#include "core/regionalloc.h"
 #include "spesh/dump.h"
 #include "spesh/graph.h"
 #include "spesh/codegen.h"
@@ -142,18 +147,26 @@ MVM_PUBLIC const MVMint32 MVM_jit_support(void);
 #include "spesh/args.h"
 #include "spesh/facts.h"
 #include "spesh/optimize.h"
+#include "spesh/dead_bb_elimination.h"
 #include "spesh/deopt.h"
 #include "spesh/log.h"
 #include "spesh/threshold.h"
 #include "spesh/inline.h"
 #include "spesh/osr.h"
+#include "spesh/iterator.h"
+#include "spesh/lookup.h"
+#include "spesh/worker.h"
+#include "spesh/stats.h"
+#include "spesh/plan.h"
+#include "spesh/arg_guard.h"
+#include "strings/nfg.h"
 #include "strings/normalize.h"
 #include "strings/decode_stream.h"
 #include "strings/ascii.h"
+#include "strings/parse_num.h"
 #include "strings/utf8.h"
 #include "strings/utf8_c8.h"
 #include "strings/utf16.h"
-#include "strings/nfg.h"
 #include "strings/iter.h"
 #include "strings/ops.h"
 #include "strings/unicode_gen.h"
@@ -163,8 +176,6 @@ MVM_PUBLIC const MVMint32 MVM_jit_support(void);
 #include "io/io.h"
 #include "io/eventloop.h"
 #include "io/syncfile.h"
-#include "io/syncstream.h"
-#include "io/syncpipe.h"
 #include "io/syncsocket.h"
 #include "io/fileops.h"
 #include "io/dirops.h"
@@ -179,12 +190,19 @@ MVM_PUBLIC const MVMint32 MVM_jit_support(void);
 #include "core/intcache.h"
 #include "core/fixedsizealloc.h"
 #include "jit/graph.h"
+#include "jit/label.h"
+#include "jit/expr.h"
+#include "jit/register.h"
+#include "jit/tile.h"
 #include "jit/compile.h"
 #include "jit/log.h"
 #include "profiler/instrument.h"
 #include "profiler/log.h"
 #include "profiler/profile.h"
+#include "profiler/heapsnapshot.h"
+#include "profiler/telemeh.h"
 #include "instrument/crossthreadwrite.h"
+#include "instrument/line_coverage.h"
 
 MVMObject *MVM_backend_config(MVMThreadContext *tc);
 
@@ -198,6 +216,12 @@ MVM_PUBLIC void MVM_vm_set_clargs(MVMInstance *instance, int argc, char **argv);
 MVM_PUBLIC void MVM_vm_set_exec_name(MVMInstance *instance, const char *exec_name);
 MVM_PUBLIC void MVM_vm_set_prog_name(MVMInstance *instance, const char *prog_name);
 MVM_PUBLIC void MVM_vm_set_lib_path(MVMInstance *instance, int count, const char **lib_path);
+
+#if defined(__s390__)
+AO_t AO_fetch_compare_and_swap_emulation(volatile AO_t *addr, AO_t old_val, AO_t new_val);
+# define AO_fetch_compare_and_swap_full(addr, old, newval) \
+    AO_fetch_compare_and_swap_emulation(addr, old, newval)
+#endif
 
 /* Returns original. Use only on AO_t-sized values (including pointers). */
 #define MVM_incr(addr) AO_fetch_and_add1_full((volatile AO_t *)(addr))

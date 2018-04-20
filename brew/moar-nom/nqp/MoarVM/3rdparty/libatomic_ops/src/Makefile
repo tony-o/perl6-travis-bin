@@ -208,9 +208,9 @@ AWK = mawk
 CC = gcc
 CCAS = gcc
 CCASDEPMODE = depmode=gcc3
-CCASFLAGS = -Wdeclaration-after-statement -Werror=declaration-after-statement -O3 -DNDEBUG  -D_REENTRANT -D_FILE_OFFSET_BITS=64 -fPIC -DMVM_TRACING=0 -DMVM_CGOTO=1
+CCASFLAGS = -Werror=declaration-after-statement -Werror=pointer-arith -O3 -DNDEBUG  -D_REENTRANT -D_FILE_OFFSET_BITS=64 -fPIC -DMVM_TRACING=0 -DMVM_CGOTO=1 -DMVM_RDTSCP=1
 CCDEPMODE = depmode=gcc3
-CFLAGS = -Wall -Wextra -Wdeclaration-after-statement -Werror=declaration-after-statement -O3 -DNDEBUG  -D_REENTRANT -D_FILE_OFFSET_BITS=64 -fPIC -DMVM_TRACING=0 -DMVM_CGOTO=1
+CFLAGS = -Wall -Wextra -Werror=declaration-after-statement -Werror=pointer-arith -O3 -DNDEBUG  -D_REENTRANT -D_FILE_OFFSET_BITS=64 -fPIC -DMVM_TRACING=0 -DMVM_CGOTO=1 -DMVM_RDTSCP=1
 CPP = gcc -E
 CPPFLAGS = 
 CYGPATH_W = echo
@@ -227,7 +227,7 @@ INSTALL_DATA = ${INSTALL} -m 644
 INSTALL_PROGRAM = ${INSTALL}
 INSTALL_SCRIPT = ${INSTALL}
 INSTALL_STRIP_PROGRAM = $(install_sh) -c -s
-LDFLAGS = 
+LDFLAGS = -O3 -DNDEBUG -Wl,-rpath,"//home/travis/brew/moar-nom/install/lib"
 LIBOBJS = 
 LIBS = 
 LTLIBOBJS = 

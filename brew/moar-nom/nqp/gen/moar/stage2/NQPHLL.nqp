@@ -3,105 +3,19 @@
 # From src/vm/moar/HLL/Backend.nqp
 
 # Backend class for the MoarVM.
+
+my sub literal_subst(str $source, str $pattern, $replacement) {
+    my $where := 0;
+    my $result := $source;
+    while (my $found := nqp::index($result, $pattern, $where)) != -1 {
+        $where := $found + nqp::chars($replacement);
+        $result := nqp::replace($result, $found, nqp::chars($pattern), $replacement);
+    };
+    $result;
+}
+
 class HLL::Backend::MoarVM {
     our %moar_config := nqp::backendconfig();
-
-    sub sorted_keys($hash) {
-        my @keys;
-        for $hash {
-            nqp::push(@keys, $_.key);
-        }
-        if +@keys == 0 {
-            return @keys;
-        }
-
-        # we expect on the order of 6 or 7 keys here, so bubble sort is fine.
-        my int $start := 0;
-        my int $numkeys := +@keys;
-        my str $swap;
-        my int $current;
-        while $start < $numkeys - 1 {
-            $current := 0;
-            while $current < $numkeys - 1 {
-                if @keys[$current] lt @keys[$current + 1] {
-                    $swap := @keys[$current];
-                    @keys[$current] := @keys[$current + 1];
-                    @keys[$current + 1] := $swap;
-                }
-                $current++;
-            }
-            $start++;
-        }
-        return @keys;
-    }
-
-    sub output_as_json($obj, $output_fh, $esc_backslash, $esc_dquote, $esc_squote?) {
-        my @pieces := nqp::list_s();
-
-        sub to_json($obj) {
-            if nqp::islist($obj) {
-                nqp::push_s(@pieces, '[');
-                my $first := 1;
-                for $obj {
-                    if $first {
-                        $first := 0;
-                    }
-                    else {
-                        nqp::push_s(@pieces, ',');
-                    }
-                    to_json($_);
-                }
-                nqp::push_s(@pieces, ']');
-            }
-            elsif nqp::ishash($obj) {
-                nqp::push_s(@pieces, '{');
-                my $first := 1;
-                for sorted_keys($obj) {
-                    if $first {
-                        $first := 0;
-                    }
-                    else {
-                        nqp::push_s(@pieces, ',');
-                    }
-                    nqp::push_s(@pieces, '"');
-                    nqp::push_s(@pieces, $_);
-                    nqp::push_s(@pieces, '":');
-                    to_json($obj{$_});
-                }
-                nqp::push_s(@pieces, '}');
-            }
-            elsif nqp::isstr($obj) {
-                if nqp::index($obj, '\\') {
-                    $obj := subst($obj, /'\\'/, $esc_backslash, :global);
-                }
-                if nqp::index($obj, '"') {
-                    $obj := subst($obj, /'"'/, $esc_dquote, :global);
-                }
-                if nqp::defined($esc_squote) && nqp::index($obj, "'") {
-                    $obj := subst($obj, /"'"/, $esc_squote, :global);
-                }
-                nqp::push_s(@pieces, '"');
-                nqp::push_s(@pieces, $obj);
-                nqp::push_s(@pieces, '"');
-            }
-            elsif nqp::isint($obj) || nqp::isnum($obj) {
-                nqp::push_s(@pieces, ~$obj);
-            }
-            elsif nqp::can($obj, 'Str') {
-                to_json(nqp::unbox_s($obj.Str));
-            }
-            else {
-                nqp::die("Don't know how to dump a " ~ $obj.HOW.name($obj));
-            }
-            if nqp::elems(@pieces) > 4096 {
-                nqp::printfh($output_fh, nqp::join('', @pieces));
-                nqp::setelems(@pieces, 0);
-            }
-        }
-
-        to_json($obj);
-        nqp::printfh($output_fh, nqp::join('', @pieces));
-    }
 
     method apply_transcodings($s, $transcode) {
         $s
@@ -146,7 +60,16 @@ class HLL::Backend::MoarVM {
             if nqp::defined(@END);
 
         self.ensure_prof_routines();
-        $prof_start_sub(nqp::hash('kind', $kind));
+
+        if $kind eq "heap" {
+            unless nqp::defined($filename) {
+                $filename := 'heap-snapshot-' ~ nqp::time_n();
+            }
+            $prof_start_sub(nqp::hash('kind', $kind, 'path', $filename));
+        } else {
+            $prof_start_sub(nqp::hash('kind', $kind));
+        }
+
         my $res  := $what();
         unless nqp::defined(@END) {
             my $data := $prof_end_sub();
@@ -154,6 +77,7 @@ class HLL::Backend::MoarVM {
         }
         $res;
     }
+
     method dump_profile_data($data, $kind, $filename) {
         if $kind eq 'instrumented' {
             self.dump_instrumented_profile_data($data, $filename);
@@ -165,90 +89,21 @@ class HLL::Backend::MoarVM {
             nqp::die("Don't know how to dump data for $kind profile");
         }
     }
-    method dump_heap_profile_data($data, $filename) {
-        my @pieces;
 
-        unless nqp::defined($filename) {
-            $filename := 'heap-' ~ nqp::time_n() ~ '.txt';
-        }
-        my $profile_fh := open($filename, :w);
-
-        nqp::sayfh($profile_fh, '# This file contains MoarVM heap snapshots.');
-        nqp::sayfh($profile_fh, '# the stringheap section contains a list of');
-        nqp::sayfh($profile_fh, '# strings that are used throughout the file');
-        nqp::sayfh($profile_fh, '# by their index in the string heap.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# The types list has entries with two string');
-        nqp::sayfh($profile_fh, '# indices: The REPR of a type and the name.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# The following sections are per snapshot:');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# Every entry in the collectables section starts');
-        nqp::sayfh($profile_fh, '# with the type or frame index as second value.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '#   1 Object');
-        nqp::sayfh($profile_fh, '#   2 Type object');
-        nqp::sayfh($profile_fh, '#   3 STable');
-        nqp::sayfh($profile_fh, '#   4 Frame');
-        nqp::sayfh($profile_fh, '#   5 Perm Roots');
-        nqp::sayfh($profile_fh, '#   6 Instance Roots');
-        nqp::sayfh($profile_fh, '#   7 CStack Roots');
-        nqp::sayfh($profile_fh, '#   8 Thread Roots');
-        nqp::sayfh($profile_fh, '#   9 Root');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# The third field is the size of the GC-managed');
-        nqp::sayfh($profile_fh, '# part. The fourth field is the size of extra');
-        nqp::sayfh($profile_fh, '# data, for example managed by malloc or the FSA.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# The fifth field is the starting index into the');
-        nqp::sayfh($profile_fh, '# references list, the sixth field is the number');
-        nqp::sayfh($profile_fh, '# of references that belong to this collectable.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '# Each reference has its ref kind, its "data"');
-        nqp::sayfh($profile_fh, '# and the index of the referenced collectable as');
-        nqp::sayfh($profile_fh, '# its fields.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '#   0 for unknown.');
-        nqp::sayfh($profile_fh, '#   1 for an index.');
-        nqp::sayfh($profile_fh, '#   2 for an entry in the string heap.');
-        nqp::sayfh($profile_fh, '#');
-        nqp::sayfh($profile_fh, '[ stringheap');
-        for $data<strings> {
-            if nqp::index($_, '\n') {
-                nqp::sayfh($profile_fh, subst($_, /\n/, q{\\n}, :global));
-            }
-            else {
-                nqp::sayfh($profile_fh, $_);
-            }
-        }
-        nqp::sayfh($profile_fh, '[ types');
-        nqp::sayfh($profile_fh, $data<types>);
-
-        nqp::sayfh($profile_fh, '[ snapshots');
-        my int $snapshotidx := 0;
-        for $data<snapshots> -> $snapshot {
-            nqp::sayfh($profile_fh, '[ s' ~ $snapshotidx);
-            nqp::sayfh($profile_fh, 'r ' ~ $snapshot<references>);
-            nqp::sayfh($profile_fh, 'c ' ~ $snapshot<collectables>);
-            $snapshotidx := $snapshotidx + 1;
-        }
-
-        nqp::closefh($profile_fh);
-    }
     method dump_instrumented_profile_data($data, $filename) {
         my @pieces := nqp::list_s();
 
         unless nqp::defined($filename) {
             $filename := 'profile-' ~ nqp::time_n() ~ '.html';
         }
-        nqp::sayfh(nqp::getstderr(), "Writing profiler output to $filename");
-        my $profile_fh := open($filename, :w);
-        my $want_json  := ?($filename ~~ /'.json'$/);
+        note("Writing profiler output to $filename");
+        my $profile_fh;
+        my $want_json  := nqp::eqat($filename, '.json', -5);
+        my $want_sql   := nqp::eqat($filename, '.sql', -4);
 
         my $escaped_backslash;
-        my $escaped_squote;
         my $escaped_dquote;
-
+        my $escaped_squote;
         if $want_json {
             # Single quotes don't require escaping here
             $escaped_backslash := q{\\\\};
@@ -277,7 +132,6 @@ class HLL::Backend::MoarVM {
                 }
                 if nqp::existskey($node, "allocations") {
                     for $node<allocations> -> %alloc_info {
-                        my $type := %alloc_info<type>;
                         if nqp::existskey($id_remap, %alloc_info<id>) {
                             %alloc_info<id> := $id_remap{%alloc_info<id>};
                         } else {
@@ -286,7 +140,15 @@ class HLL::Backend::MoarVM {
                             %alloc_info<id> := $newkey;
                         }
                         unless nqp::existskey($id_to_thing, %alloc_info<id>) {
-                            $id_to_thing{%alloc_info<id>} := $type.HOW.name($type);
+                            my $typename;
+                            try {
+                                my $type := %alloc_info<type>;
+                                $typename := $type.HOW.name($type);
+                            }
+                            unless $typename {
+                                $typename := "<unknown type>";
+                            }
+                            $id_to_thing{%alloc_info<id>} := $typename;
                         }
                         nqp::deletekey(%alloc_info, "type");
                     }
@@ -308,10 +170,192 @@ class HLL::Backend::MoarVM {
                     }
                 }
                 CATCH {
+                    note("profiler caught an error during post_process_call_graph_node:");
                     note(nqp::getmessage($!));
                 }
             }
         }
+
+        sub sift_down(@a, int $start, int $end) {
+            my int $root := $start;
+
+            while 2*$root + 1 <= $end {
+                my $child := 2*$root + 1;
+                my $swap := $root;
+
+                if @a[$swap] gt @a[$child] {
+                    $swap := $child;
+                }
+                if $child + 1 <= $end && @a[$swap] ge @a[$child + 1] {
+                    $swap := $child + 1;
+                }
+                if $swap == $root {
+                    return;
+                } else {
+                    my str $tmp := @a[$root];
+                    @a[$root] := @a[$swap];
+                    @a[$swap] := $tmp;
+                    $root := $swap;
+                }
+            }
+        }
+
+        # Usually only a small number of keys are seen,
+		# so a bubble sort would be fine. However, the
+		# number can get much larger (e.g., when profiling
+		# a build of the Rakudo settings), so use a heapsort
+		# instead.
+        sub sorted_keys($hash) {
+            my @keys;
+            for $hash {
+                nqp::push(@keys, $_.key);
+            }
+
+            my int $count := +@keys;
+            my int $start := $count / 2 - 1;
+            while $start >= 0 {
+                sift_down(@keys, $start, $count - 1);
+                $start := $start - 1;
+            }
+
+            my int $end := +@keys - 1;
+            while $end > 0 {
+                my str $swap := @keys[$end];
+                @keys[$end] := @keys[0];
+                @keys[0] := $swap;
+                $end := $end - 1;
+                sift_down(@keys, 0, $end);
+            }
+
+            return @keys;
+        }
+
+        sub to_json($obj) {
+            if nqp::islist($obj) {
+                nqp::push_s(@pieces, '[');
+                my int $first := 1;
+                for $obj {
+                    if $first {
+                        $first := 0;
+                    }
+                    else {
+                        nqp::push_s(@pieces, ',');
+                    }
+                    to_json($_);
+                }
+                nqp::push_s(@pieces, ']');
+            }
+            elsif nqp::ishash($obj) {
+                nqp::push_s(@pieces, '{');
+                my int $first := 1;
+                for sorted_keys($obj) {
+                    if $first {
+                        $first := 0;
+                    }
+                    else {
+                        nqp::push_s(@pieces, ',');
+                    }
+                    nqp::push_s(@pieces, '"');
+                    nqp::push_s(@pieces, $_);
+                    nqp::push_s(@pieces, '":');
+                    to_json($obj{$_});
+                }
+                nqp::push_s(@pieces, '}');
+            }
+            elsif nqp::isstr($obj) {
+                if nqp::index($obj, '\\') {
+                    $obj := literal_subst($obj, '\\', $escaped_backslash);
+                }
+                if nqp::index($obj, '"') {
+                    $obj := literal_subst($obj, '"', $escaped_dquote);
+                }
+                if nqp::defined($escaped_squote) && nqp::index($obj, "'") {
+                    $obj := literal_subst($obj, "'", $escaped_squote);
+                }
+                nqp::push_s(@pieces, '"');
+                nqp::push_s(@pieces, $obj);
+                nqp::push_s(@pieces, '"');
+            }
+            elsif nqp::isint($obj) || nqp::isnum($obj) {
+                nqp::push_s(@pieces, ~$obj);
+            }
+            elsif nqp::can($obj, 'Str') {
+                to_json(nqp::unbox_s($obj.Str));
+            }
+            else {
+                nqp::die("Don't know how to dump a " ~ $obj.HOW.name($obj));
+            }
+            if nqp::elems(@pieces) > 4096 {
+                $profile_fh.print(nqp::join('', @pieces));
+                nqp::setelems(@pieces, 0);
+            }
+        }
+
+        sub to_sql($obj) {
+            my @profile;
+            for $obj[0] -> $k {
+                my $v := $obj[0]{$k};
+                if nqp::ishash($v) {
+                    $profile_fh.say("INSERT INTO routines VALUES ('" ~ nqp::join("','", nqp::list(nqp::iterkey_s($k), literal_subst(~$v<name>, "'", "''"), ~$v<line>, ~$v<file>)) ~ "');");
+                }
+                else {
+                    $profile_fh.say("INSERT INTO types VALUES ('" ~ nqp::join("','", nqp::list(nqp::iterkey_s($k), literal_subst(~$v, "'", "''"))) ~ "');");
+                }
+            }
+            for $obj[1] -> $k {
+                my $v := $obj[1]{$k};
+                if $k eq 'total_time' {
+                    @profile[0] := ~$v;
+                }
+                elsif $k eq 'spesh_time' {
+                    @profile[1] := ~$v;
+                }
+                elsif $k eq 'gcs' {
+                    for $v -> $gc {
+                        my @g := nqp::list_s();
+                        for <time retained_bytes promoted_bytes gen2_roots full cleared_bytes> -> $f {
+                            nqp::push_s(@g, ~($gc{$f} // '0'));
+                        }
+                        $profile_fh.say('INSERT INTO gcs VALUES (' ~ nqp::join(',', @g) ~ ');');
+                    }
+                }
+                elsif $k eq 'call_graph' {
+                    my %call_rec_depth;
+                    my int $node_id := 0;
+                    sub collect_calls(str $parent_id, %call_graph) {
+                        my str $call_id := ~$node_id;
+                        $node_id++;
+                        my @call := nqp::list_s($call_id, $parent_id);
+                        for <id osr spesh_entries jit_entries inlined_entries inclusive_time exclusive_time entries deopt_one deopt_all> -> $f {
+                            nqp::push_s(@call, ~(%call_graph{$f} // '0'));
+                        }
+                        my str $routine_id := ~%call_graph<id>;
+                        %call_rec_depth{$routine_id} := 0 unless %call_rec_depth{$routine_id};
+                        nqp::push_s(@call, ~%call_rec_depth{$routine_id});
+                        $profile_fh.say('INSERT INTO calls VALUES (' ~ nqp::join(',', @call) ~ ');');
+                        if %call_graph<allocations> {
+                            for %call_graph<allocations> -> $a {
+                                my @a := nqp::list_s($call_id);
+                                for <id spesh jit count> -> $f {
+                                    nqp::push_s(@a, ~($a{$f} // '0'));
+                                }
+                                $profile_fh.say('INSERT INTO allocations VALUES (' ~ nqp::join(',', @a) ~ ');');
+                            }
+                        }
+                        if %call_graph<callees> {
+                            %call_rec_depth{$routine_id}++;
+                            for %call_graph<callees> -> $c {
+                                collect_calls(~$call_id, $c);
+                            }
+                            %call_rec_depth{$routine_id}--;
+                        }
+                    }
+                    collect_calls(~$node_id, $v);
+                }
+            }
+            $profile_fh.say('INSERT INTO profile VALUES (' ~ nqp::join(',', @profile) ~ ');');
+        }
+
         # Post-process the call data, turning objects into flat data.
         for $data {
             post_process_call_graph_node($_<call_graph>);
@@ -319,23 +363,59 @@ class HLL::Backend::MoarVM {
 
         nqp::unshift($data, $id_to_thing);
 
+        # First make sure the template file exists if we want html
+        # if it doesn't exist, just spit out json instead.
+        my str $template;
+
+        if !$want_json && !$want_sql {
+            my $temppath := nqp::backendconfig()<prefix> ~ '/share/nqp/lib/profiler/template.html';
+            $template := try slurp('src/vm/moar/profiler/template.html');
+            unless $template {
+                $template := try slurp($temppath);
+            }
+            unless $template {
+                note("Could not locate profiler/template.html; should have been at $temppath; outputting sql data instead");
+                $want_sql := 1;
+                $filename := literal_subst($filename, ".html", ".sql");
+                unless nqp::eqat($filename, '.sql', -4) {
+                    $filename := $filename ~ '.sql';
+                }
+                note("Writing profiler output to $filename");
+            }
+        }
+
+        $profile_fh := open($filename, :w);
+
         if $want_json {
-            output_as_json($data, $profile_fh, $escaped_backslash, $escaped_dquote);
+            to_json($data);
+            $profile_fh.print(nqp::join('', @pieces));
+        }
+        elsif $want_sql {
+            $profile_fh.say('BEGIN;');
+            $profile_fh.say('CREATE TABLE types(id INTEGER PRIMARY KEY ASC, name TEXT);');
+            $profile_fh.say('CREATE TABLE routines(id INTEGER PRIMARY KEY ASC, name TEXT, line INT, file TEXT);');
+            $profile_fh.say('CREATE TABLE profile(total_time INT, spesh_time INT);');
+            $profile_fh.say('CREATE TABLE gcs(time INT, retained_bytes INT, promoted_bytes INT, gen2_roots INT, full INT, cleared_bytes INT);');
+            $profile_fh.say('CREATE TABLE calls(id INTEGER PRIMARY KEY ASC, parent_id INT, routine_id INT, osr INT, spesh_entries INT, jit_entries INT, inlined_entries INT, inclusive_time INT, exclusive_time INT, entries INT, deopt_one INT, deopt_all INT, rec_depth INT, FOREIGN KEY(routine_id) REFERENCES routines(id));');
+            $profile_fh.say('CREATE TABLE allocations(call_id INT, type_id INT, spesh INT, jit INT, count INT, PRIMARY KEY(call_id, type_id), FOREIGN KEY(call_id) REFERENCES calls(id), FOREIGN KEY(type_id) REFERENCES types(id));');
+            to_sql($data);
+            $profile_fh.say('END;');
         }
         else {
             # Get profiler template, split it in half, and write those either
             # side of the JSON itself.
-            my $template := try slurp('src/vm/moar/profiler/template.html');
-            unless $template {
-                $template := slurp(nqp::backendconfig()<prefix> ~ '/share/nqp/lib/profiler/template.html');
-            }
             my @tpl_pieces := nqp::split('{{{PROFILER_OUTPUT}}}', $template);
 
-            nqp::printfh($profile_fh, @tpl_pieces[0]);
-            output_as_json($data, $profile_fh, $escaped_backslash, $escaped_dquote, $escaped_squote);
-            nqp::printfh($profile_fh, @tpl_pieces[1]);
+            $profile_fh.print(@tpl_pieces[0]);
+            to_json($data);
+            $profile_fh.print(nqp::join('', @pieces));
+            $profile_fh.print(@tpl_pieces[1]);
         }
-        nqp::closefh($profile_fh);
+        $profile_fh.close;
+    }
+
+    method dump_heap_profile_data($data, $filename) {
+        note("Heap snapshot written to $filename");
     }
 
     method run_traced($level, $what) {
@@ -360,7 +440,7 @@ class HLL::Backend::MoarVM {
     }
 
     method mast($qast, *%adverbs) {
-        nqp::getcomp('QAST').to_mast($qast);
+        nqp::getcomp('QAST').to_mast($qast, %adverbs<mast_frames> // nqp::hash());
     }
 
     method mbc($mast, *%adverbs) {
@@ -404,8 +484,47 @@ role HLL::Backend::Default {
 use QRegex;
 
 grammar HLL::Grammar {
-    my $brackets := "<>[]()\{}\x[0028]\x[0029]\x[003C]\x[003E]\x[005B]\x[005D]\x[007B]\x[007D]\x[00AB]\x[00BB]\x[0F3A]\x[0F3B]\x[0F3C]\x[0F3D]\x[169B]\x[169C]\x[2018]\x[2019]\x[201A]\x[2019]\x[201B]\x[2019]\x[201C]\x[201D]\x[201E]\x[201D]\x[201F]\x[201D]\x[2039]\x[203A]\x[2045]\x[2046]\x[207D]\x[207E]\x[208D]\x[208E]\x[2208]\x[220B]\x[2209]\x[220C]\x[220A]\x[220D]\x[2215]\x[29F5]\x[223C]\x[223D]\x[2243]\x[22CD]\x[2252]\x[2253]\x[2254]\x[2255]\x[2264]\x[2265]\x[2266]\x[2267]\x[2268]\x[2269]\x[226A]\x[226B]\x[226E]\x[226F]\x[2270]\x[2271]\x[2272]\x[2273]\x[2274]\x[2275]\x[2276]\x[2277]\x[2278]\x[2279]\x[227A]\x[227B]\x[227C]\x[227D]\x[227E]\x[227F]\x[2280]\x[2281]\x[2282]\x[2283]\x[2284]\x[2285]\x[2286]\x[2287]\x[2288]\x[2289]\x[228A]\x[228B]\x[228F]\x[2290]\x[2291]\x[2292]\x[2298]\x[29B8]\x[22A2]\x[22A3]\x[22A6]\x[2ADE]\x[22A8]\x[2AE4]\x[22A9]\x[2AE3]\x[22AB]\x[2AE5]\x[22B0]\x[22B1]\x[22B2]\x[22B3]\x[22B4]\x[22B5]\x[22B6]\x[22B7]\x[22C9]\x[22CA]\x[22CB]\x[22CC]\x[22D0]\x[22D1]\x[22D6]\x[22D7]\x[22D8]\x[22D9]\x[22DA]\x[22DB]\x[22DC]\x[22DD]\x[22DE]\x[22DF]\x[22E0]\x[22E1]\x[22E2]\x[22E3]\x[22E4]\x[22E5]\x[22E6]\x[22E7]\x[22E8]\x[22E9]\x[22EA]\x[22EB]\x[22EC]\x[22ED]\x[22F0]\x[22F1]\x[22F2]\x[22FA]\x[22F3]\x[22FB]\x[22F4]\x[22FC]\x[22F6]\x[22FD]\x[22F7]\x[22FE]\x[2308]\x[2309]\x[230A]\x[230B]\x[2329]\x[232A]\x[23B4]\x[23B5]\x[2768]\x[2769]\x[276A]\x[276B]\x[276C]\x[276D]\x[276E]\x[276F]\x[2770]\x[2771]\x[2772]\x[2773]\x[2774]\x[2775]\x[27C3]\x[27C4]\x[27C5]\x[27C6]\x[27D5]\x[27D6]\x[27DD]\x[27DE]\x[27E2]\x[27E3]\x[27E4]\x[27E5]\x[27E6]\x[27E7]\x[27E8]\x[27E9]\x[27EA]\x[27EB]\x[2983]\x[2984]\x[2985]\x[2986]\x[2987]\x[2988]\x[2989]\x[298A]\x[298B]\x[298C]\x[298D]\x[298E]\x[298F]\x[2990]\x[2991]\x[2992]\x[2993]\x[2994]\x[2995]\x[2996]\x[2997]\x[2998]\x[29C0]\x[29C1]\x[29C4]\x[29C5]\x[29CF]\x[29D0]\x[29D1]\x[29D2]\x[29D4]\x[29D5]\x[29D8]\x[29D9]\x[29DA]\x[29DB]\x[29F8]\x[29F9]\x[29FC]\x[29FD]\x[2A2B]\x[2A2C]\x[2A2D]\x[2A2E]\x[2A34]\x[2A35]\x[2A3C]\x[2A3D]\x[2A64]\x[2A65]\x[2A79]\x[2A7A]\x[2A7D]\x[2A7E]\x[2A7F]\x[2A80]\x[2A81]\x[2A82]\x[2A83]\x[2A84]\x[2A8B]\x[2A8C]\x[2A91]\x[2A92]\x[2A93]\x[2A94]\x[2A95]\x[2A96]\x[2A97]\x[2A98]\x[2A99]\x[2A9A]\x[2A9B]\x[2A9C]\x[2AA1]\x[2AA2]\x[2AA6]\x[2AA7]\x[2AA8]\x[2AA9]\x[2AAA]\x[2AAB]\x[2AAC]\x[2AAD]\x[2AAF]\x[2AB0]\x[2AB3]\x[2AB4]\x[2ABB]\x[2ABC]\x[2ABD]\x[2ABE]\x[2ABF]\x[2AC0]\x[2AC1]\x[2AC2]\x[2AC3]\x[2AC4]\x[2AC5]\x[2AC6]\x[2ACD]\x[2ACE]\x[2ACF]\x[2AD0]\x[2AD1]\x[2AD2]\x[2AD3]\x[2AD4]\x[2AD5]\x[2AD6]\x[2AEC]\x[2AED]\x[2AF7]\x[2AF8]\x[2AF9]\x[2AFA]\x[2E02]\x[2E03]\x[2E04]\x[2E05]\x[2E09]\x[2E0A]\x[2E0C]\x[2E0D]\x[2E1C]\x[2E1D]\x[2E20]\x[2E21]\x[3008]\x[3009]\x[300A]\x[300B]\x[300C]\x[300D]\x[300E]\x[300F]\x[3010]\x[3011]\x[3014]\x[3015]\x[3016]\x[3017]\x[3018]\x[3019]\x[301A]\x[301B]\x[301D]\x[301E]\x[FD3E]\x[FD3F]\x[FE17]\x[FE18]\x[FE35]\x[FE36]\x[FE37]\x[FE38]\x[FE39]\x[FE3A]\x[FE3B]\x[FE3C]\x[FE3D]\x[FE3E]\x[FE3F]\x[FE40]\x[FE41]\x[FE42]\x[FE43]\x[FE44]\x[FE47]\x[FE48]\x[FE59]\x[FE5A]\x[FE5B]\x[FE5C]\x[FE5D]\x[FE5E]\x[FF08]\x[FF09]\x[FF1C]\x[FF1E]\x[FF3B]\x[FF3D]\x[FF5B]\x[FF5D]\x[FF5F]\x[FF60]\x[FF62]\x[FF63]";
-    my $cursor_class := NQPCursor;
+    my $brackets := '<>[](){}'   ~  "\x[0028]\x[0029]\x[003C]\x[003E]\x[005B]\x[005D]" ~
+    "\x[007B]\x[007D]\x[00AB]\x[00BB]\x[0F3A]\x[0F3B]\x[0F3C]\x[0F3D]\x[169B]\x[169C]" ~
+    "\x[2018]\x[2019]\x[201A]\x[2019]\x[201B]\x[2019]\x[201C]\x[201D]\x[201E]\x[201D]" ~
+    "\x[201F]\x[201D]\x[2039]\x[203A]\x[2045]\x[2046]\x[207D]\x[207E]\x[208D]\x[208E]" ~
+    "\x[2208]\x[220B]\x[2209]\x[220C]\x[220A]\x[220D]\x[2215]\x[29F5]\x[223C]\x[223D]" ~
+    "\x[2243]\x[22CD]\x[2252]\x[2253]\x[2254]\x[2255]\x[2264]\x[2265]\x[2266]\x[2267]" ~
+    "\x[2268]\x[2269]\x[226A]\x[226B]\x[226E]\x[226F]\x[2270]\x[2271]\x[2272]\x[2273]" ~
+    "\x[2274]\x[2275]\x[2276]\x[2277]\x[2278]\x[2279]\x[227A]\x[227B]\x[227C]\x[227D]" ~
+    "\x[227E]\x[227F]\x[2280]\x[2281]\x[2282]\x[2283]\x[2284]\x[2285]\x[2286]\x[2287]" ~
+    "\x[2288]\x[2289]\x[228A]\x[228B]\x[228F]\x[2290]\x[2291]\x[2292]\x[2298]\x[29B8]" ~
+    "\x[22A2]\x[22A3]\x[22A6]\x[2ADE]\x[22A8]\x[2AE4]\x[22A9]\x[2AE3]\x[22AB]\x[2AE5]" ~
+    "\x[22B0]\x[22B1]\x[22B2]\x[22B3]\x[22B4]\x[22B5]\x[22B6]\x[22B7]\x[22C9]\x[22CA]" ~
+    "\x[22CB]\x[22CC]\x[22D0]\x[22D1]\x[22D6]\x[22D7]\x[22D8]\x[22D9]\x[22DA]\x[22DB]" ~
+    "\x[22DC]\x[22DD]\x[22DE]\x[22DF]\x[22E0]\x[22E1]\x[22E2]\x[22E3]\x[22E4]\x[22E5]" ~
+    "\x[22E6]\x[22E7]\x[22E8]\x[22E9]\x[22EA]\x[22EB]\x[22EC]\x[22ED]\x[22F0]\x[22F1]" ~
+    "\x[22F2]\x[22FA]\x[22F3]\x[22FB]\x[22F4]\x[22FC]\x[22F6]\x[22FD]\x[22F7]\x[22FE]" ~
+    "\x[2308]\x[2309]\x[230A]\x[230B]\x[2329]\x[232A]\x[23B4]\x[23B5]\x[2768]\x[2769]" ~
+    "\x[276A]\x[276B]\x[276C]\x[276D]\x[276E]\x[276F]\x[2770]\x[2771]\x[2772]\x[2773]" ~
+    "\x[2774]\x[2775]\x[27C3]\x[27C4]\x[27C5]\x[27C6]\x[27D5]\x[27D6]\x[27DD]\x[27DE]" ~
+    "\x[27E2]\x[27E3]\x[27E4]\x[27E5]\x[27E6]\x[27E7]\x[27E8]\x[27E9]\x[27EA]\x[27EB]" ~
+    "\x[2983]\x[2984]\x[2985]\x[2986]\x[2987]\x[2988]\x[2989]\x[298A]\x[298B]\x[298C]" ~
+    "\x[298D]\x[2990]\x[298F]\x[298E]\x[2991]\x[2992]\x[2993]\x[2994]\x[2995]\x[2996]" ~
+    "\x[2997]\x[2998]\x[29C0]\x[29C1]\x[29C4]\x[29C5]\x[29CF]\x[29D0]\x[29D1]\x[29D2]" ~
+    "\x[29D4]\x[29D5]\x[29D8]\x[29D9]\x[29DA]\x[29DB]\x[29F8]\x[29F9]\x[29FC]\x[29FD]" ~
+    "\x[2A2B]\x[2A2C]\x[2A2D]\x[2A2E]\x[2A34]\x[2A35]\x[2A3C]\x[2A3D]\x[2A64]\x[2A65]" ~
+    "\x[2A79]\x[2A7A]\x[2A7D]\x[2A7E]\x[2A7F]\x[2A80]\x[2A81]\x[2A82]\x[2A83]\x[2A84]" ~
+    "\x[2A8B]\x[2A8C]\x[2A91]\x[2A92]\x[2A93]\x[2A94]\x[2A95]\x[2A96]\x[2A97]\x[2A98]" ~
+    "\x[2A99]\x[2A9A]\x[2A9B]\x[2A9C]\x[2AA1]\x[2AA2]\x[2AA6]\x[2AA7]\x[2AA8]\x[2AA9]" ~
+    "\x[2AAA]\x[2AAB]\x[2AAC]\x[2AAD]\x[2AAF]\x[2AB0]\x[2AB3]\x[2AB4]\x[2ABB]\x[2ABC]" ~
+    "\x[2ABD]\x[2ABE]\x[2ABF]\x[2AC0]\x[2AC1]\x[2AC2]\x[2AC3]\x[2AC4]\x[2AC5]\x[2AC6]" ~
+    "\x[2ACD]\x[2ACE]\x[2ACF]\x[2AD0]\x[2AD1]\x[2AD2]\x[2AD3]\x[2AD4]\x[2AD5]\x[2AD6]" ~
+    "\x[2AEC]\x[2AED]\x[2AF7]\x[2AF8]\x[2AF9]\x[2AFA]\x[2E02]\x[2E03]\x[2E04]\x[2E05]" ~
+    "\x[2E09]\x[2E0A]\x[2E0C]\x[2E0D]\x[2E1C]\x[2E1D]\x[2E20]\x[2E21]\x[2E28]\x[2E29]" ~
+    "\x[3008]\x[3009]\x[300A]\x[300B]\x[300C]\x[300D]\x[300E]\x[300F]\x[3010]\x[3011]" ~
+    "\x[3014]\x[3015]\x[3016]\x[3017]\x[3018]\x[3019]\x[301A]\x[301B]\x[301D]\x[301E]" ~
+    "\x[FE17]\x[FE18]\x[FE35]\x[FE36]\x[FE37]\x[FE38]\x[FE39]\x[FE3A]\x[FE3B]\x[FE3C]" ~
+    "\x[FE3D]\x[FE3E]\x[FE3F]\x[FE40]\x[FE41]\x[FE42]\x[FE43]\x[FE44]\x[FE47]\x[FE48]" ~
+    "\x[FE59]\x[FE5A]\x[FE5B]\x[FE5C]\x[FE5D]\x[FE5E]\x[FF08]\x[FF09]\x[FF1C]\x[FF1E]" ~
+    "\x[FF3B]\x[FF3D]\x[FF5B]\x[FF5D]\x[FF5F]\x[FF60]\x[FF62]\x[FF63]\x[27EE]\x[27EF]" ~
+    "\x[2E24]\x[2E25]\x[27EC]\x[27ED]\x[2E22]\x[2E23]\x[2E26]\x[2E27]"
+    ;
 
     method perl() { self.HOW.name(self) ~ '.new() #`[' ~ nqp::where(self) ~ ']' }
 
@@ -519,144 +638,53 @@ grammar HLL::Grammar {
 
     token charname {
         || <integer>
-        || <.alpha> .*? <?before \s* <[ \] , # ]> >
+        || <.alpha> .*? <?before \s* <.[ \] , # ]> >
     }
     token charnames { [<.ws><charname><.ws>]+ % ',' }
     token charspec {
         [
-        | '[' <charnames> ']' 
+        | '[' <charnames> ']'
         | \d+ [ _ \d+]*
         | <control=[ ?..Z ]>
         | <.panic: 'Unrecognized \\c character'>
         ]
     }
 
-=begin 
+    regex comment:sym<line_directive> {
+        ^^ '#' \s* 'line' \s+ $<line>=(\d+) [ \s+ $<filename>=(\S+) ]? $$
+    }
 
-=item O(spec [, save])
+=begin
+
+=item O(*%spec)
 
 This subrule attaches operator precedence information to
 a match object (such as an operator token).  A typical
 invocation for the subrule might be:
 
-    token infix:sym<+> { <sym> <O( q{ %additive, :pirop<add> } )> }
+    token infix:sym<+> { <sym> <O(|%additive, :op<add>)> }
 
-This says to add all of the attribute of the C<%additive> hash
-(described below) and a C<pirop> entry into the match object
+This says to add all of the attributes of the C<%additive> hash
+(described below) and a C<op> entry into the match object
 returned by the C<< infix:sym<+> >> token (as the C<O> named
 capture).  Note that this is a alphabetic "O", not a digit zero.
 
-Currently the C<O> subrule accepts a string argument describing
-the hash to be stored.  (Note the C< q{ ... } > above.  Eventually
-it may be possible to omit the 'q' such that an actual (constant)
-hash constructor is passed as an argument to C<O>.
+The %additive hash is simply a hash containing information that is shared
+between all additive operators. Generally, this will simply be a normal
+lexically scoped hash belonging to the grammar. For example, the NQP grammar
+has:
 
-The hash built via the string argument to C<O> is cached, so that
-subsequent parses of the same token re-use the hash built from
-previous parses of the token, rather than building a new hash
-on each invocation.
-
-The C<save> argument is used to build "hash" aggregates that can
-be referred to by subsequent calls to C<O>.  For example,
-
-    NQP::Grammar.O(':prec<t=>, :assoc<left>', '%additive' );
-
-specifies the values to be associated with later references to
-"%additive".  Eventually it will likely be possible to use true
-hashes from a package namespace, but this works for now.
-
-Currently the only pairs recognized have the form C< :pair >,
-C< :!pair >, and C<< :pair<strval> >>.
-
-=end
-    
-    # This lexical holds the hash cache. Right now we have one
-    # cache for all grammars; eventually we may need a way to
-    # separate them out by cursor type.
-    my %ohash;
-    
-    method O(str $spec, $save?) {
-        # See if we've already created a Hash for the current
-        # specification string -- if so, use that.
-        my %hash := %ohash{$spec};
-        unless %hash {
-            # Otherwise, we need to build a new one.
-            %hash       := nqp::hash();
-            my int $eos := nqp::chars($spec);
-            my int $pos := 0;
-            while ($pos := nqp::findnotcclass(nqp::const::CCLASS_WHITESPACE,
-                                              $spec, $pos, $eos)) < $eos
-            {
-                my int $lpos;
-                my str $s := nqp::substr($spec, $pos, 1);
-                if $s eq ',' { # Ignore commas between elements for now.
-                    $pos++;
-                }
-                elsif $s eq ':' { # Parse whatever comes next like a pair.
-                    $pos++;
-                  
-                    # If the pair is of the form :!name, then reverse the value
-                    # and skip the exclamation mark.
-                    my $value := 1;
-                    if nqp::substr($spec, $pos, 1) eq '!' {
-                        $pos++;
-                        $value := 0;
-                    }
-
-                    # Get the name of the pair.
-                    $lpos    := nqp::findnotcclass(nqp::const::CCLASS_WORD,
-                                                   $spec, $pos, $eos);
-                    my $name := nqp::substr($spec, $pos, $lpos - $pos);
-                    $pos     := $lpos;
-
-                    # Look for a <...> that follows.
-                    if nqp::substr($spec, $pos, 1) eq '<' {
-                        $pos   := $pos + 1;
-                        $lpos  := nqp::index($spec, '>', $pos);
-                        $value := nqp::substr($spec, $pos, $lpos - $pos);
-                        $pos   := $lpos + 1;
-                    }
-                    # Done processing the pair, store it in the hash.
-                    %hash{$name} := $value;
-                }
-                else {
-                    # If whatever we found doesn't start with a colon, treat it
-                    # as a lookup of a previously saved hash to be merged in.
-                    # Find the first whitespace or comma
-                    $lpos      := nqp::findcclass(nqp::const::CCLASS_WHITESPACE,
-                                                  $spec, $pos, $eos);
-                    my $index  := nqp::index($spec, ',', $pos);
-                    $lpos      := $index unless $index < 0 || $index >= $lpos;
-                    my $lookup := nqp::substr($spec, $pos, $lpos - $pos);
-                    my %lhash  := %ohash{$lookup};
-                    self.'panic'('Unknown operator precedence specification "',
-                                 $lookup, '"') unless %lhash;
-                    my $lhash_it := nqp::iterator(%lhash);
-                    while $lhash_it {
-                        $s := nqp::shift($lhash_it);
-                        %hash{$s} := %lhash{$s};
-                    }
-                    $pos := $lpos;
-                }
-            }
-            # Done processing the spec string, cache the hash for later.
-            %ohash{$spec} := %hash;
-        }
-
-        if $save {
-            %ohash{$save} := %hash;
-            self;
-        }
-        else {
-            # If we've been called as a subrule, then build a pass-cursor
-            # to indicate success and set the hash as the subrule's match object.
-            my $cur := self.'!cursor_start_cur'();
-            $cur.'!cursor_pass'(nqp::getattr_i($cur, $cursor_class, '$!from'));
-            nqp::bindattr($cur, $cursor_class, '$!match', %hash);
-            $cur;
-        }
+    grammar NQP::Grammar is HLL::Grammar {
+        my %additive := nqp::hash('prec', 't=', 'assoc', 'left');
+        token infix:sym<+>    { <sym>  <O(|%additive, :op<add_n>)> }
     }
 
+=end
+
+    token O(*%spec) {
+        :my %*SPEC := %spec;
+        <?>
+    }
 
 =begin
 
@@ -678,7 +706,7 @@ of the match.
         @args.push('"');
         nqp::die(join('', @args))
     }
-    
+
     method FAILGOAL($goal, $dba?) {
         unless $dba {
             $dba := nqp::getcodename(nqp::callercode());
@@ -699,17 +727,24 @@ position C<pos>.
     method peek_delimiters(str $target, int $pos) {
         # peek at the next character
         my str $start := nqp::substr($target, $pos, 1);
-    
-        # colon, word and whitespace characters aren't valid delimiters
-        if $start eq ':' {
-            self.panic('Colons may not be used to delimit quoting constructs');
-        }
-        if nqp::iscclass(nqp::const::CCLASS_WORD, $start, 0) {
-            self.panic('Alphanumeric character is not allowed as a delimiter');
-        }
-        if nqp::iscclass(nqp::const::CCLASS_WHITESPACE, $start, 0) {
-            my $code := nqp::sprintf('%X', [nqp::ord($start)]);
-            self.panic('Whitespace character (0x' ~ $code ~ ') is not allowed as a delimiter');
+        # Only if it's not a punctuation symbol should we have to check for word or whitespace props
+        unless nqp::iscclass(nqp::const::CCLASS_PUNCTUATION, $start, 0) {
+            if nqp::iscclass(nqp::const::CCLASS_WORD, $start, 0) {
+                self.panic('Alphanumeric character is not allowed as a delimiter');
+            }
+            if nqp::iscclass(nqp::const::CCLASS_WHITESPACE, $start, 0) {
+                my str $code := nqp::sprintf('%X', [nqp::ord($start)]);
+                # If it's a synthetic grapheme then we must have combiners.
+                # Notify the user to avoid confusion.
+                my int $combining-chars := nqp::codes($start) - 1;
+                my str $character_s     := 1 < $combining-chars ?? 'characters' !! 'character';
+                my str $description     := (nqp::chr(nqp::ordbaseat($start, 0)) ne $start)
+                    ?? "with $combining-chars combining $character_s"
+                    !! '';
+                self.panic('Whitespace character ‘' ~
+                    nqp::getuniname(nqp::ord($start)) ~
+                    '’ (0x' ~ $code ~') ' ~ $description ~  ' is not allowed as a delimiter');
+            }
         }
 
         # assume stop delim is same as start, for the moment
@@ -726,15 +761,27 @@ position C<pos>.
 
             # see if the opening bracket is repeated
             my int $len := 1;
-            while nqp::substr($target, ++$pos, 1) eq $start {
+            while nqp::eqat($target, $start, ++$pos) {
                 $len++;
             }
             if $len > 1 {
                 $start := nqp::x($start, $len);
                 $stop := nqp::x($stop, $len);
             }
-          }
-          [$start, $stop]
+        }
+        else {
+            if $start eq "\x[FD3E]" || $start eq "\x[FD3F]" {
+                self.panic("Ornate parentheses U+FD3E '﴾' + U+FD3F '﴿', have been removed.\n" ~
+                    "Please use another type of bracket.\n" ~
+                    "See https://github.com/perl6/nqp/commit/02a426e0e for removal reasons.");
+            }
+            # If we ended up here it's not a bracket, so make sure it's not a colon just to be sure
+            # Colon, word and whitespace characters aren't valid delimiters
+            if $start eq ':' {
+                self.panic('Colons may not be used to delimit quoting constructs');
+            }
+        }
+        [$start, $stop]
     }
 
     my $TRUE := 1;
@@ -817,7 +864,7 @@ An operator precedence parser.
 
     method EXPR(str $preclim = '', int :$noinfix = 0) {
         my $here          := self.'!cursor_start_cur'();
-        my int $pos       := nqp::getattr_i($here, $cursor_class, '$!from');
+        my int $pos       := nqp::getattr_i($here, NQPMatch, '$!from');
         my str $termishrx := 'termish';
         my @opstack;
         my @termstack;
@@ -835,30 +882,30 @@ An operator precedence parser.
         my str $inassoc;
         my int $more_infix;
         my int $term_done;
-        
+
         while 1 {
-            nqp::bindattr_i($here, $cursor_class, '$!pos', $pos);
+            nqp::bindattr_i($here, NQPMatch, '$!pos', $pos);
             $termcur := $here."$termishrx"();
-            $pos := nqp::getattr_i($termcur, $cursor_class, '$!pos');
-            nqp::bindattr_i($here, $cursor_class, '$!pos', $pos);
+            $pos := nqp::getattr_i($termcur, NQPMatch, '$!pos');
+            nqp::bindattr_i($here, NQPMatch, '$!pos', $pos);
             if $pos < 0 {
                 $here.panic('Missing required term after infix') if @opstack;
                 return $here;
             }
 
             $termish := $termcur.MATCH();
-            
+
             # Interleave any prefix/postfix we might have found.
             %termOPER := $termish;
             %termOPER := nqp::atkey(%termOPER, 'OPER')
                 while nqp::existskey(%termOPER, 'OPER');
             @prefixish  := nqp::atkey(%termOPER, 'prefixish');
             @postfixish := nqp::atkey(%termOPER, 'postfixish');
- 
+
             unless nqp::isnull(@prefixish) || nqp::isnull(@postfixish) {
                 while @prefixish && @postfixish {
-                    my %preO     := @prefixish[0]<OPER><O>;
-                    my %postO    := @postfixish[nqp::elems(@postfixish)-1]<OPER><O>;
+                    my %preO     := @prefixish[0]<OPER><O>.made;
+                    my %postO    := @postfixish[nqp::elems(@postfixish)-1]<OPER><O>.made;
                     my $preprec  := nqp::ifnull(nqp::atkey(%preO, 'sub'), nqp::ifnull(nqp::atkey(%preO, 'prec'), ''));
                     my $postprec := nqp::ifnull(nqp::atkey(%postO, 'sub'), nqp::ifnull(nqp::atkey(%postO, 'prec'), ''));
 
@@ -881,10 +928,10 @@ An operator precedence parser.
                 nqp::push(@opstack, nqp::shift(@prefixish)) while @prefixish;
                 nqp::push(@opstack, nqp::pop(@postfixish)) while @postfixish;
             }
-            nqp::deletekey($termish, 'prefixish');            
+            nqp::deletekey($termish, 'prefixish');
             nqp::deletekey($termish, 'postfixish');
             nqp::push(@termstack, nqp::atkey($termish, 'term'));
-        
+
             last if $noinfix;
 
             $more_infix := 1;
@@ -892,26 +939,26 @@ An operator precedence parser.
             while $more_infix {
                 # Now see if we can fetch an infix operator
                 # First, we need ws to match.
-                nqp::bindattr_i($here, $cursor_class, '$!pos', $pos);
+                nqp::bindattr_i($here, NQPMatch, '$!pos', $pos);
                 $wscur := $here.ws();
-                $pos   := nqp::getattr_i($wscur, $cursor_class, '$!pos');
+                $pos   := nqp::getattr_i($wscur, NQPMatch, '$!pos');
                 if $pos < 0 {
                     $term_done := 1;
                     last;
                 }
-        
+
                 # Next, try the infix itself.
-                nqp::bindattr_i($here, $cursor_class, '$!pos', $pos);
+                nqp::bindattr_i($here, NQPMatch, '$!pos', $pos);
                 $infixcur := $here.infixish();
-                $pos := nqp::getattr_i($infixcur, $cursor_class, '$!pos');
+                $pos := nqp::getattr_i($infixcur, NQPMatch, '$!pos');
                 if $pos < 0 {
                     $term_done := 1;
                     last;
                 }
                 $infix := $infixcur.MATCH();
-    
+
                 # We got an infix.
-                %inO := $infix<OPER><O>;
+                %inO := $infix<OPER><O>.made;
                 $termishrx := nqp::ifnull(nqp::atkey(%inO, 'nextterm'), 'termish');
                 $inprec := ~%inO<prec>;
                 $infixcur.panic('Missing infixish operator precedence')
@@ -922,7 +969,7 @@ An operator precedence parser.
                 }
 
                 while @opstack {
-                    my %opO := @opstack[+@opstack-1]<OPER><O>;
+                    my %opO := @opstack[+@opstack-1]<OPER><O>.made;
 
                     $opprec := nqp::ifnull(nqp::atkey(%opO, 'sub'), nqp::atkey(%opO, 'prec'));
                     last unless $opprec gt $inprec;
@@ -938,7 +985,7 @@ An operator precedence parser.
                 }
             }
             last if $term_done;
-        
+
             # if equal precedence, use associativity to decide
             if $opprec eq $inprec {
                 $inassoc := nqp::atkey(%inO, 'assoc');
@@ -954,36 +1001,34 @@ An operator precedence parser.
                 elsif $inassoc eq 'list' {
                     my $op1 := @opstack[nqp::elems(@opstack)-1]<OPER>.Str;
                     my $op2 := $infix.Str();
-                    self.EXPR_nonassoc($infixcur, $op1, $op2) if $op1 ne $op2 && $op1 ne ':';
+                    self.EXPR_nonlistassoc($infixcur, $op1, $op2) if $op1 ne $op2 && $op1 ne ':';
                 }
             }
-            
+
             nqp::push(@opstack, $infix); # The Shift
-            nqp::bindattr_i($here, $cursor_class, '$!pos', $pos);
+            nqp::bindattr_i($here, NQPMatch, '$!pos', $pos);
             $wscur := $here.ws();
-            $pos := nqp::getattr_i($wscur, $cursor_class, '$!pos');
-            nqp::bindattr_i($here, $cursor_class, '$!pos', $pos);
+            $pos := nqp::getattr_i($wscur, NQPMatch, '$!pos');
+            nqp::bindattr_i($here, NQPMatch, '$!pos', $pos);
             return $here if $pos < 0;
         }
-        
+
         self.EXPR_reduce(@termstack, @opstack) while @opstack;
-        $pos := nqp::getattr_i($here, $cursor_class, '$!pos');
-        $here := self.'!cursor_start_cur'();
-        $here.'!cursor_pass'($pos);
-        nqp::bindattr_i($here, $cursor_class, '$!pos', $pos);
-        nqp::bindattr($here, $cursor_class, '$!match', nqp::pop(@termstack));
-        $here.'!reduce'('EXPR');
-        $here;
+
+	self.'!clone_match_at'(
+	    nqp::pop(@termstack),
+	    nqp::getattr_i($here, NQPMatch, '$!pos')
+	).'!reduce'('EXPR')
     }
 
-    method EXPR_reduce(@termstack, @opstack) { 
+    method EXPR_reduce(@termstack, @opstack) {
         my $op := nqp::pop(@opstack);
-        
+
         # Give it a fresh capture list, since we'll have assumed it has
         # no positional captures and not taken them.
         nqp::bindattr($op, NQPCapture, '@!array', nqp::list());
         my %opOPER      := nqp::atkey($op, 'OPER');
-        my %opO         := nqp::atkey(%opOPER, 'O');
+        my %opO         := nqp::atkey(%opOPER, 'O').made;
         my str $opassoc := ~nqp::atkey(%opO, 'assoc');
         my str $key;
         my str $sym;
@@ -998,7 +1043,7 @@ An operator precedence parser.
         elsif $opassoc eq 'list' {
             $sym := nqp::ifnull(nqp::atkey(%opOPER, 'sym'), '');
             nqp::unshift($op, nqp::pop(@termstack));
-            while @opstack {    
+            while @opstack {
                 last if $sym ne nqp::ifnull(
                     nqp::atkey(nqp::atkey(nqp::atpos(@opstack,
                         nqp::elems(@opstack) - 1), 'OPER'), 'sym'), '');
@@ -1018,9 +1063,13 @@ An operator precedence parser.
         self.'!reduce_with_match'('EXPR', $key, $op);
         nqp::push(@termstack, $op);
     }
-    
+
     method EXPR_nonassoc($cur, $op1, $op2) {
         $cur.panic('"' ~ $op1 ~ '" and "' ~ $op2 ~ '" are non-associative and require parens');
+    }
+
+    method EXPR_nonlistassoc($cur, $op1, $op2) {
+        $cur.panic('"' ~ $op1 ~ '" and "' ~ $op2 ~ '" are non-identical list-associatives and require parens');
     }
 
     method ternary($match) {
@@ -1030,7 +1079,7 @@ An operator precedence parser.
 
     method MARKER(str $markname) {
         my %markhash := nqp::getattr(
-            nqp::getattr(self, $cursor_class, '$!shared'),
+            nqp::getattr(self, NQPMatch, '$!shared'),
             ParseShared, '%!marks');
         my $cur := nqp::atkey(%markhash, $markname);
         if nqp::isnull($cur) {
@@ -1039,30 +1088,35 @@ An operator precedence parser.
             nqp::bindkey(%markhash, $markname, $cur);
         }
         else {
-	    nqp::bindattr_i($cur, $cursor_class, '$!from', self.from);
+	    nqp::bindattr_i($cur, NQPMatch, '$!from', self.from);
             $cur."!cursor_pos"(self.pos());
             $cur
         }
     }
-    
+
     method MARKED(str $markname) {
         my %markhash := nqp::getattr(
-            nqp::getattr(self, $cursor_class, '$!shared'),
+            nqp::getattr(self, NQPMatch, '$!shared'),
             ParseShared, '%!marks');
         my $cur := nqp::atkey(%markhash, $markname);
-        unless nqp::istype($cur, NQPCursor) && $cur.pos() == self.pos() {
+        unless nqp::istype($cur, NQPMatch) && $cur.pos() == self.pos() {
             $cur := self.'!cursor_start_fail'();
         }
         $cur
     }
 
     method LANG($lang, $regex, *@args) {
-        my $lang_cursor := %*LANG{$lang}.'!cursor_init'(self.orig(), :p(self.pos()), :shared(self.'!shared'()));
+	self.check_PACKAGE_oopsies('LANG1');
+        my $actions     := self.slang_actions($lang);
+        my $lang_cursor := self.slang_grammar($lang).'!cursor_init'(self.orig(), :p(self.pos()), :shared(self.'!shared'()));
+        $lang_cursor.clone_braid_from(self);
+        $lang_cursor.set_actions($actions);
         if self.HOW.traced(self) {
             $lang_cursor.HOW.trace-on($lang_cursor, self.HOW.trace_depth(self));
         }
-        my $*ACTIONS    := %*LANG{$lang ~ '-actions'};
-        $lang_cursor."$regex"(|@args);
+	$lang_cursor.check_PACKAGE_oopsies('LANG2');
+        my $result := $lang_cursor."$regex"(|@args);
+	$result.set_braid_from(self)
     }
 }
 # From src/HLL/Actions.nqp
@@ -1072,7 +1126,7 @@ class HLL::Actions {
 
     method string_to_int($src, $base) {
         my $res := nqp::radix($base, $src, 0, 2);
-        $src.CURSOR.panic("'$src' is not a valid number")
+        $src.panic("'$src' is not a valid number")
             unless nqp::atpos($res, 2) == nqp::chars($src);
         nqp::atpos($res, 0);
     }
@@ -1145,13 +1199,17 @@ class HLL::Actions {
         }
     }
 
+    method O($/) {
+        make %*SPEC;
+    }
+
     method EXPR($/, $key?) {
         unless $key { return 0; }
         my $ast := $/.ast // $<OPER>.ast;
         unless $ast {
             $ast := QAST::Op.new( :node($/) );
-            if $<OPER><O><op> {
-                $ast.op( ~$<OPER><O><op> );
+            if $<OPER><O>.made<op> {
+                $ast.op( ~$<OPER><O>.made<op> );
             }
             if $key eq 'LIST' { $key := 'infix'; }
             my $name := nqp::lc($key) ~ ':' ~ ($<OPER><sym> ~~ /<[ < > ]>/ ?? '«' ~ $<OPER><sym> ~ '»' !! '<' ~ $<OPER><sym> ~ '>');
@@ -1198,7 +1256,7 @@ class HLL::Actions {
                 }
             }
             else {            
-                $/.CURSOR.panic("Can't form :w list from non-constant strings (yet)");
+                $/.panic("Can't form :w list from non-constant strings (yet)");
             }
         }
         make $ast;
@@ -1269,10 +1327,10 @@ class HLL::Actions {
 
     method charname($/) {
         my $codepoint := $<integer>
-                         ?? $<integer>.made
-                         !! nqp::codepointfromname(~$/);
-        $/.CURSOR.panic("Unrecognized character name $/") if $codepoint < 0;
-        make nqp::chr($codepoint);
+                         ?? nqp::chr($<integer>.made)
+                         !! nqp::getstrfromname(~$/);
+        $/.panic("Unrecognized character name '$/'") if $codepoint eq '';
+        make $codepoint;
     }
 
     method charnames($/) {
@@ -1288,6 +1346,11 @@ class HLL::Actions {
                          ?? nqp::ord($<control>) +^ 64
                          !! self.string_to_int( $/, 10 )
                         );
+    }
+
+    method comment:sym<line_directive>($/) {
+        my $orig_line := HLL::Compiler.lineof($/.orig(), $/.from(), :cache(1), :directives(0));
+        $*W.add_comp_line_directive([$orig_line, nqp::radix(10, $<line>, 0, 0)[0], $<filename>]);
     }
 }
 # From src/HLL/Compiler.nqp
@@ -1312,15 +1375,16 @@ class HLL::Compiler does HLL::Backend::Default {
     method BUILD() {
         # Backend is set to the default one, by default.
         $!backend    := self.default_backend();
-        
+
         # Default stages.
         @!stages     := nqp::split(' ', 'start parse ast ' ~ $!backend.stages());
-        
+
         # Command options and usage.
-        @!cmdoptions := nqp::split(' ', 'e=s help|h target=s trace|t=s encoding=s output|o=s combine version|v show-config verbose-config|V stagestats=s? ll-exception rxtrace nqpevent=s profile=s? profile-compile=s? profile-filename=s');
+        @!cmdoptions := nqp::split(' ', 'e=s help|h target=s trace|t=s encoding=s output|o=s source-name=s combine version|v show-config verbose-config|V stagestats=s? ll-exception rxtrace nqpevent=s profile=s? profile-compile=s? profile-filename=s profile-stage=s repl-mode=s'
+        );
         %!config     := nqp::hash();
     }
-    
+
     method backend(*@value) {
         if @value {
             $!backend := @value[0];
@@ -1349,8 +1413,8 @@ class HLL::Compiler does HLL::Backend::Default {
     }
 
     method readline($stdin, $stdout, $prompt) {
-        nqp::printfh(nqp::getstdout(), $prompt);
-        return nqp::readlinechompfh($stdin);
+        $stdout.print($prompt);
+        return $stdin.get;
     }
 
     method context() {
@@ -1358,20 +1422,20 @@ class HLL::Compiler does HLL::Backend::Default {
     }
 
     method interactive(*%adverbs) {
-        nqp::printfh(nqp::getstderr(), self.interactive_banner);
+        stderr().print(self.interactive_banner);
 
-        my $stdin    := nqp::getstdin();
-        my $stdout   := nqp::getstdout();
+        my $stdin    := stdin();
+        my $stdout   := stdout();
         my $encoding := ~%adverbs<encoding>;
         if $encoding && $encoding ne 'fixed_8' {
-            nqp::setencoding($stdin, $encoding);
+            $stdin.set-encoding($encoding);
         }
 
         my $target := nqp::lc(%adverbs<target>);
         my $prompt := self.interactive_prompt // '> ';
         my $code;
         while 1 {
-            last if nqp::eoffh($stdin);
+            last if $stdin.eof;
 
             my str $newcode := self.readline($stdin, $stdout, ~$prompt);
             if nqp::isnull_s($newcode) || !nqp::defined($newcode) {
@@ -1399,7 +1463,7 @@ class HLL::Compiler does HLL::Backend::Default {
                 if self.input-incomplete($output) {
                     # Need to get more code before we execute
                     # Strip the trailing \, but reinstate the newline
-                    if nqp::substr($code, 0, nqp::chars($code) - 2) eq "\\\n" {
+                    if nqp::eqat($code, "\\\n", 0) {
                         $code := nqp::substr($code, 0, nqp::chars($code) - 2) ~ "\n";
                     }
                     if $code {
@@ -1427,11 +1491,11 @@ class HLL::Compiler does HLL::Backend::Default {
             }
         }
     }
-    
+
     method interactive_result($value) {
         nqp::say(~$value)
     }
-    
+
     method interactive_exception($ex) {
         nqp::print(~$ex ~ "\n")
     }
@@ -1447,7 +1511,7 @@ class HLL::Compiler does HLL::Backend::Default {
     method eval($code, *@args, *%adverbs) {
         my $output;
 
-        if $code && nqp::substr($code, nqp::chars($code) - 2) eq "\\\n" {
+        if $code && nqp::eqat($code, "\\\n", nqp::chars($code) - 2) {
             return self.needs-more-input();
         }
 
@@ -1497,7 +1561,7 @@ class HLL::Compiler does HLL::Backend::Default {
         }
         @!stages;
     }
-    
+
     method parsegrammar(*@value) {
         if +@value {
             $!parsegrammar := @value[0];
@@ -1511,11 +1575,11 @@ class HLL::Compiler does HLL::Backend::Default {
         }
         $!parseactions;
     }
-    
+
     method interactive_banner() { '' }
-    
+
     method interactive_prompt() { '> ' }
-    
+
     method compiler_progname($value?) {
         if nqp::defined($value) {
             $!compiler_progname := $value;
@@ -1523,13 +1587,13 @@ class HLL::Compiler does HLL::Backend::Default {
         $!compiler_progname;
     }
 
-    
+
     method commandline_options(@value?) {
         if +@value {
             @!cmdoptions := @value;
         }
         @!cmdoptions;
-    }    
+    }
 
     method command_line(@args, *%adverbs) {
         my $program-name := @args[0];
@@ -1541,9 +1605,26 @@ class HLL::Compiler does HLL::Backend::Default {
             %adverbs{$_.key} := $_.value;
         }
         self.usage($program-name) if %adverbs<help>  || %adverbs<h>;
-        
+
         if $!backend.is_precomp_stage(%adverbs<target>) {
             %adverbs<precomp> := 1;
+        }
+
+        my $*PERL6_RUNTIME;
+
+        if %adverbs<perl6-runtime> {
+            $*PERL6_RUNTIME := %adverbs<perl6-runtime>;
+        }
+
+        my $*LIBPATH;
+        if %adverbs<libpath> {
+            $*LIBPATH := nqp::split('|||', %adverbs<libpath>);
+            nqp::getcomp('JavaScript').eval('(function(paths) {nqp.libpath(paths.array)})')($*LIBPATH);
+        }
+
+        my $*EXECNAME;
+        if %adverbs<execname> {
+            $*EXECNAME := %adverbs<execname>;
         }
 
         self.command_eval(|@a, |%adverbs);
@@ -1570,19 +1651,34 @@ class HLL::Compiler does HLL::Backend::Default {
                         self.dumper($result, $target, |%adverbs);
                     }
                 }
-                elsif !@a { $result := self.interactive(|%adverbs) }
-                elsif %adverbs<combine> { $result := self.evalfiles(@a, |%adverbs) }
+                elsif !@a {
+                    # Is STDIN a TTY display? If so, start the REPL, otherwise, simply
+                    # assume the program to eval is given on STDIN.
+                    my $force := %adverbs<repl-mode>//'';
+                    my $wants-interactive := $force
+                        ?? $force eq 'interactive'
+                          ?? 1 !! $force eq 'non-interactive'
+                            ?? 0 !! self.panic(
+                                "Unknown REPL mode '$force'. Valid values"
+                                ~ " are 'non-interactive' and 'interactive'"
+                            )
+                        !! stdin().t();
+                    $result := $wants-interactive
+                        ?? self.interactive(|%adverbs)
+                        !! self.evalfiles('-', |%adverbs);
+                }
+                elsif %adverbs<combine>    { $result := self.evalfiles(@a, |%adverbs) }
                 else { $result := self.evalfiles(@a[0], |@a, |%adverbs) }
 
                 if !nqp::isnull($result) && ($!backend.is_textual_stage($target) || %adverbs<output>) {
                     my $output := %adverbs<output>;
                     my $fh := ($output eq '' || $output eq '-')
-                            ?? nqp::getstdout()
-                            !! nqp::open($output, 'w');
+                            ?? stdout()
+                            !! open($output, :w);
                     self.panic("Cannot write to $output") unless $fh;
-                    nqp::printfh($fh, $result);
-                    nqp::flushfh($fh);
-                    nqp::closefh($fh) unless ($output eq '' || $output eq '-');
+                    $fh.print($result);
+                    $fh.flush();
+                    close($fh) unless ($output eq '' || $output eq '-');
                 }
                 CONTROL {
                     if nqp::can(self, 'handle-control') {
@@ -1599,11 +1695,14 @@ class HLL::Compiler does HLL::Backend::Default {
         }
         if ($has_error) {
             if %adverbs<ll-exception> || !nqp::can(self, 'handle-exception') {
-                my $err := nqp::getstderr();
-                nqp::printfh($err, nqp::getmessage($error));
-                nqp::printfh($err, "\n");
-                nqp::printfh($err, nqp::join("\n", nqp::backtracestrings($error)));
-                nqp::printfh($err, "\n");
+                my $err := stderr();
+                my $message := nqp::getmessage($error);
+                my $payload := nqp::getpayload($error);
+                if nqp::isnull_s($message) && nqp::can($payload, 'message') {
+                    $message := $payload.message;
+                }
+                $err.say($message);
+                $err.say(nqp::join("\n", nqp::backtracestrings($error)));
                 nqp::exit(1);
             } else {
                 self.handle-exception($error);
@@ -1623,8 +1722,8 @@ class HLL::Compiler does HLL::Backend::Default {
         try {
             $res := $p.parse(@args);
             CATCH {
-                nqp::say($_);
-                self.usage;
+                note($_);
+                self.usage(:use-stderr);
                 nqp::exit(1);
             }
         }
@@ -1650,34 +1749,33 @@ class HLL::Compiler does HLL::Backend::Default {
             my $in-handle;
             try {
                 if $filename eq '-' {
-                    $in-handle := nqp::getstdin();
+                    $in-handle := stdin();
                 }
                 elsif nqp::stat($filename, nqp::const::STAT_ISDIR) {
-                    nqp::sayfh(nqp::getstderr(), "Can not run directory $filename.");
+                    note("Can not run directory $filename.");
                     $err := 1;
                 }
                 else {
-                    $in-handle := nqp::open($filename, 'r');
+                    $in-handle := open($filename, :r, :enc($encoding));
                 }
                 CATCH {
-                    nqp::sayfh(nqp::getstderr(), "Could not open $filename. $_");
+                    note("Could not open $filename. $_");
                     $err := 1;
                 }
             }
             nqp::exit(1) if $err;
             try {
-                nqp::setencoding($in-handle, $encoding);
-                nqp::push(@codes, nqp::readallfh($in-handle));
-                nqp::closefh($in-handle);
+                nqp::push(@codes, $in-handle.slurp());
+                $in-handle.close;
                 CATCH {
-                    nqp::sayfh(nqp::getstderr(), "Error while reading from file: $_");
+                    note("Error while reading from file: $_");
                     $err := 1;
                 }
             }
             nqp::exit(1) if $err;
         }
         my $code := join('', @codes);
-        my $?FILES := join(' ', @files);
+        my $?FILES := %adverbs<source-name> || join(' ', @files);
         my $r := self.eval($code, |@args, |%adverbs);
         if $target eq '' || $!backend.is_textual_stage($target) || %adverbs<output> {
             return $r;
@@ -1685,7 +1783,7 @@ class HLL::Compiler does HLL::Backend::Default {
             return self.dumper($r, $target, |%adverbs);
         }
     }
-    
+
     method exists_stage($stage) {
         my $found := 0;
         for self.stages() {
@@ -1696,14 +1794,26 @@ class HLL::Compiler does HLL::Backend::Default {
         return 0;
     }
 
+    method execute_stage($stage, $result, %adverbs) {
+        if nqp::can($!backend, $stage) {
+            $!backend."$stage"($result, |%adverbs);
+        }
+        elsif nqp::can(self, $stage) {
+            self."$stage"($result, |%adverbs);
+        }
+        else {
+            nqp::die("Unknown compilation stage '$stage'");
+        }
+    }
+
     method compile($source, :$from, :$lineposcache, *%adverbs) {
         my %*COMPILING<%?OPTIONS> := %adverbs;
         my $*LINEPOSCACHE := $lineposcache;
 
         my $target := nqp::lc(%adverbs<target>);
         my $result := $source;
-        my $stderr := nqp::getstderr();
-        my $stdin  := nqp::getstdin();
+        my $stderr := stderr();
+        my $stdin  := stdin();
         my $stagestats := %adverbs<stagestats>;
         unless $from eq '' || self.exists_stage($from) {
             nqp::die("Unknown compilation input '$from'");
@@ -1718,32 +1828,32 @@ class HLL::Compiler does HLL::Backend::Default {
                 }
                 next;
             }
-            nqp::printfh($stderr, nqp::sprintf("Stage %-11s: ", [$_])) if nqp::defined($stagestats);
+            $stderr.print(nqp::sprintf("Stage %-11s: ", [$_])) if nqp::defined($stagestats);
             my $timestamp := nqp::time_n();
-            if nqp::can(self, $_) {
-                $result := self."$_"($result, |%adverbs);
+
+            my sub run() {
+                self.execute_stage($_, $result, %adverbs)
             }
-            elsif nqp::can($!backend, $_) {
-                $result := $!backend."$_"($result, |%adverbs);
-            }
-            else {
-                nqp::die("Unknown compilation stage '$_'");
-            }
+
+            $result := %adverbs<profile-stage> eq $_
+                ?? $!backend.run_profiled(&run, '', %adverbs<profile-filename>)
+                !! run();
+
             my $diff := nqp::time_n() - $timestamp;
             if nqp::defined($stagestats) {
-                nqp::printfh($stderr, nqp::sprintf("%7.3f", [$diff]));
+                $stderr.print(nqp::sprintf("%7.3f", [$diff]));
                 $!backend.force_gc() if nqp::bitand_i($stagestats, 0x4);
-                nqp::printfh($stderr, $!backend.vmstat())
+                $stderr.print($!backend.vmstat())
                     if nqp::bitand_i($stagestats, 0x2);
-                nqp::printfh($stderr, "\n");
+                $stderr.print("\n");
                 if nqp::bitand_i($stagestats, 0x8) {
-                   nqp::printfh($stderr, "continue> ");
-                   nqp::readlinefh($stdin);
+                   $stderr.print("continue> ");
+                   $stdin.get;
                 }
             }
             last if $_ eq $target;
         }
-        
+
         if %adverbs<compunit_ok> {
             return $result
         }
@@ -1758,12 +1868,20 @@ class HLL::Compiler does HLL::Backend::Default {
 
     method parse($source, *%adverbs) {
         my $s := $source;
+        my $grammar;
+        my $actions;
         if %adverbs<transcode> {
             $s := $!backend.apply_transcodings($s, %adverbs<transcode>);
         }
-        my $grammar := self.parsegrammar;
-        my $actions;
-        $actions    := self.parseactions;
+	my $outer_ctx := %adverbs<outer_ctx>;
+        if nqp::existskey(%adverbs, 'grammar') {
+	    $grammar := %adverbs<grammar>;
+	    $actions := %adverbs<actions>;
+	}
+	else {
+	    $grammar := self.parsegrammar;
+	    $actions := self.parseactions;
+	}
         $grammar.HOW.trace-on($grammar) if %adverbs<rxtrace>;
         my $match   := $grammar.parse($s, p => 0, actions => $actions);
         $grammar.HOW.trace-off($grammar) if %adverbs<rxtrace>;
@@ -1780,24 +1898,25 @@ class HLL::Compiler does HLL::Backend::Default {
 
     method dumper($obj, $name, *%options) {
         if nqp::can($obj, 'dump') {
-            my $out := nqp::getstdout();
-            nqp::printfh($out, $obj.dump());
-            nqp::flushfh($out);
+            my $out := stdout();
+            $out.print($obj.dump());
+            $out.flush();
         }
         else {
             nqp::die("Cannot dump this object; no dump method");
         }
     }
 
-    method usage($name?) {
+    method usage($name?, :$use-stderr = False) {
+        my $print-func := $use-stderr ?? &note !! &say; # RT #130760
         if $name {
-            say($name);
+            $print-func($name);
         }
         my $usage := "This compiler is based on HLL::Compiler.\n\nOptions:\n";
         for @!cmdoptions {
             $usage := $usage ~ "    $_\n";
         }
-        nqp::say($usage);
+        $print-func($usage);
         nqp::exit(0);
     }
 
@@ -1831,7 +1950,7 @@ class HLL::Compiler does HLL::Backend::Default {
         }
         nqp::exit(0);
     }
-    
+
     method nqpevent(*@pos) {
         $!backend.nqpevent(|@pos)
     }
@@ -1898,7 +2017,7 @@ class HLL::Compiler does HLL::Backend::Default {
         @actual_ns;
     }
 
-	
+
     method line_and_column_of($target, int $pos, int :$cache = 0) {
         my $linepos;
         if $cache {
@@ -1926,14 +2045,14 @@ class HLL::Compiler does HLL::Backend::Default {
                 # Treat \r\n as a single logical newline. Note that NFG
                 # implementations, we should check it really is a lone \r,
                 # not the first bit of a \r\n grapheme.
-                if nqp::iseq_i($ord, 13) && nqp::substr($s, $jpos - 1, 1) eq "\r" &&
+                if nqp::iseq_i($ord, 13) && nqp::eqat($s, "\r", $jpos - 1) &&
                    $jpos < $eos && nqp::iseq_i(nqp::ord($s, $jpos), 10)
                 {
                     $jpos := nqp::add_i($jpos, 1);
                 }
             }
         }
-        
+
         # We have c<linepos>, so now we (binary) search the array
         # for the largest element that is not greater than c<pos>.
         my int $lo := 0;
@@ -1949,17 +2068,35 @@ class HLL::Compiler does HLL::Backend::Default {
         }
 
         my $column := nqp::iseq_i($lo, 0)
-            ?? $pos 
+            ?? $pos
             !! nqp::sub_i($pos, nqp::atpos_i($linepos, nqp::sub_i($lo, 1)));
 
         nqp::list_i(nqp::add_i($lo, 1), nqp::add_i($column, 1));
     }
 
-    method lineof($target, int $pos, int :$cache = 0) {
-        nqp::atpos_i(self.line_and_column_of($target, $pos, :$cache), 0);
+    method lineof($target, int $pos, int :$cache = 0, int :$directives = 0) {
+        self.linefileof($target, $pos, :$cache, :$directives)[0]
     }
 
-    
+    method linefileof($target, int $pos, int :$cache = 0, int :$directives = 0) {
+        my int $line := nqp::atpos_i(self.line_and_column_of($target, $pos, :$cache), 0);
+        my str $file := '';
+        if $directives && (my @clds := @*comp_line_directives) {
+            my int $i := nqp::elems(@clds);
+            while $i > 0 {
+                $i := $i - 1;
+                last if $line > @clds[$i][0];
+            }
+            if $line > @clds[$i][0] {
+                my @directive := @clds[$i];
+                $line := $line - @directive[0] + @directive[1] - 1;
+                $file := @directive[2];
+            }
+        }
+        [$line, $file];
+    }
+
+
 
     # the name of the file(s) that are executed, or -e  or 'interactive'
     method user-progname() { $!user_progname // 'interactive' }
@@ -1967,7 +2104,7 @@ class HLL::Compiler does HLL::Backend::Default {
     # command line options and arguments as provided by the user
     method cli-options()   { %!cli-options   }
     method cli-arguments() { @!cli-arguments }
-    
+
     # set a recursion limit, if the backend supports it
     method recursion_limit($limit) {
         if nqp::can($!backend, 'recursion_limit') {
@@ -2004,11 +2141,11 @@ HLL::CommandLine - command line parsing tools
 
     # -e "program" also treats everything after it as arguments
     # to the program:
-    $paser.add-stopper('-e');
+    $parser.add-stopper('-e');
 
     my $results := $parser.parse(@*ARGS);
     my %options := $parser.options;
-    my @args    := $pasre.arguments; # remaining arguments from @*ARGS
+    my @args    := $parser.arguments; # remaining arguments from @*ARGS
 
 =head1 DESCRIPTION
 
@@ -2157,13 +2294,12 @@ class HLL::CommandLine::Parser {
 
     method is-option($x) {
         return 0 if $x eq '-' || $x eq '--';
-        return 1 if nqp::substr($x, 0, 1) eq '-';
-        0;
+        nqp::eqat($x, '-', 0);
     }
 
     method wants-value($x) {
         my $spec := %!options{$x};
-        nqp::substr($spec, 0, 1) eq 's';
+        nqp::eqat($spec, 's', 0);
     }
 
     method optional-value($x) {
@@ -2201,7 +2337,7 @@ class HLL::CommandLine::Parser {
         while $i < $arg-count {
             my $cur := @args[$i];
             if self.is-option($cur) {
-                if nqp::substr($cur, 0, 2) eq '--' {
+                if nqp::eqat($cur, '--', 0) {
                     # long option
                     my $opt := nqp::substr(@args[$i], 2);
                     my $idx := nqp::index($opt, '=');
@@ -2295,73 +2431,127 @@ class HLL::CommandLine::Parser {
 # serialization context.
 
 class HLL::World {
-    # The serialization context that we're building.
-    has $!sc;
-    
+    class CompilationContext {
+        # The serialization context that we're building.
+        has $!sc;
+
+        # The number of code refs we've added to the code refs root so far.
+        has int $!num_code_refs;
+
+        # List of QAST blocks that map to the code refs table, for use in
+        # building deserialization code.
+        has $!code_ref_blocks;
+
+        # List of QAST nodes specifying fixup tasks, either after deserialization
+        # or between compile time and run time.
+        has @!fixup_tasks;
+
+        method BUILD(:$handle, :$description) {
+            $!sc              := nqp::createsc($handle);
+            $!num_code_refs   := 0;
+            $!code_ref_blocks := [];
+            @!fixup_tasks     := nqp::list();
+
+            nqp::scsetdesc($!sc, $description);
+
+            # Add to currently compiling SC stack.
+            nqp::pushcompsc($!sc);
+        }
+
+        # Gets the built serialization context.
+        method sc() {
+            $!sc
+        }
+
+        method next_code_ref_num() {
+            my int $code_ref_idx := $!num_code_refs;
+            $!num_code_refs := $!num_code_refs + 1;
+            $code_ref_idx
+        }
+
+        method code_ref_blocks() {
+            $!code_ref_blocks
+        }
+
+        # Gets the list of tasks to do at fixup time.
+        method fixup_tasks() {
+            @!fixup_tasks
+        }
+    }
+
+    has $!context;
+
     # The handle for the context.
     has $!handle;
-    
+
     # Whether we're in pre-compilation mode.
     has $!precomp_mode;
-    
-    # The number of code refs we've added to the code refs root so far.
-    has int $!num_code_refs;
-    
-    # List of QAST blocks that map to the code refs table, for use in
-    # building deserialization code.
-    has $!code_ref_blocks;
 
     # List of QAST nodes specifying dependency loading related tasks. These
     # are done before the deserialization of the current context, or if in
     # immediate run mode before any of the other fixup tasks.
+    # DON'T SHARE because we'd run the outer worlds tasks which include loading a setting!
     has @!load_dependency_tasks;
 
-    # List of QAST nodes specifying fixup tasks, either after deserialization
-    # or between compile time and run time.
-    has @!fixup_tasks;
-    
-    method BUILD(:$handle!, :$description = '<unknown>') {
+    has $!is_nested;
+
+    # List of any line number/filename directives in the file.
+    my @*comp_line_directives := nqp::hash();
+
+    method BUILD(:$handle!, :$description = '<unknown>', :$context) {
+        if $context {
+            $!context   := $context;
+            $!is_nested := 1;
+        }
+        else {
+            $!context   := self.context_class().new(:$handle, :$description);
+            $!is_nested := 0;
+        }
         # Initialize attributes.
-        $!sc              := nqp::createsc($handle);
         $!handle          := $handle;
-        @!fixup_tasks     := nqp::list();
         @!load_dependency_tasks := nqp::list();
         $!precomp_mode    := %*COMPILING<%?OPTIONS><precomp>;
-        $!num_code_refs   := 0;
-        $!code_ref_blocks := [];
-        nqp::scsetdesc($!sc, $description);
-        
-        # Add to currently compiling SC stack.
-        nqp::pushcompsc($!sc);
+    }
+
+    method context_class() {
+        CompilationContext
     }
 
     # Adds an object to the root set, along with a mapping.
     method add_object($obj) {
-        nqp::setobjsc($obj, $!sc);
-        my int $idx := nqp::scobjcount($!sc);
-        nqp::scsetobj($!sc, $idx, $obj);
+        my $sc := $!context.sc;
+        nqp::setobjsc($obj, $sc);
+        my int $idx := nqp::scobjcount($sc);
+        nqp::scsetobj($sc, $idx, $obj);
         $idx
     }
-    
+
     # Adds a code reference to the root set of code refs.
     method add_root_code_ref($code_ref, $ast_block) {
-        my int $code_ref_idx := $!num_code_refs;
-        $!num_code_refs := $!num_code_refs + 1;
-        $!code_ref_blocks.push($ast_block);
-        nqp::scsetcode($!sc, $code_ref_idx, $code_ref);
+        my int $code_ref_idx := $!context.next_code_ref_num;
+        $!context.code_ref_blocks.push($ast_block);
+        nqp::scsetcode($!context.sc, $code_ref_idx, $code_ref);
         $code_ref_idx
     }
-    
+
     # Updates a code reference in the root set.
     method update_root_code_ref($idx, $new_code_ref) {
-        nqp::scsetcode($!sc, $idx, $new_code_ref);
+        nqp::scsetcode($!context.sc, $idx, $new_code_ref);
     }
 
     # Checks if we are in pre-compilation mode.
     method is_precompilation_mode() {
         $!precomp_mode
     }
-    
+
+    method is_nested() {
+        $!is_nested
+    }
+
+    method context() {
+        $!context
+    }
+
     # Add an event that we want to run before deserialization or before any
     # other fixup.
     method add_load_dependency_task(:$deserialize_ast, :$fixup_ast) {
@@ -2372,40 +2562,47 @@ class HLL::World {
             @!load_dependency_tasks.push($fixup_ast) if $fixup_ast;
         }
     }
-    
+
     # Add an event that we need to run at fixup time (after deserialization of
     # between compilation and runtime).
     method add_fixup_task(:$deserialize_ast, :$fixup_ast) {
         if $!precomp_mode {
-            @!fixup_tasks.push($deserialize_ast) if $deserialize_ast;
+            $!context.fixup_tasks.push($deserialize_ast) if $deserialize_ast;
         }
         else {
-            @!fixup_tasks.push($fixup_ast) if $fixup_ast;
+            $!context.fixup_tasks.push($fixup_ast) if $fixup_ast;
         }
     }
-    
+
     # Gets the built serialization context.
     method sc() {
-        $!sc
+        $!context.sc
     }
-    
+
     # Gets the SC handle.
     method handle() {
          $!handle
     }
-    
+
     method code_ref_blocks() {
-        $!code_ref_blocks
+        $!context.code_ref_blocks
     }
-    
+
     # Gets the list of load dependency tasks to do.
     method load_dependency_tasks() {
         @!load_dependency_tasks
     }
-    
+
     # Gets the list of tasks to do at fixup time.
     method fixup_tasks() {
-        @!fixup_tasks
+        $!context.fixup_tasks
+    }
+
+    method add_comp_line_directive(@directive) {
+        my int $elems := nqp::elems(@*comp_line_directives);
+        if $elems == 0 || !(@*comp_line_directives[$elems - 1][0] eq @directive[0]) {
+            nqp::push(@*comp_line_directives, @directive);
+        }
     }
 }
 # From src/HLL/sprintf.nqp
@@ -2419,14 +2616,14 @@ my module sprintf {
             :my $*ARGS_USED := 0;
             ^ <statement>* $
         }
-        
-        method panic($message, $payload) { 
+
+        method panic($message, $payload) {
             my $ex := nqp::newexception();
             nqp::setmessage($ex, $message);
             nqp::setpayload($ex, $payload);
             nqp::throw($ex);
         }
-        
+
         token statement {
             [
             | <?[%]> [ [ <directive> | <escape> ]
@@ -2449,13 +2646,13 @@ my module sprintf {
 
         proto token escape { <...> }
         token escape:sym<%> { '%' <flags>* <size>? <sym> }
-        
+
         token literal { <-[%]>+ }
-        
+
         token idx {
             $<param_index>=[\d+] '$'
         }
-        
+
         token flags {
             | $<space> = ' '
             | $<plus>  = '+'
@@ -2463,7 +2660,7 @@ my module sprintf {
             | $<zero>  = '0'
             | $<hash>  = '#'
         }
-        
+
         token size {
             \d* | $<star>='*'
         }
@@ -2483,7 +2680,7 @@ my module sprintf {
                     ~ (+@*ARGS_HAVE < 1      ?? "no argument was"
                         !! +@*ARGS_HAVE == 1 ?? "1 argument was"
                                              !! +@*ARGS_HAVE ~ " arguments were")
-                    ~ " supplied", nqp::hash('DIRECTIVES_COUNT', 
+                    ~ " supplied", nqp::hash('DIRECTIVES_COUNT',
                             nqp::hash('ARGS_HAVE', +@*ARGS_HAVE, 'ARGS_USED', $*ARGS_USED)))
             }
             make nqp::join('', @statements);
@@ -2498,11 +2695,11 @@ my module sprintf {
 
         sub bad-type-for-directive($type, $directive) {
             my $message := "Directive $directive not applicable for type " ~ $type.HOW.name($type);
-            my $payload := nqp::hash('BAD_TYPE_FOR_DIRECTIVE', 
+            my $payload := nqp::hash('BAD_TYPE_FOR_DIRECTIVE',
                 nqp::hash('TYPE', $type.HOW.name($type), 'DIRECTIVE', $directive));
             panic($message, $payload);
         }
-        
+
         sub infix_x($s, $n) {
             my @strings;
             my int $i := 0;
@@ -2610,11 +2807,25 @@ my module sprintf {
             my $int := intify($next);
             my $pad := padding_char($/);
             my $sign := nqp::islt_I($int, $zero) ?? '-'
-                     !! has_flag($/, 'plus') ?? '+' 
-                     !! has_flag($/, 'space') ?? ' ' 
+                     !! has_flag($/, 'plus') ?? '+'
+                     !! has_flag($/, 'space') ?? ' '
                      !! '';
             $int := nqp::tostr_I(nqp::abs_I($int, $knowhow));
-            $int := nqp::substr($int, 0, $<precision>.made) if nqp::chars($<precision>);
+
+            # For `d`, precision is how many digits long the number should be,
+            # prefixing it with zeros, as needed. If precision is zero and
+            # our number is zero, then the result is an empty string.
+            if nqp::chars($<precision>) {
+                if my $prec := +$<precision>.made {
+                    if (my $rep := $prec - nqp::chars($int)) > 0 {
+                        $int := infix_x('0', $rep) ~ $int;
+                    }
+                }
+                else {
+                    $int := '' if $int == 0;
+                }
+            }
+
             if $pad ne ' ' && $<size> {
                 $int := $sign ~ infix_x($pad, $<size>.made - nqp::chars($int) - 1) ~ $int;
             }
@@ -2635,7 +2846,7 @@ my module sprintf {
         sub normalize($float) {
             my @parts := nqp::split('e', nqp::lc($float));
             my $sign := '';
-            if nqp::substr(@parts[0],0,1) eq '-' {
+            if nqp::eqat(@parts[0], '-', 0) {
                 $sign := '-';
                 @parts[0] := nqp::substr(@parts[0], 1);
             }
@@ -2669,19 +2880,19 @@ my module sprintf {
 
             my $zeroes := infix_x("0", 1 + ($precision > $d ?? $precision - $d  !! 0));
 
-            $lhs_s := nqp::substr($lhs_s, 1) if nqp::substr($lhs_s, 0, 1) eq '-';
+            $lhs_s := nqp::substr($lhs_s, 1) if nqp::eqat($lhs_s, '-', 0);
             my $lhs_I := nqp::fromstr_I($lhs_s, $knowhow);
             my $rhs_I := nqp::fromstr_I("1" ~ $rhs_s ~ $zeroes, $knowhow);      # The leading 1 is to preserve leading zeroes
             my $cc := nqp::chars(nqp::tostr_I($rhs_I));
 
             my $e := nqp::fromnum_I($d > $precision ?? $d - $precision !! 0, $knowhow);
             my $pot := nqp::pow_I(nqp::fromnum_I(10, $knowhow), $e, $knowhow, $knowhow);   # power of ten
-            my $rounder := nqp::mul_I(nqp::fromnum_I(5, $knowhow), $pot, $knowhow);          
+            my $rounder := nqp::mul_I(nqp::fromnum_I(5, $knowhow), $pot, $knowhow);
 
             $rhs_I := nqp::add_I($rhs_I, $rounder, $knowhow);
             $rhs_s := nqp::tostr_I($rhs_I);
 
-            $lhs_I := nqp::add_I($lhs_I, nqp::fromnum_I(1,$knowhow), $knowhow) 
+            $lhs_I := nqp::add_I($lhs_I, nqp::fromnum_I(1,$knowhow), $knowhow)
                 if nqp::substr($rhs_s,0,1) ne '1';          # we had a carry
 
             $lhs_s := nqp::tostr_I($lhs_I);
@@ -2699,18 +2910,24 @@ my module sprintf {
             $float := $float / nqp::pow_n(10, $precision - ($exp + 1));
         }
         sub fixed-point($float, $precision, $size, $pad, $/) {
-            my $sign := $float < 0 ?? '-' 
-                     !! has_flag($/, 'plus') ?? '+' 
-                     !! has_flag($/, 'space') ?? ' ' 
+            # if we have zero; handle its sign: 1/0e0 == +Inf, 1/-0e0 == -Inf
+            my $sign := $float < 0
+                || ( $float == 0 && nqp::islt_n(nqp::div_n(1e0,$float), 0e0) )
+                ?? '-'
+                     !! has_flag($/, 'plus') ?? '+'
+                     !! has_flag($/, 'space') ?? ' '
                      !! '';
             $float := nqp::abs_n($float);
             $float := stringify-to-precision($float, $precision) unless nqp::isnanorinf($float);
             pad-with-sign($sign, $float, $size, $pad);
         }
         sub scientific($float, $e, $precision, $size, $pad, $/) {
-            my $sign := $float < 0 ?? '-' 
-                     !! has_flag($/, 'plus') ?? '+' 
-                     !! has_flag($/, 'space') ?? ' ' 
+            # if we have zero; handle its sign: 1/0e0 == +Inf, 1/-0e0 == -Inf
+            my $sign := $float < 0
+                || ( $float == 0 && nqp::islt_n(nqp::div_n(1e0,$float), 0e0) )
+                ?? '-'
+                     !! has_flag($/, 'plus') ?? '+'
+                     !! has_flag($/, 'space') ?? ' '
                      !! '';
             $float := nqp::abs_n($float);
             unless nqp::isnanorinf($float) {
@@ -2727,9 +2944,12 @@ my module sprintf {
             pad-with-sign($sign, $float, $size, $pad);
         }
         sub shortest($float, $e, $precision, $size, $pad, $/) {
-            my $sign := $float < 0 ?? '-' 
-                     !! has_flag($/, 'plus') ?? '+' 
-                     !! has_flag($/, 'space') ?? ' ' 
+            # if we have zero; handle its sign: 1/0e0 == +Inf, 1/-0e0 == -Inf
+            my $sign := $float < 0
+                || ( $float == 0 && nqp::islt_n(nqp::div_n(1e0,$float), 0e0) )
+                ?? '-'
+                     !! has_flag($/, 'plus') ?? '+'
+                     !! has_flag($/, 'space') ?? ' '
                      !! '';
             $float := nqp::abs_n($float);
 
@@ -2751,7 +2971,7 @@ my module sprintf {
                 } else {
                     $sci := $float ~ $e ~ '+' ~ ($exp < 10 ?? '0' !! '') ~ $exp;
                 }
-                
+
                 pad-with-sign($sign, $sci, $size, $pad);
             }
         }
@@ -2799,6 +3019,7 @@ my module sprintf {
             my $pre := '0' if $int ne '0' && has_flag($/, 'hash');
             if nqp::chars($<precision>) {
                 $int := '' if $<precision>.made == 0 && $int == 0;
+                $pre := '' if $<precision>.made > nqp::chars($int);
                 $int := $pre ~ infix_x('0', intify($<precision>.made) - nqp::chars($int)) ~ $int;
             }
             else {
@@ -2827,10 +3048,7 @@ my module sprintf {
             }
             my $int := intify($next);
             if nqp::islt_I($int, $zero) {
-                    my $err := nqp::getstderr();
-                    nqp::printfh($err, "negative value '" 
-                                    ~ $int
-                                    ~ "' for %u in sprintf");
+                    note("negative value '$int' for %u in sprintf");
                     $int := 0;
             }
 
@@ -2864,13 +3082,13 @@ my module sprintf {
         }
 
         method idx($/) {
-            my $index := $<param_index> - 1;
+            my $index := nqp::radix(10, $<param_index>, 0, 0)[0] - 1;
             nqp::die("Parameter index starts to count at 1 but 0 was passed") if $index < 0;
             make $index
         }
 
         method size($/) {
-            make $<star> ?? next_argument({}) !! ~$/
+            make $<star> ?? next_argument({}) !! ~nqp::radix(10, $/, 0, 0)[0]
         }
     }
 
@@ -2895,9 +3113,9 @@ my module sprintf {
             make $<directive> && !$<directive><idx> ?? 1 !! 0
         }
     }
-    
+
     my $directives := Directives.new();
-    
+
     sub sprintfdirectives($format) {
         return Syntax.parse( $format, :actions($directives) ).made;
     }

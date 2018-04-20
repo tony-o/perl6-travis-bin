@@ -5,8 +5,6 @@ int MVM_dll_load(MVMThreadContext *tc, MVMString *name, MVMString *path) {
     char *cpath;
     DLLib *lib;
 
-    MVM_string_flatten(tc, name);
-
     uv_mutex_lock(&tc->instance->mutex_dll_registry);
 
     MVM_HASH_GET(tc, tc->instance->dll_registry, name, entry);
@@ -17,10 +15,8 @@ int MVM_dll_load(MVMThreadContext *tc, MVMString *name, MVMString *path) {
         return 0;
     }
 
-    MVMROOT(tc, name, {
-        MVMROOT(tc, path, {
-            path = MVM_file_in_libpath(tc, path);
-        });
+    MVMROOT2(tc, name, path, {
+        path = MVM_file_in_libpath(tc, path);
     });
 
     cpath = MVM_string_utf8_c8_encode_C_string(tc, path);
@@ -42,6 +38,8 @@ int MVM_dll_load(MVMThreadContext *tc, MVMString *name, MVMString *path) {
         MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->name,
             "DLL name");
         MVM_HASH_BIND(tc, tc->instance->dll_registry, name, entry);
+        MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->hash_handle.key,
+            "DLL name hash key");
     }
 
     entry->lib = lib;
@@ -56,7 +54,6 @@ int MVM_dll_free(MVMThreadContext *tc, MVMString *name) {
 
     uv_mutex_lock(&tc->instance->mutex_dll_registry);
 
-    MVM_string_flatten(tc, name);
     MVM_HASH_GET(tc, tc->instance->dll_registry, name, entry);
 
     if (!entry) {
@@ -92,7 +89,6 @@ MVMObject * MVM_dll_find_symbol(MVMThreadContext *tc, MVMString *lib,
 
     uv_mutex_lock(&tc->instance->mutex_dll_registry);
 
-    MVM_string_flatten(tc, lib);
     MVM_HASH_GET(tc, tc->instance->dll_registry, lib, entry);
 
     if (!entry) {

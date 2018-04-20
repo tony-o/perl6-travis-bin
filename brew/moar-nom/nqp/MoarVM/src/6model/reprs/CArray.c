@@ -1,12 +1,12 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps CArray_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st = MVM_gc_allocate_stable(tc, &CArray_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -64,7 +64,9 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info_hash) {
         }
         else {
             MVM_exception_throw_adhoc(tc,
-                "CArray may only contain native integers and numbers, strings, C Structs or C Pointers");
+                "CArray representation only handles attributes of type:\n"
+                "  (u)int8, (u)int16, (u)int32, (u)int64, (u)long, (u)longlong, num32, num64, (s)size_t, bool, Str\n"
+                "  and types with representation: CArray, CPointer, CStruct, CPPStruct and CUnion");
         }
     }
     else {
@@ -119,12 +121,10 @@ static void copy_to(MVMThreadContext *tc, MVMSTable *st, void *src, MVMObject *d
 static void gc_cleanup(MVMThreadContext *tc, MVMSTable *st, void *data) {
     MVMCArrayBody *body = (MVMCArrayBody *)data;
 
-    if (body->managed) {
+    if (body->managed) 
         MVM_free(body->storage);
-
-        if (body->child_objs)
-            MVM_free(body->child_objs);
-    }
+    if (body->child_objs)
+        MVM_free(body->child_objs);
 }
 
 static void gc_free(MVMThreadContext *tc, MVMObject *obj) {
@@ -357,19 +357,19 @@ static void bind_pos(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void 
             if (REPR(value.o)->ID != MVM_REPR_ID_MVMCPointer)
                 MVM_exception_throw_adhoc(tc, "CArray of CPointer passed non-CPointer object");
             bind_wrapper_and_ptr(tc, root, body, index, value.o,
-                ((MVMCPointer *)value.o)->body.ptr);
+                IS_CONCRETE(value.o) ? ((MVMCPointer *)value.o)->body.ptr : NULL);
             break;
         case MVM_CARRAY_ELEM_KIND_CARRAY:
             if (REPR(value.o)->ID != MVM_REPR_ID_MVMCArray)
                 MVM_exception_throw_adhoc(tc, "CArray of CArray passed non-CArray object");
             bind_wrapper_and_ptr(tc, root, body, index, value.o,
-                ((MVMCArray *)value.o)->body.storage);
+                IS_CONCRETE(value.o) ? ((MVMCArray *)value.o)->body.storage : NULL);
             break;
         case MVM_CARRAY_ELEM_KIND_CSTRUCT:
             if (REPR(value.o)->ID != MVM_REPR_ID_MVMCStruct)
                 MVM_exception_throw_adhoc(tc, "CArray of CStruct passed non-CStruct object");
             bind_wrapper_and_ptr(tc, root, body, index, value.o,
-                ((MVMCStruct *)value.o)->body.cstruct);
+                IS_CONCRETE(value.o) ? ((MVMCStruct *)value.o)->body.cstruct : NULL);
             break;
         default:
             MVM_exception_throw_adhoc(tc, "Unknown element type in CArray");
@@ -417,18 +417,30 @@ static void serialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerializ
 /* Deserializes the REPR data. */
 static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerializationReader *reader) {
     MVMCArrayREPRData *repr_data = (MVMCArrayREPRData *) MVM_malloc(sizeof(MVMCArrayREPRData));
-    repr_data->elem_size = MVM_serialization_read_int(tc, reader);
+
+    if (reader->root.version >= 19) {
+        repr_data->elem_size = MVM_serialization_read_int(tc, reader);
+    } else {
+        repr_data->elem_size = MVM_serialization_read_int64(tc, reader);
+    }
+
     repr_data->elem_type = MVM_serialization_read_ref(tc, reader);
-    repr_data->elem_kind = MVM_serialization_read_int(tc, reader);
+
+    if (reader->root.version >= 19) {
+        repr_data->elem_kind = MVM_serialization_read_int(tc, reader);
+    } else {
+        repr_data->elem_kind = MVM_serialization_read_int64(tc, reader);
+    }
+
     st->REPR_data = repr_data;
 }
 
 /* Initializes the CArray representation. */
 const MVMREPROps * MVMCArray_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &CArray_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps CArray_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     initialize,
@@ -448,7 +460,9 @@ static const MVMREPROps this_repr = {
         MVM_REPR_DEFAULT_BIND_POS_MULTIDIM,
         MVM_REPR_DEFAULT_DIMENSIONS,
         MVM_REPR_DEFAULT_SET_DIMENSIONS,
-        MVM_REPR_DEFAULT_GET_ELEM_STORAGE_SPEC
+        MVM_REPR_DEFAULT_GET_ELEM_STORAGE_SPEC,
+        MVM_REPR_DEFAULT_POS_AS_ATOMIC,
+        MVM_REPR_DEFAULT_POS_AS_ATOMIC_MULTIDIM
     },    /* pos_funcs */
     MVM_REPR_DEFAULT_ASS_FUNCS,
     elems,
@@ -468,5 +482,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "CArray", /* name */
     MVM_REPR_ID_MVMCArray,
-    0, /* refs_frames */
+    NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

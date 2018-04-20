@@ -5,8 +5,11 @@ role Perl6::Metamodel::MethodContainer {
 
     # The order that the methods were added in.
     has @!method_order;
-    
+
     # Cache that expires when we add methods (primarily to support NFA stuff).
+    # The hash here is readonly; we copy/replace in on addition, for thread
+    # safety (additions are dominated by lookups, so a lock - even a rw-lock -
+    # is not ideal here).
     has %!cache;
 
     # Add a method.
@@ -22,9 +25,9 @@ role Perl6::Metamodel::MethodContainer {
               ~ $name
               ~ "' (did you mean to declare a multi-method?)");
         }
-        
+
         # Add to correct table depending on if it's a Submethod.
-        if !nqp::isnull(Perl6::Metamodel::Configuration.submethod_type) 
+        if !nqp::isnull(Perl6::Metamodel::Configuration.submethod_type)
             && nqp::istype($code_obj, Perl6::Metamodel::Configuration.submethod_type) {
             %!submethods{$name} := $code_obj;
         }
@@ -57,7 +60,7 @@ role Perl6::Metamodel::MethodContainer {
                 }
             }
         }
-        
+
         # Return result list.
         @meths
     }
@@ -67,18 +70,18 @@ role Perl6::Metamodel::MethodContainer {
     method method_table($obj) {
         %!methods
     }
-    
+
     # Gets the submethods table.
     method submethod_table($obj) {
         %!submethods
     }
-    
+
     # Checks if this package (not its parents) declares a given
     # method. Checks submethods also.
     method declares_method($obj, $name) {
         %!methods{$name} || %!submethods{$name} ?? 1 !! 0
     }
-    
+
     # Looks up a method with the provided name, for introspection purposes.
     method lookup($obj, $name) {
         for self.mro($obj) {
@@ -98,10 +101,10 @@ role Perl6::Metamodel::MethodContainer {
 
     # Caches or updates a cached value.
     method cache($obj, str $key, $value_generator) {
-        %!cache || (%!cache := {});
-        nqp::existskey(%!cache, $key) ??
-            %!cache{$key} !!
-            (%!cache{$key} := $value_generator())
+        my %orig_cache := %!cache;
+        nqp::ishash(%orig_cache) && nqp::existskey(%!cache, $key)
+            ?? %!cache{$key}
+            !! self.cache_add($obj, $key, $value_generator())
     }
 
     method cache_get($obj, str $key) {
@@ -110,7 +113,10 @@ role Perl6::Metamodel::MethodContainer {
     }
 
     method cache_add($obj, str $key, $value) {
-        %!cache := nqp::hash() unless nqp::ishash(%!cache);
-        %!cache{$key} := $value;
+        my %orig_cache := %!cache;
+        my %copy := nqp::ishash(%orig_cache) ?? nqp::clone(%orig_cache) !! {};
+        %copy{$key} := $value;
+        %!cache := %copy;
+        $value
     }
 }

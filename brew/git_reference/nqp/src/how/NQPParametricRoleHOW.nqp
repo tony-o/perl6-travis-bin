@@ -55,7 +55,9 @@ knowhow NQPParametricRoleHOW {
     # to go with it, and return that.
     method new_type(:$name = '<anon>') {
         my $metarole := self.new(:name($name));
-        nqp::setwho(nqp::newtype($metarole, 'Uninstantiable'), {});
+        nqp::setdebugtypename(
+            nqp::setwho(nqp::newtype($metarole, 'Uninstantiable'), {}),
+            $name);
     }
     
     method set_body_block($obj, $body_block) {
@@ -141,7 +143,7 @@ knowhow NQPParametricRoleHOW {
             my $meth := nqp::can(nqp::iterval($_), 'instantiate_generic')
                 ?? nqp::iterval($_).instantiate_generic($pad)
                 !! nqp::iterval($_).clone();
-            if nqp::substr($name, 0, 12) eq '!!LATENAME!!' {
+            if nqp::eqat($name, '!!LATENAME!!', 0) {
                 $name := nqp::atkey($pad, nqp::substr($name, 12));
                 $meth.'!set_name'($name);
             }
@@ -166,7 +168,7 @@ knowhow NQPParametricRoleHOW {
     ## Introspecty
     ##
 
-    method methods($obj, :$local) {
+    method methods($obj, :$local, :$all) {
         my @meths;
         for %!methods {
             nqp::push(@meths, nqp::iterval($_));

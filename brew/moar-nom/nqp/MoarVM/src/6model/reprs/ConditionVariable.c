@@ -1,12 +1,12 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps ConditionVariable_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st  = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st  = MVM_gc_allocate_stable(tc, &ConditionVariable_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -66,10 +66,10 @@ static void deserialize_stable_size(MVMThreadContext *tc, MVMSTable *st, MVMSeri
 
 /* Initializes the representation. */
 const MVMREPROps * MVMConditionVariable_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &ConditionVariable_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps ConditionVariable_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     NULL, /* initialize */
@@ -95,7 +95,8 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "ConditionVariable", /* name */
     MVM_REPR_ID_ConditionVariable,
-    0, /* refs_frames */
+    NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };
 
 /* Given a reentrant mutex, produces an associated condition variable. */
@@ -123,30 +124,39 @@ MVMObject * MVM_conditionvariable_from_lock(MVMThreadContext *tc, MVMReentrantMu
 void MVM_conditionvariable_wait(MVMThreadContext *tc, MVMConditionVariable *cv) {
     MVMReentrantMutex *rm = (MVMReentrantMutex *)cv->body.mutex;
     AO_t orig_rec_level;
+    unsigned int interval_id;
 
     if (MVM_load(&rm->body.holder_id) != tc->thread_id)
         MVM_exception_throw_adhoc(tc,
             "Can only wait on a condition variable when holding mutex");
+
+    interval_id = MVM_telemetry_interval_start(tc, "ConditionVariable.wait");
+    MVM_telemetry_interval_annotate((uintptr_t)cv->body.condvar, interval_id, "this condition variable");
     orig_rec_level = MVM_load(&rm->body.lock_count);
     MVM_store(&rm->body.holder_id, 0);
     MVM_store(&rm->body.lock_count, 0);
 
+    MVMROOT(tc, cv, {
     MVMROOT(tc, rm, {
         MVM_gc_mark_thread_blocked(tc);
         uv_cond_wait(cv->body.condvar, rm->body.mutex);
         MVM_gc_mark_thread_unblocked(tc);
     });
+    });
 
     MVM_store(&rm->body.holder_id, tc->thread_id);
     MVM_store(&rm->body.lock_count, orig_rec_level);
+    MVM_telemetry_interval_stop(tc, interval_id, "ConditionVariable.wait");
 }
 
 /* Signals one thread waiting on the condition. */
 void MVM_conditionvariable_signal_one(MVMThreadContext *tc, MVMConditionVariable *cv) {
+    MVM_telemetry_timestamp(tc, "ConditionVariable.signal_one");
     uv_cond_signal(cv->body.condvar);
 }
 
 /* Signals all threads waiting on the condition. */
 void MVM_conditionvariable_signal_all(MVMThreadContext *tc, MVMConditionVariable *cv) {
+    MVM_telemetry_timestamp(tc, "ConditionVariable.signal_all");
     uv_cond_broadcast(cv->body.condvar);
 }

@@ -13,11 +13,9 @@ void MVM_6model_parametric_setup(MVMThreadContext *tc, MVMObject *type, MVMObjec
     /* For now, we use a simple pairwise array, with parameters and the type
      * that is based on those parameters interleaved. It does make resolution
      * O(n), so we might like to do some hash in the future. */
-    MVMROOT(tc, st, {
-    MVMROOT(tc, parameterizer, {
+    MVMROOT2(tc, st, parameterizer, {
         MVMObject *lookup = MVM_repr_alloc_init(tc, tc->instance->boot_types.BOOTArray);
         MVM_ASSIGN_REF(tc, &(st->header), st->paramet.ric.lookup, lookup);
-    });
     });
 
      /* Store the parameterizer. (Note, we do this after the allocation
@@ -38,6 +36,7 @@ typedef struct {
 } ParameterizeReturnData;
 static void finish_parameterizing(MVMThreadContext *tc, void *sr_data) {
     ParameterizeReturnData *prd = (ParameterizeReturnData *)sr_data;
+    MVMObject *found;
 
     /* Mark parametric and stash required data. */
     MVMSTable *new_stable = STABLE(prd->result->o);
@@ -47,16 +46,34 @@ static void finish_parameterizing(MVMThreadContext *tc, void *sr_data) {
         prd->parameters);
     new_stable->mode_flags |= MVM_PARAMETERIZED_TYPE;
 
-    /* Add to lookup table. */
-    /* XXX handle possible race. */
-    MVM_repr_push_o(tc, prd->parametric_type->st->paramet.ric.lookup, prd->parameters);
-    MVM_repr_push_o(tc, prd->parametric_type->st->paramet.ric.lookup, prd->result->o);
+    /* Add to lookup table. Multiple threads may race to do this, so after
+     * taking the lock to serialize additions we re-check for a match. If we
+     * don't find one, do a defensive copy here so that existing readers of
+     * the table won't be bitten. */
+    uv_mutex_lock(&tc->instance->mutex_parameterization_add);
+    found = MVM_6model_parametric_try_find_parameterization(tc,
+        prd->parametric_type->st, prd->parameters);
+    if (found) {
+        prd->result->o = found;
+    }
+    else {
+        MVMObject *parameters = prd->parameters;
+        MVMObject *parametric_type = prd->parametric_type;
+        MVMROOT2(tc, parameters, parametric_type, {
+            MVMObject *copy = MVM_repr_clone(tc, parametric_type->st->paramet.ric.lookup);
+            MVM_repr_push_o(tc, copy, parameters);
+            MVM_repr_push_o(tc, copy, prd->result->o);
+            MVM_ASSIGN_REF(tc, &(parametric_type->st->header),
+                parametric_type->st->paramet.ric.lookup, copy);
+        });
+    }
+    uv_mutex_unlock(&tc->instance->mutex_parameterization_add);
 
     /* Clean up parametric return data, now we're finished with it. */
     MVM_free(prd);
 }
 static void mark_parameterize_sr_data(MVMThreadContext *tc, MVMFrame *frame, MVMGCWorklist *worklist) {
-    ParameterizeReturnData *prd = (ParameterizeReturnData *)frame->special_return_data;
+    ParameterizeReturnData *prd = (ParameterizeReturnData *)frame->extra->special_return_data;
     MVM_gc_worklist_add(tc, worklist, &(prd->parametric_type));
     MVM_gc_worklist_add(tc, worklist, &(prd->parameters));
 }
@@ -83,9 +100,8 @@ void MVM_6model_parametric_parameterize(MVMThreadContext *tc, MVMObject *type, M
     prd->parametric_type                    = type;
     prd->parameters                         = params;
     prd->result                             = result;
-    tc->cur_frame->special_return           = finish_parameterizing;
-    tc->cur_frame->special_return_data      = prd;
-    tc->cur_frame->mark_special_return_data = mark_parameterize_sr_data;
+    MVM_frame_special_return(tc, tc->cur_frame, finish_parameterizing, NULL,
+        prd, mark_parameterize_sr_data);
     MVM_args_setup_thunk(tc, result, MVM_RETURN_OBJ, MVM_callsite_get_common(tc, MVM_CALLSITE_ID_TWO_OBJ));
     tc->cur_frame->args[0].o = st->WHAT;
     tc->cur_frame->args[1].o = params;

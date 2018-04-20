@@ -11,6 +11,7 @@ class QAST::Block is QAST::Node does QAST::Children {
 
     method new(str :$name, str :$blocktype, *@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Block, '@!children', @children);
         nqp::bindattr_s($node, QAST::Block, '$!name', $name);
         nqp::bindattr_s($node, QAST::Block, '$!blocktype', $blocktype);
@@ -90,6 +91,6 @@ class QAST::Block is QAST::Node does QAST::Children {
     }
 
     method dump_extra_node_info() {
-        nqp::chars(self.blocktype) ?? ":decl($!blocktype)" !! "";
+        nqp::chars(self.blocktype) ?? ":blocktype($!blocktype)" !! "";
     }
 }

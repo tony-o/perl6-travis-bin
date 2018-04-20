@@ -37,33 +37,46 @@ class Deprecation {
         for %.callsites.kv -> $file, $lines {
             $message ~=
               "  $file, line{ 's' if +$lines > 1 } {$lines.keys.sort.join(',')}\n";
-            $message ~=
-              "Deprecated since v$.from, will be removed {$.removed
-                ?? 'with release v' ~ $.removed ~ '!'
-                !! 'sometime in the future'
-              }\n" if $.from;
+            if $.from or $.removed {
+                $message ~= $.from
+                  ?? "Deprecated since v$.from, will be removed"
+                  !! "Will be removed";
+                $message ~= $.removed
+                  ?? " with release v$.removed!\n"
+                  !! " sometime in the future\n";
+            }
         }
         $message ~= "Please use $.alternative instead.\n";
         $message;
     }
 }
 
-sub DEPRECATED($alternative,$from?,$removed?,:$up = 1,:$what,:$file,:$line) {
+sub DEPRECATED($alternative,$from?,$removed?,:$up = 1,:$what,:$file,:$line,Bool :$lang-vers) {
+    state $ver  = $*PERL.compiler.version;
+    my $version = $lang-vers ?? nqp::getcomp('perl6').language_version !! $ver;
+    # if $lang-vers was given, treat the provided versions as language
+    # versions, rather than compiler versions. Note that we can't
+    # `state` the lang version (I think) because different CompUnits
+    # might be using different versions.
 
-    # not deprecated yet
-    state $version = $*PERL.compiler.version;
     my Version $vfrom;
     my Version $vremoved;
-    if $from {
-        $vfrom = Version.new($from);
-        return if ($version cmp $vfrom) ~~ Less | Same; # can be better?
-    }
+    $from && nqp::iseq_i($version cmp ($vfrom = Version.new: $from), -1)
+          && return; # not deprecated yet;
     $vremoved = Version.new($removed) if $removed;
 
     my $bt = Backtrace.new;
     my $deprecated =
       $bt[ my $index = $bt.next-interesting-index(2, :named, :setting) ];
-    $index = $bt.next-interesting-index($index, :noproto, :setting) for ^$up;
+
+    if $up ~~ Whatever {
+        $index = $_ with $bt.next-interesting-index($index, :noproto);
+    }
+    else {
+        $index = $_
+          with $bt.next-interesting-index($index, :noproto, :setting)
+          for ^$up;
+    }
     my $callsite = $bt[$index];
 
     # get object, existing or new

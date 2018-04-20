@@ -35,7 +35,7 @@ our %TP_MT = (
 our %TP_DC = (
     name  => 'dyncall_s',
     path  => '3rdparty/dyncall/dyncall',
-    rule  => 'cd 3rdparty/dyncall &&  ./configure && CC=\'$(CC)\' CFLAGS=\'$(CFLAGS)\' $(MAKE) -f Makefile ',
+    rule  => 'cd 3rdparty/dyncall &&  ./configure && CC=\'$(CC)\' CFLAGS=\'-fPIC\' $(MAKE) -f Makefile ',
     clean => 'cd 3rdparty/dyncall && $(MAKE) -f Makefile clean',
 );
 
@@ -125,7 +125,7 @@ our %TC_POSIX = (
     ccshared   => '-fPIC',
     ldshared   => '-shared @ccshared@',
     moarshared => '',
-    ldrpath    => '-Wl,-rpath,@libdir@ -Wl,-rpath,@prefix@/share/perl6/site/lib',
+    ldrpath    => '-Wl,-rpath,"/@libdir@"',
 
     arflags => 'rcs',
     arout   => '',
@@ -265,7 +265,7 @@ our %COMPILERS = (
         cc => 'gcc',
         ld => undef,
 
-        ccmiscflags  => '-Wdeclaration-after-statement -Werror=declaration-after-statement',
+        ccmiscflags  => '-Werror=declaration-after-statement -Werror=pointer-arith',
         ccwarnflags  => '',
         ccoptiflags  => '-O%s -DNDEBUG',
         ccdebugflags => '-g%s',
@@ -292,11 +292,13 @@ our %COMPILERS = (
         ccoptiflags  => '-O%s -DNDEBUG',
         ccdebugflags => '-g%s',
         ccinstflags  => '-fsanitize=address',
+        cc_covflags => '-fprofile-instr-generate -fcoverage-mapping',
 
         ldmiscflags  => '',
         ldoptiflags  => undef,
         lddebugflags => undef,
         ldinstflags  => undef,
+        ld_covflags => '-fprofile-instr-generate -fcoverage-mapping',
 
         noreturnspecifier => '',
         noreturnattribute => '__attribute__((noreturn))',
@@ -354,7 +356,7 @@ our %COMPILERS = (
 our %OS_WIN32 = (
     exe      => '.exe',
     defs     => [ qw( WIN32 AO_ASSUME_WINDOWS98 ) ],
-    syslibs  => [ qw( shell32 ws2_32 mswsock rpcrt4 advapi32 psapi iphlpapi userenv ) ],
+    syslibs  => [ qw( shell32 ws2_32 mswsock rpcrt4 advapi32 psapi iphlpapi userenv user32 ) ],
     platform => '$(PLATFORM_WIN32)',
 
     dllimport => '__declspec(dllimport)',
@@ -407,6 +409,19 @@ our %OS_POSIX = (
     defs     => [ qw( _REENTRANT _FILE_OFFSET_BITS=64 ) ],
     syslibs  => [ qw( m pthread ) ],
     platform => '$(PLATFORM_POSIX)',
+);
+
+our %OS_AIX = (
+    %OS_POSIX,
+
+    defs        => [ qw( _ALL_SOURCE _XOPEN_SOURCE=500 _LINUX_SOURCE_COMPAT ) ],
+    syslibs     => [ @{$OS_POSIX{syslibs}}, qw( rt dl perfstat ) ],
+    ldmiscflags => '-Wl,-brtl',
+    ldrpath     => '-L"/@libdir@"',
+
+    -thirdparty => {
+        uv => { %TP_UVDUMMY, objects => '$(UV_AIX)' },
+    },
 );
 
 our %OS_LINUX = (
@@ -470,10 +485,9 @@ our %OS_GNUKFREEBSD = (
 our %OS_SOLARIS = (
     %OS_POSIX,
 
-    defs     => [ qw( _XOPEN_SOURCE=500 _XOPEN_SOURCE_EXTENDED=1  __EXTENSIONS__=1  _REENTRANT _FILE_OFFSET_BITS=64 ) ],
+    defs     => [ qw( _XOPEN_SOURCE=500 _XOPEN_SOURCE_EXTENDED=1  __EXTENSIONS__=1 _POSIX_PTHREAD_SEMANTICS _REENTRANT _FILE_OFFSET_BITS=64 ) ],
     syslibs => [ qw( socket sendfile nsl pthread kstat m rt ) ],
     mknoisy => '',
-    ccmiscflags => '-mt',
 
     -thirdparty => {
         dc => { %TP_DC,
@@ -495,7 +509,7 @@ our %OS_DARWIN = (
 
     ccshared   => '',
     ldshared   => '-dynamiclib',
-    moarshared => '-install_name @prefix@/lib/libmoar.dylib',
+    moarshared => '-install_name "@prefix@/lib/libmoar.dylib"',
     sharedlib  => 'libmoar.dylib',
 
     -thirdparty => {
@@ -506,13 +520,14 @@ our %OS_DARWIN = (
 our %SYSTEMS = (
     posix       => [ qw( posix posix cc ),    { %OS_POSIX } ],
     linux       => [ qw( posix gnu   gcc ),   { %OS_LINUX } ],
+    aix         => [ qw( posix gnu   gcc ),   { %OS_AIX } ],
     darwin      => [ qw( posix gnu   clang ), { %OS_DARWIN } ],
     openbsd     => [ qw( posix bsd   gcc ),   { %OS_OPENBSD} ],
     netbsd      => [ qw( posix bsd   gcc ),   { %OS_NETBSD } ],
     dragonfly   => [ qw( posix bsd   gcc ),   { %OS_DRAGONFLY } ],
-    freebsd     => [ qw( posix bsd   clang ), { %OS_FREEBSD } ],
+    freebsd     => [ qw( posix bsd), $OS_FREEBSD{cc} , { %OS_FREEBSD } ],
     gnukfreebsd => [ qw( posix gnu   gcc ),   { %OS_GNUKFREEBSD } ],
-    solaris     => [ qw( posix posix cc ),    { %OS_SOLARIS } ],
+    solaris     => [ qw( posix posix gcc ),   { %OS_SOLARIS } ],
     win32       => [ qw( win32 msvc  cl ),    { %OS_WIN32 } ],
     cygwin      => [ qw( posix gnu   gcc ),   { %OS_WIN32 } ],
     mingw32     => [ qw( win32 gnu   gcc ),   { %OS_MINGW32 } ],

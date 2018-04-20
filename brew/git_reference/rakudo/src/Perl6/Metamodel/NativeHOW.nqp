@@ -3,7 +3,7 @@ class Perl6::Metamodel::NativeHOW
     does Perl6::Metamodel::Documenting
     does Perl6::Metamodel::Versioning
     does Perl6::Metamodel::Stashing
-    does Perl6::Metamodel::MultipleInheritance    
+    does Perl6::Metamodel::MultipleInheritance
     does Perl6::Metamodel::C3MRO
     does Perl6::Metamodel::MROBasedMethodDispatch
     does Perl6::Metamodel::MROBasedTypeChecking
@@ -16,13 +16,13 @@ class Perl6::Metamodel::NativeHOW
     method archetypes() {
         $archetypes
     }
-    
+
     method new(*%named) {
         nqp::findmethod(NQPMu, 'BUILDALL')(nqp::create(self), |%named)
     }
 
     method new_type(:$name = '<anon>', :$repr = 'P6opaque', :$ver, :$auth) {
-        my $metaclass := self.new(:nativesize(0));
+        my $metaclass := self.new();
         my $obj := nqp::settypehll(nqp::newtype($metaclass, $repr), 'perl6');
         $metaclass.set_name($obj, $name);
         $metaclass.set_ver($obj, $ver) if $ver;
@@ -34,7 +34,7 @@ class Perl6::Metamodel::NativeHOW
         self.compute_mro($obj);
         self.publish_method_cache($obj);
         self.publish_type_cache($obj);
-        if !$!composed && $!nativesize {
+        if !$!composed && ($!nativesize || $!unsigned) {
             my $info := nqp::hash();
             $info<integer> := nqp::hash();
             $info<integer><unsigned> := 1 if $!unsigned;
@@ -44,14 +44,16 @@ class Perl6::Metamodel::NativeHOW
                 $info<float><bits>   := $!nativesize;
             }
             else {
-                $info<integer><bits> := nqp::unbox_i($!nativesize);
-                $info<float><bits>   := nqp::unbox_i($!nativesize);
+                if $!nativesize {
+                    $info<integer><bits> := nqp::unbox_i($!nativesize);
+                    $info<float><bits>   := nqp::unbox_i($!nativesize);
+                }
             }
             nqp::composetype($obj, $info);
         }
         $!composed := 1;
     }
-    
+
     method is_composed($obj) {
         $!composed
     }
@@ -87,6 +89,9 @@ class Perl6::Metamodel::NativeHOW
         elsif $ctype eq 'size_t' {
             $!nativesize := nqp::const::C_TYPE_SIZE_T;
         }
+        elsif $ctype eq 'atomic' {
+            $!nativesize := nqp::const::C_TYPE_ATOMIC_INT;
+        }
         else {
             nqp::die("Unhandled C type '$ctype'")
         }
@@ -99,15 +104,26 @@ class Perl6::Metamodel::NativeHOW
     method nativesize($obj) {
         $!nativesize
     }
-    
+
     method set_unsigned($obj, $unsigned) {
         $!unsigned := $unsigned ?? 1 !! 0
     }
-    
+
     method unsigned($obj) {
         $!unsigned
     }
-    
-    method method_table($obj) { nqp::hash() }
+
+    method method_table($obj) {
+        nqp::hash('new',
+          nqp::getstaticcode(sub (*@_,*%_) {
+              @_[1] // nqp::die('Cannot instantiate a native type');
+              nqp::getlexcaller('&DEPRECATED')(
+                  '(my ' ~ @_[0].HOW.name(@_[0]) ~ ' $ = ' ~ @_[1].perl() ~ ')',
+                  '2017.09.403',
+                  '2018.01',
+              );
+              @_[1];
+          }))
+    }
     method submethod_table($obj) { nqp::hash() }
 }

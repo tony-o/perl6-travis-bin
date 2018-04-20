@@ -41,7 +41,7 @@ sub _to_probe_dir {
         or die "Can't chir $probe_dir: $!";
     return $restore;
 }
-    
+
 sub compile {
     my ($config, $leaf, $defines, $files) = @_;
     my $restore = _to_probe_dir();
@@ -51,13 +51,13 @@ sub compile {
     my @objs;
     foreach my $file ("$leaf.c", @$files) {
         (my $obj = $file) =~ s/\.c/$config->{obj}/;
-        my $command = "$config->{cc} $cl_define $config->{ccout}$obj $config->{ccswitch} $file >$devnull 2>&1";
+        my $command = "$config->{cc} $ENV{CFLAGS} $cl_define $config->{ccout}$obj $config->{ccswitch} $file >$devnull 2>&1";
         system $command
             and return;
         push @objs, $obj;
     }
 
-    my $command = "$config->{ld} $config->{ldout}$leaf @objs $config->{ldlibs} >$devnull 2>&1";
+    my $command = "$config->{ld} $ENV{LDFLAGS} $config->{ldout}$leaf @objs $config->{ldlibs} >$devnull 2>&1";
     system $command
         and return;
     return 1;
@@ -71,6 +71,61 @@ sub _spew {
         or die "Can't write to $filename: $!";
     close $fh
         or die "Can't close $filename: $!";
+}
+
+sub compiler_usability {
+    my ($config) = @_;
+    my $restore  = _to_probe_dir();
+    my $leaf     = 'try';
+    my $file     = "$leaf.c";
+
+    _spew('try.c', <<'EOT');
+#include <stdlib.h>
+
+int main(int argc, char **argv) {
+     return EXIT_SUCCESS;
+}
+EOT
+
+    print ::dots('    trying to compile a simple C program');
+
+    my ($can_compile, $can_link, $command_errored, $error_message);
+    (my $obj = $file) =~ s/\.c/$config->{obj}/;
+    $ENV{CFLAGS} //= '';
+    my $command = "$config->{cc} $ENV{CFLAGS} $config->{ccout}$obj $config->{ccswitch} $file 2>&1";
+    my $output  = `$command` || $!;
+    if ($? >> 8 == 0) {
+        $can_compile = 1;
+    }
+    else {
+        $command_errored = $command;
+        $error_message   = $output;
+    }
+
+    if ($can_compile) {
+	$ENV{LDFLAGS} //= '';
+        $command = "$config->{ld} $ENV{LDFLAGS} $config->{ldout}$leaf $obj 2>&1";
+        $output  = `$command` || $!;
+        if ($? >> 8 == 0) {
+            $can_link = 1;
+        }
+        else {
+            $command_errored = $command;
+            $error_message   = $output;
+        }
+    }
+
+    if (!$can_compile || !$can_link) {
+        die "ERROR\n\n" .
+            "    Can't " . ($can_compile ? 'link' : 'compile') . " simple C program.\n" .
+            "    Failing command: $command_errored\n" .
+            "    Error: $error_message\n\n" .
+            "Cannot continue after this error.\n" .
+            "On linux, maybe you need something like 'sudo apt-get install build-essential'.\n" .
+            "On macOS, maybe you need to install XCode and accept the XCode EULA.\n";
+    }
+
+    print "YES\n";
 }
 
 sub static_inline_native {
@@ -90,7 +145,7 @@ EOT
 
     print ::dots('    probing whether your compiler thinks that it is gcc');
     compile($config, 'try')
-        or die "Can't compile simple gcc probe, so something is badly wrong (if on linux, maybe you need something like 'sudo apt-get install build-essential')";
+        or die "Can't compile simple gcc probe, so something is badly wrong";
     my $gcc = !system './try';
     print $gcc ? "YES\n": "NO\n";
 
@@ -170,6 +225,34 @@ sub static_inline_cross {
     # might get confused by link time optimisations that only fail at run time,
     # which the system test does detect.
     $config->{static_inline} = 'static';
+}
+
+sub specific_werror {
+    my ($config) = @_;
+    my $restore = _to_probe_dir();
+
+    if ($config->{cc} ne 'gcc') {
+        $config->{can_err_decl_after_stmt} = 1;
+        return;
+    }
+
+    my $file = 'try.c';
+    _spew($file, <<'EOT');
+#include <stdlib.h>
+
+int main(int argc, char **argv) {
+     return EXIT_SUCCESS;
+}
+EOT
+
+    print ::dots('    probing support of -Werror=*');
+
+    (my $obj = $file) =~ s/\.c/$config->{obj}/;
+    my $command = "gcc -Werror=declaration-after-statement $config->{ccout}$obj try.c >$devnull 2>&1";
+    my $can_specific_werror = !( system $command );
+
+    print $can_specific_werror ? "YES\n": "NO\n";
+    $config->{can_specific_werror} = $can_specific_werror || 0
 }
 
 
@@ -358,15 +441,21 @@ sub pthread_yield {
     _spew('try.c', <<'EOT');
 #include <stdlib.h>
 #include <pthread.h>
+#include <unistd.h>
 
 int main(int argc, char **argv) {
+#ifdef _POSIX_PRIORITY_SCHEDULING
+    /* hide pthread_yield so we fall back to the recommended sched_yield() */
+    return EXIT_FAILURE;
+#else
     pthread_yield();
     return EXIT_SUCCESS;
+#endif
 }
 EOT
 
     print ::dots('    probing pthread_yield support');
-    my $has_pthread_yield = compile($config, 'try');
+    my $has_pthread_yield = compile($config, 'try') && system('./try') == 0;
     print $has_pthread_yield ? "YES\n": "NO\n";
     $config->{has_pthread_yield} = $has_pthread_yield || 0
 }
@@ -387,6 +476,39 @@ sub win32_compiler_toolchain {
         $config->{win32_compiler_toolchain} = ''
     }
     $config->{win32_compiler_toolchain}
+}
+
+sub rdtscp {
+    my ($config) = @_;
+    my $restore = _to_probe_dir();
+    _spew('try.c', <<'EOT');
+#include <stdio.h>
+#include <stdlib.h>
+
+#ifdef _WIN32
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+
+int main(int argc, char **argv) {
+    unsigned int _tsc_aux;
+    unsigned int tscValue;
+    tscValue = __rdtscp(&_tsc_aux);
+
+    if (tscValue > 1)
+        return EXIT_SUCCESS;
+    return EXIT_FAILURE;
+}
+EOT
+
+    print ::dots('    probing support of rdtscp intrinsic');
+    my $can_rdtscp = compile($config, 'try');
+    unless ($config->{crossconf}) {
+        $can_rdtscp  &&= !system './try';
+    }
+    print $can_rdtscp ? "YES\n": "NO\n";
+    $config->{canrdtscp} = $can_rdtscp || 0
 }
 
 '00';

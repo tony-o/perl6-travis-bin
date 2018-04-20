@@ -1,3 +1,1300 @@
+See https://github.com/MoarVM/MoarVM/wiki/ChangeLog-Draft for the draft changelog
+since the previous release.
+
+New in 2018.03
+
+Miscellaneous:
++ Add remote debugging support, optionally enabled with the --debug-port option
+  to MoarVM. This uses the MessagePack and allows:
+  + Suspending and resuming all threads, or individual threads
+  + Enumerating threads and, when they are suspended, getting their stack traces
+  + Reading the lexical variables of a callframe
+  + Setting breakpoints and getting notified if they are hit (and, optionally, suspending execution)
+  + Stepping
+  + Fetching object attributes, array elements, and hash keys/values
++ Add getppid op. Allows a child process to get the parent process id, and thus
+    guess if it has become orphaned.
++ Panic when Dyncall fails to allocate native callbacks
++ Use uv_fs_copyfile API in MVM_file_copy
++ Make IO signal handlers cancellable
++ Add an tryfindmethod op which evaluates to null in the event that the method
+  cannot be found
+
+Network:
++ Ignore libuv-caused "fake" empty datagrams
++ Expose both hostname and port of received datagrams
+
+Encodings:
++ Change arguments for windows1252/1 decodestream ops
++ Add proper support for replacements in decodestream for windows1252/1
++ Add ops for strict decoding of windows-1251/1252, decoderepconfig, encodeconfig,
+  decodeconfig and encoderepconfig
++ Add support for replacements with more than one character for windows-1251 and windows-1252
++ Add some string consts in MVMStringConsts for MVMDecodeStream
+
+Spesh:
++ optimize eq_s and ne_s against empty string in spesh
+
+Tooling:
++ Bump libuv version 1.19.2
++ Move moarvm.org tool into proper folder. Add more release guide info
++ Add CMP library to ./3rdparty which is used for supporting the debug server
++ Add debug server protocol documentation
+
+JIT:
++ Add JIT template for ne_s, const_n64, not_i, is(int|num|str|list), existskey,
+  eqat_s, concat_s, isnull_s, isfalse, istrue, ishash
++ Enable box_i and box_s templates
++ Release only spill slots without active overlap
++ Warn for things that should be a size but may not be in the expr JIT compiler
++ Create store_write_barrier macro
+
+Profiler:
++ Support for threaded profiling has been added, although it is not fully stable yet
++ Record thread id in profile data
++ Record if a thread is responsible for a gc
++ Count spesh time properly
++ Record when gc happens (msecs since start)
++ Fix for gigantic and wrong spesh time in profiles
+
+New in 2018.02
+
+Miscellaneous:
++ Clean up one-shot timers after firing
++ Fix SEGV in profiler by testing the current thread's frame in heap snapshot
++ Fix missing argument to syncsocket error message
++ Fix EOF detection on zero-size files
+
+Strings:
++ Add windows-1251 (Cyrillic) decode/encode support
++ Refactor so code is shared between windows-1251 & 1252
++ Fix a bug causing encoding of ›, ˜, œ, ž, Ÿ, ™ and š with windows-1252 (Latin)
+  to throw or fail encoding
+
+Spesh:
++ Make MVM_spesh_manipulate_remove_handler_successors() public
++ Move annotations to istrue when split from if_o
++ Always split if_o into istrue and if_i
++ Fix MVM_spesh_log_decont not logging anything
++ Don't spesh log if we have a spesh_cand
++ Don't optimize getattr unless known concrete
++ Implement unmanaged_size in MVMSpeshLog repr
++ Run basic facts discovery on inlined code
++ Clean up handler successors after throwish ops become non-throwing
++ Put inlined blocks between their caller and its successor
++ Fix an off-by-one in uninline
++ Remove superfluous DEOPT_ONE_INS annotation on some deconts
++ Work around a segfault caused by type tuple without type information
++ Revive removal of dead instructions after the first inlined function
++ Fix SEGV when opening MVM_*_LOG files
+
+JIT:
++ Add JIT templates for more than 44 ops
++ Disable getlexstatic_o for the time being for stability reasons
++ Fix segfault in JIT bytecode dumper on code without static frame
++ Add NOOP expr JIT operator
++ Don't output PHI in expr JIT log
++ Better error in boxed ref for repr_id mismatch
++ Add tiles for binary XOR and NOT
++ Fix a miscompile in sp_p6ogetvt_o
++ Only BAIL on DEOPT_ONE annotations on actual guard ops in expr JIT
++ Merge non-control-flow basic blocks so expr JIT has more code to optimize
+
+Tooling:
++ Update release_guide.md with info on generating releases.html
++ Add script that generates moarvm.org/releases.html
++ Edit the ChangeLog to include the original release
++ Add script to generate Windows-1251 and 1252 codetables
+
+New in 2018.01
+
+Miscellaneous:
++ Refuse to `make release` with dirty work tree
++ Fix off-by-one error when checking inline boundaries in MVM_frame_find_contextual_by_name()
++ Make it more clear where new ops are meant to go to in src/core/optlist
++ Fix leak when args bind error would unwind rather than return
++ On Windows (not using Visual Studio), print size_t with %Iu.
++ Fix crash in TTY flushing on WSL (Bash on Win10)
++ Do less work in zeroing out VMArray
++ Zero out cut off elements when downsizing VMarray
++ Fix incorrect EOF detection on seek'ed handles
+
+Unicode:
++ ucd2c.pl: Fix White_Space/space Unicode property and several other property aliases
++ ucd2c.pl: code cleanup and refactoring
+
+JIT:
++ jit isprime_I
++ Un-bitrot tools/parse_jitgraph.p6
++ Refactor search_frame_handlers_lex for readability
++ Implement tile for OR operator
+
+Spesh:
++ Mark sp_rebless as :noinline
++ Fix off-by-one error in uninline
++ Pay attention to return op in cross-HLL inlines
++ Optimize not_i when its input is a known value
++ Add some missing fact dependencies
++ Remove bogus comment and known value fact tweak
++ Make instruction deletion within dead BBs a no-op
++ Make log facts tolerate the odd outlier
++ Place facts on a `clone` op
++ New spesh-bisect.pl tool
++ Fix OSR of thread entry frame
++ Allow some cross-HLL inlining, this means we can inline bits of NQP
+  (usually guts like Block.clone) into Perl 6 routines that call them.
+
+Garbage Collection/Memory:
++ Fix memory leaks reported by ASAN
+  + The string stream decoder separator specification buffer(s)
+  + The static frame spesh body statistics buffer
+  + The spesh plan type stats buffer
+  + The spesh plan, when the static frame could not be added
+  + In MVM_unicode_name_to_property_value_code()
++ Debug log fixes:
+  + Fix spelling typos in GC debug log
+  + Remove strange segfault-inducing debug code
+
+New in 2017.12
+
+Miscellaneous:
++ Fix ASAN flags for Darwin platform
++ Fix implementation of the new inline boundary indicators to set action
+
+Unicode:
++ Fix it so Line_Break property returns XX as the default value, instead of
+  incorrectly returning BK
++ Fix it so Numeric_Type property doesn't return an empty string for codepoints
+  with the Digit property value
++ Make Bidi_Mirrored_Glyph an enum instead of storing the full codepoint value
+  in the bitfield
++ Make error messages consistent which refer to synthetic codepoints
++ Many, many fixes and changes to ucd2c.pl, which generates the Unicode database.
+  Most changes are not user visible but will be the foundation for making sure
+  we return the correct property values for codepoints not in UnicodeData.txt
+  (Primary Unicode Data source file)
+  + Note, we have the correct values for most of these other codepoints, but
+    the goal is the get even these currently reserved characters working. Main
+    pluses for this are: 1. Correctness 2. Unicode sometimes sets properties for
+    codepoints based on likely future usage. This would allow better correctness
+    if an older version of MoarVM is used with codepoints from a future versions
+    of Unicode codepoints (as could be the case with OS distributions lagging
+    behind current releases)
+
+JIT:
++ Lexical handler lookups no longer prevent a lot of inlines
++ jit-bisect.pl now uses MVM_SPESH_LIMIT when trying to find pesky spesh bugs
++ Fixed issue with taking a pointer-pointer to a moving object and don't read a NULL struct
+
+Spesh:
++ Extend jit-bisect.pl to use MVM_SPESH_LIMIT
+
+New in 2017.11
+
+Miscellaneous:
++ Show the actual type when "no such attribute" errors occur
++ In MVM_fixed_size_free and MVM_fixed_size_free_at_safepoint debug/error messages
+  use %lu instead of %d, put in missing output in one case
++ Harden event loop against fast cancellations
++ Remove dependency on Perl 5 autodie for compilation (expression engine)
++ Remove duplicate env variable usage line from moar --help
++ Update our internal release guide to include steps for signing tags
++ Profiler: Fix integer literal form for 1LL << 32
++ Add support for a block noinline flag. Used to indicate that a block
+  may never be inlined; will bet set by Rakudo upon spotting uses of things that
+  need the dispatcher
++ Fix occasional old reads in ConcBlockingQueue
++ Put coerce_II op in same order relative to oplist
++ Retry in certain cases of EINTR in mvm_fileno, read_bytes,
+  read_one_packet, socket_write_bytes, socket_connect and socket_accept
+
+Unicode:
++ Fix uppercase letters not giving Lu for the General_Category
++ collapse_strands with memcpy if all strands are same type (4x faster for strands of same type)
++ Fix bug causing utf8-c8 synthetics to combine with other codepoints
++ Optimize MVM_string_concat when the RHS is a single strand that's equal to the LHS's final strand
++ Fix+add comments for strand concat optimization
++ Speed up join of longer strings by a significant amount by concating multiple
+  times if there are more than 300 graphemes per string on average or there are
+  less than 4 pieces and more than 150 graphemes per string.
++ join: factor code into join_get_str_from_pos() function
++ Make sure General_Category 'Cn' codepoints match with C enum
++ Resolve unassigned codepoints as the default property values in MVM_unicode_get_property_str
++ Add an additional check that the "bases" of the strands are the same length
+  before checking if they're equal in string_from_strand_at_index.
++ Error message improvements to MVM_DEBUG_NFG #ifdef for synthetics
+
+JIT:
++ JIT compile getarg_*, trunc_i16, param_rp_s, getrusage, coerce_II op,
+  getexcategory
++ Fix labeling off-by-one causing try/catch on some frames to fail
++ Mark nativeinvoke_* noinline to enable JIT compilation
++ Treat NULL strings correctly in JIT compiled native subs
++ JIT compile native calls with up to 3 UTF-8 string arguments
++ JIT compile native calls with integer rw arguments
+
+Iter:
++ Don't segfault when MVM_iter on type object
++ Handle unsigned types to switch in MVM_iter()
+
+Spesh:
++ Fix spesh dropping MVM_SPESH_ANN_DEOPT_ONE_INS annotations
++ Include reason when we cannot inline in the debug output
+
+Math:
++ If dividing by 1 in MVM_bigint_div, just return the numerator
++ Make sure both objects are the same type when short-cutting division by 1 in MVM_bigint_div
++ Move assignment after MVMROOT in MVM_bigint_from_bigint
+
+libuv:
++ Use uv_fs_copyfile in MVM_file_copy instead of manually opening a handle and
+ using and using uv_fs_sendfile to copy
++ Bump libuv to version 1.15.0
++ Make sure to close uv_timer handles after they are canceled
+
+Garbage Collection/Memory
++ Fix unneeded GC blocking in loop
++ Fix pointer arithmetic in MVM_fixed_size_realloc_at_safepoint with a cast
++ Convert realloc plus memset 0 to recalloc in MVM_sc_set_object
++ FSA size debug: cooperate better with valgrind
++ Support FSA_SIZE_DEBUG in MVM_fixed_size_realloc and *realloc_at_safepoint
+
+MVMROOT:
++ Add MVMROOT2..MVMROOT5 macros to make rooting multiple variables easier
++ Add a missing MVMROOT to MVM_bigint_from_bigint
++ Fix HLL representations of CArray elements out of sync after native calls
++ Add missing MVMROOTs to MVM_bytecode_finish_frame and prepare_and_verify_static_frame
++ Add missing MVMROOTs around managed mutex acquire in MVM_serialization_demand_code,
+  MVM_serialization_finish_deserialize_method_cache, MVM_serialization_demand_object
+  and MVM_serialization_finish_deserialize_method_cache
+
+New in 2017.10
+
++ Unix socket support has been added
++ Add new DynASM version as submodule
++ Removal of Configure.pl --lua and --has-dynasm options, compiling with these
+  included 3rdparty libs is now required
++ Remove build dependency on Perl 5 Test::Exception module
++ Make a fast path for VMArray splice using memcpy
++ Add a few missing casts to MVMObject *
++ Cache the ENV var hash after first access
++ Improve MVM_dir_cwd() error message
++ Fix missing rooting/barriering in C[PP]Struct
++ Fix missing MVMROOTs in type parameterization handling
++ Fix returned tcp port values for async sockets (ntohs).  See RT#132135.
++ Probe for gcc -Werror=* support. This allows building MoarVM on older GCCs.
++ Fix issues with FreeBSD build, including adding new libuv file to Makefile.in
++ Protect parameterization additions with a mutex and fix for parametric type race
++ Bump libuv to ver. 1.14.1
++ Add MVM_fixed_size_realloc() and MVM_fixed_size_realloc_at_safepoint()
++ Fix a segfault when trying to bind a p6bigint to a matching attribute in a p6opaque
++ Include the type of unhandled register in error messages
+
+NativeCall:
+  + Factor out callback thread finding so code is now shared between libffi and dyncall backends
+  + Make native callback thread finding more robust
+  + Stash native thread ID after GC unblock
+  + Many NativeCall functions can now be JIT'd
+
+JIT:
+  + JIT compile native calls with VMArray arguments
+  + Basic JIT of lock/unlock
+
+  + Support unsigned ints when JIT compiling native calls
+  + Move null check into getdynlex func and remove bare null from getlexrel and getlexreldyn
+  + Don't allow low-level null from getdynlex
+  + Remove duplicate typedef for MVMJitCompiler
+  + getlex_o now returns VNMull rather than null
+
+  + Merge the 'expression tree' JIT compiler backend.
+  + Document the expression template syntax and IR structure
+  + Document tiles
+  + Add jit-bisect tool to help us bisect JIT issues
+  + Add jit-dump tool to compare JIT output between runs
+  + Process annotations on PHI nodes
+
+Frame:
+  + Ensure ->caller/->static_info can't get outdated
+  + Check caller chain before promotion
+  + Set frame->caller up earlier
+  + Add missing MVMROOT of outer/code_ref
+  + Set frame->static_info in allocate_frame
+  + Skip stats for frames beyond spesh max bytecode size
+  + Don't generate log entries for huge frames
+
+Spesh:
+  + Fix possible access to moved object body
+  + Add missing MVMROOT of return value for spesh logging
+  + Don't give internal workers a spesh log
+  + Make "Can't find nc_site value on spesh ins" non-fatal
+
+GC:
+  + Add more GC debug checks to help find ->caller bug
+  + Add debug assert in remove_one_frame
+  + GC block pow_I thread due to it potentially being an expensive call
+  + Mark thread GC blocked when locking file
+  + Update GC debug code for growing nurseries
+  + Avoid a thread yield loop in mark_thread_unlocked
+  + Catch frame worklist adds with NULL static_info
+  + Make thread GC nurseries scale to need
+
+Build:
+  + Sort the flags for MAST::Ops before generating them
+
+Strings:
+  + join: factor the concat stability checks into their own function and simplify conditionals
+  + join: special case 8bit flat pieces/separator. 3x faster for joining 8bit flat strings
+  + join: If only one item is to be joined, just return it
+  + join: When everything to be joined is made up of strands, copy strands instead of making one flat string
+  + Fix quaternary collation level's. Fixes RT#132216
+  + collation: simplify quaternary and use define's for the bitmask
+  + Speed up codes op by 10% for synthetic graphemes
+  + In KMP based index set max stack alloca to 3000 bytes (used to be 4096)
+  + Deduplicate the while loops into a #define in KMP based index
+  + Fix utfc-c8 encoding for values > 0x10FFFF and unicode surrogates
+  + Fix concat bug with utf8c8 strings, flattening utf8c8 synths
+  + Use the FSA for a temp alloc in MVM_string_join
+  + Use FSA to allocate memory in NFA
+  + Change realloc condition in MVM_string_utf8_decode to avoid unneeded reallocs
+  + Add hex digits to the end of non-unique Unicode names (i.e. <CJK Ideograph-6183>)
+  + Update Unicode Emoji to version 5
+  + Download all emoji files and generate UCD for Emoji 4 and onward
+    + Since Emoji names in Unicode are not guaranteed to be 100% stable, we read from
+      version 4 onward to ensure full compatibility with older MoarVM versions and
+      Emoji versions
+  + Add info about planned features to Collation docs (Language/natural sort)
+
+Windows:
+  + Fix ->seekable detection on TTY handles
+  + Fix definition of MIN causing Windows issue
+  + Pass user32 lib to build on Windows
+  + #include ws2tcpip.h in syncsocket.c
+
+MacOS:
+  + Only include libuv posix-hrtime on *BSD not Darwin, was causing some versions
+    of MacOS not to build
+  + Fix seekability detection on MacOS
+
+Solaris:
+  + Solaris doesn't have memmem() so use the 3rdparty/FreeBSD one
+  + Fix segfault on Solaris due to the undefined behavior of passing NULL to print
+
+FreeBSD:
+  + + Fix getaddrinfo failing with EAI_HINTS on FreeBSD
+
+New in 2017.09.1
+
++ Assign variable in optimize_bb loop on its own line for clarity
++ Revert "Fix errors when running `make realclean" to unbreak build
+  using nmake
+
+New in 2017.09
+
++ Allocate async process read buffer based on amount last read, with a
+  minimum size limit
++ Implement the Knuth-Morris-Pratt string search algorithm
++ Add error string to 'failed to resolve' exception
++ Fix usage of ARG5 in JIT on Windows to use stack instead
++ JIT param_rp_i and param_rp_o
++ Fix calculation for maximum array size
++ Correct ==/= mistake in container optimization
++ Ensure strings created with MVM_string_repeat are in NFG form
++ Avoid evaluating arguments to MVM_ASSERT_NOT_FROMSPACE when it's disabled
++ Add up to date string documentation
++ Remove old strings.markdown documentation file
++ Speed up `index` 9x when Haystack is strand, needle is 1 long
++ Add new cached grapheme iterator
++ Always cache even for flat haystacks with KMP
++ Generate stacktraces on Travis CI when getting a segfault
++ Add MVM_DEBUG_NFG in more places
++ MVM_string_utf8_decodestream: free the buffer on malformed UTF-8
++ Only run NFG_CHECK on concat result that *should* be normalized
++ Revise some comments in MVM_string_is_control_full()
++ Make sure MVMROOT'd pointer is initialized as NULL
++ Align MVM_TELEMETRY_LOG usage statement
++ Align --tracing usage statement
++ Update Unicode database for Unicode 10
++ MVM_IS_32BIT_INT(i) with explicit casts
++ JIT eqat(ic|im|icim)
++ Building .dasc files depends on dynasm version
++ Add minimal 'dynamic array' library using macros
++ Make the JIT Graph use dynamic arrays
++ Cleanup JIT graph after use
++ Replace explicit JIT function return frame check
++ Wrap dasm_State in MVMJitComiler structure
++ Fix unlikely but possible stack overflow from user input
++ Allow MVM_string_get_grapheme_at_nocheck to be inlined
++ Make `eqat` 1.7x-2.5x faster
++ Fix indentation of switch in substrings_equal_nocheck
++ Use PRIi64 macro instead of %lld in MVM_coerce_i_s
++ Replace all uses of sprintf with snprintf
++ Consistently use MVMuint16 for was_multi
++ Add some explanation of GET_REG and cur_op to interp.c
++ Use < or <= sign for all conditionals in strings/ops.c
++ Rework MVMNFGSynthetic to not store base separately
++ Only use MVMGraphemeIter_cached for strands in KMP index
++ Split out JIT compiler init/deinit
++ Organise architecture-specific JIT source files
++ Check return status of DynASM
++ Remove JIT intermediates in make clean
++ Add 'POP' dynamic array method
++ Flush log on oops
++ Refactor labelling in JIT
++ Add spesh iterator and replace JitGraphBuilder
++ Fix leak of JIT graph
++ Simple fix for duplicated labels
++ Use VECTOR macro arguments only once if possible
++ Add vector SHIFT method
++ Enable JIT breakpoint insertion
++ Use single DynASM build target
++ Compile less with --no-jit
++ Add old-style suffix rule for dynasm compilation
++ Atomic increment not required for JIT sequence nr
++ Move size check into COPY_ARRAY
++ Correct buffer handling in UTF-8 fast->slow path
++ UCD: For sequences, convert from \x{ } to the Unicode codepoints
++ Flush standard handles at exit
++ Flush output buffer where needed
++ Ensure write to unwritable handle fails right off
++ Don't try and sync when flushing is enough
++ Better if_o/unless_o optimization in some cases
++ Do dead BB elimination pass after branch deletion
++ Optimize MVM_string_gi_move_to
++ Don't decont native refs when spesh logging
++ Handle native refs better in spesh stats
++ Support spesh multi resolution involving nativeref
++ Set facts on nativeref deconts
++ A little refactoring of second optimization pass
++ Remove fact copy we most likely don't now need
++ Re-flow and better explain set elimination code
++ Fix bug in gi_move_to if not starting at 0
++ Introduce a binary format for heapsnapshot, wtih snapshots at the beginning
+  of the file
++ Immediately write heap snapshots to file instead of keeping them around in
+  memory
++ Write parts of types/static frames/strings incrementally into heap snapshot
+  file
++ Add gc_describe functions for new spesh data structures
++ Use grapheme iterator cached for ignorecase/ignoremark index ops
++ Take more care when eliminating set inside inline
++ Re-compute dominance tree before stage 2 opts
++ Add a reliable locals count for inlines
++ Move throw -> goto optimization to second pass
++ Mark GC blocked when acquiring I/O mutex
++ Only use grapheme iter cached if the Haystack is a strand for index*
++ Don't try to duplicate unreachable handlers on inline
++ Ensure gi->start is set to 0 for flat strings in MVM_string_gi_init
++ Fix a leak in CArray REPR
++ Merge Full Unicode Collation Algorithm Implementation
++ Remove unneeded file from UCA implementation
++ Nativecall: fix invalid pointer creation
++ Fix ignoremark with Prepend characters and ordbaseat op
++ For degenerate Synth's with Prepend and Extend set base cp to 1st cp
++ Fix case change when base cp isn't the first cp in synthetic
++ Fix elems of ConcBlockingQueue REPR
++ Implement getrusage op
++ Add documentation on UCA collation implementation
++ Include debug names in some wrong REPR errors
++ Fix MVMROOT in socket port/host code added in last release
++ In README, note that release tarballs won't work out of the box and point to
+  where to get working ones
++ Expose number of locks held by a thread through an op
++ Add missing concreteness checks in thread ops
++ Fix errors when running `make realclean
++ Store smallint value in 64bit if we negate them later
++ Fix segfault when compiling nqp with musl as libc
++ Avoid recursion in optimize_bb() when only 1 child node
+
+New in 2017.08.1
+
++ Fix regression in Windows JIT build
++ Remove broken JIT of parameter operations
+
+New in 2017.08
+
++ Dynamic optimization moved to a worker thread
+    + Threads now write sequential logs into a log buffer, and send it to the
+      worker thread in a concurrent queue
+    + Quota of logs to avoid excessive memory use, with a boost when entering
+      a new compilation unit for the sake of OSR
+    + Added MVM_SPESH_BLOCKING environment variable to allow for reproducible
+      specialization results when debugging
+    + Reworked installation of specializations
+    + Reworked OSR implementation to account for specialization being done on
+      a worker thread
++ New statistics model for making better specialization decisions
+    + Frames carry a correlation ID to allow reconstruction of call stack and
+      analysis on the specialization worker thread
+    + Produce specializations based upon most common occurring types, not just
+      those sampled immediately after passing a threshold
+    + Megamorphic code gets a non-type specialization and may be JIT-compiled
+    + Remove hard limit on spesh candidate count
+    + MVM_SPESH_DUMP updated to show statistics and planned specializations
+    + Updated log analysis and guard insertion to use the new statistics model
++ New argument guard, based around a tree, which means less checks need to be
+  performed when deciding on with specialization to run
++ Add dumping of new argument guard structure
++ Log time that specialization work consumes
++ Add a script to sum up logged spesh times
++ Better organization of MVMInstance and MVMThreadContext fields
++ Removed now-unused cur_usecapture field
++ Avoid passing a real NULL as an object argument in stack unwind handling
++ Disable spesh in initial load/deserialize; there's no useful data at this
+  point
++ Add thread ID range check to GC debug mode
++ Deduplicate code from MVM_string_indexing_optimized
++ Start off collapsing strands as 8bit instead of 32bit
++ Concatenation improvements
+    + When concat needs normalization only normalize one section
+    + Don't trigger re_nfg on concat for base character + combiner
+    + Add functions for iterating the codepoints of a grapheme
+    + Don't re_nfg when last_a or first_b are synthetics in concat
+    + Don't take the no re_nfg shortcut if a repetition contains a synthetic
+    + Don't do re_nfg shortcut if either a or b are repeats
+    + Use MVM_string_graphs_nocheck when able in concat
+    + Fix conditional to check first instead of last strand of string b
++ Enable native callbacks on different threads
++ Fix double-decrement of unused args in inlining
++ More detailed dump of spesh slots
++ Don't NULL out spesh slots; they may be re-used
++ Make JIT include SC write barriers
++ Stronger validation of code objects in optimizer
++ Refactor code into iterate_gi_into_string() to reduce code duplication
++ Move collapse_strands() after iterate_gi_into_string()
++ NULL out registers on re-OSR
++ Only devirtualize REPR funcs in JIT when concreteness is known
++ Fix JIT of nqp::ordat and nqp::ordfirst
++ Update TinyMT to version 1.1
++ We always have threads now (thanks to specializer worker), so remove single
+  threaded VM instance lock avoidance paths
++ Improve GC thread sync-up
+    + Simplify handling of the thread list
+    + Introduce GC orchestration mutex/condvars, and use them to avoid busy
+      waiting when synchronizing threads for GC
++ Avoid many array searches for SC code refs
++ JIT param_sp and param_sn
++ Inability to open telemeh log shall not be fatal
++ Output spesh worker info on telemetry channel
++ Size of MVMFrame reduced
+    + Eliminate effective_handlers field in MVMFrame
+    + Eliminate effective_bytecode field in MVMFrame
+    + Add function to encapsulate special return setup
+    + Move special return into a frame extras
+    + Move continuation tags into frame extras
+    + Move invoked_call_capture to frame extras
+    + Move dynamic lexical cache to frame extras
+    + Eliminate throw_address from frames
+    + Force MVMReturnType to be a single byte
+    + Toss never-used nameds re-use logic
+    + Eliminate need to memset MVMFrame
+    + Remove historical, now-unrequired, nullings
+    + Use a bit field for named args used when possible
++ Improve NFA memory performance
++ Small optimization to string_equal, remove repeated checks
++ Remove two invoke handler functions we don't need
++ Remove long-unused newlexotic/lexoticresult ops
++ Remove now-dead newlexotic functions
++ Remove now-unused pool_index in MVMStaticFrame
++ Eliminate now-unused Lexotic REPR, lexotic cache
++ Remove a dead field
++ Remove unused gotolexotic function
++ Move spesh data into a separate object from MVMStaticFrame, for less memory
+  use and better GC performance
++ Break MVM_sc_get_sc into inline and slow path
++ Delete unused var in MVM_string_ascii_encode_substr
++ Avoid range check on every SC object access
++ Delete unused var in MVM_string_latin1_encode_substr
++ Fix MVM_string_compare to support deterministic comparing of synthetics
++ Disable JIT when we're not allowed to make memory executable
++ Have MVM_string_codes iterate the string with codepoint iterator
++ Speed up attribute reads during invocation
++ Document the various op adverbs
++ Reduce duplication and simplify logic in invoke
++ Move checking part of force_to_heap into an inline
++ Allocate frames on heap that tend to need promotion anyway
++ Improve deopt logging output
++ Append, not prepend, moved deopt one annotations
++ Turn decont into a deoptonepoint and insert guards after decont
++ Store deopt one target directly in bytecode rather than calculating it each
+  time
++ Implement speculative pre-selection of specializations and inlining based on
+  guarding against the invocation target
++ When inlining, replace receive instruction instead of send instruction, to
+  better cope with register re-use
++ JIT pow_I
++ Validate range of branch target in spesh code-gen
++ Anchor inlinee handlers to inliner entry
++ Fix and expand dead basic block removal
++ Remove duplicate use of named arg checking
++ More sophisticated named arg handling in spesh, removing sp_namedarg_used op
++ Make it possible to cancel an async socket reader
++ JIT rand_I and also give it a smallbigint path
++ Ensure that serialized padding bytes are 0
++ Avoid uninitialized bytes in default tables
++ Avoid uninitialized bytes at the end of serialized tables
++ Add -Werror=pointer-arith for gcc
++ Put hard upper limit on bytecode size to optimize
++ Move annotations multiple basic blocks if needed
++ Eliminate "blocked by alias" propagation checks
++ End basic blocks after all throwish/invokish
++ Extra fflush so spesh log is written before crash
++ Ensure frame handler start/ends are BB boundaries
++ Don't explode on spesh dump when no facts
++ Cope with extra successors when inlining
++ Factor out and re-use dead BB elimination
++ Allow for GOTO handler to become unreachable
++ More precise CFGs for control exception handlers
++ Add indexim_s op and improve/fix bugs in eqatim_s
++ Further harden against removed handlers
++ Add debugging aid for spesh preselection
++ Make rebless deopt stack top frame also
++ Bump usage of writers in deopt instructions
++ Start storing/using static frame in inline table
++ Use register holding code ref for deopt purposes
++ Can never inline frames declaring state vars
++ Correct handler order when inlining
++ Implement inlining of basic lexical lookups
++ Tune the inline size
++ The listen callback shall also push socket and peer IP and port
++ Don't set a bit we're meant to be clearing in GC gen2 promotion
++ Harden listen_cancel against dupe calls
++ JIT nativecallcast, trunc_i32, extend_i32
++ Make sure the libffi callback can be reused
++ JIT the create op
++ Check ffi_closure_alloc() return value
++ Implement atomic ops
+    + Provide a way to have an int type sized to the architecture's atomic
+      size
+    + Implement cas for Scalar references and native integer references
+    + Implement atomic load and store for Scalar references and native integer
+      references
+    + Implement atomic increment, decrement, and add for native integer
+      references
+    + Provide an op for doing a full memory barrier
+    + JIT of the new atomic ops
++ Fix a bug in index/eqat(im) and in ord_getbasechar
++ Add nqp::coveragecontrol op
++ Remove two more unneeded strlen from nativecall.c
++ Only foldcase the needle for ignorecase operations
++ Remove impossible less than zero checks on unsigneds
++ Add GC debug check on frame heap promotion
++ Correct an MVM_ASSIGN to barrier the right target in continuation invocation
++ Root thread object while creating thread context
++ Correct invokewithcapture GC handling
++ Extra GC debug checks after frame promotion
++ Blacklist unhandled param ops in spesh args handling
++ Add hostname to failed to resolve error
++ JIT param_rp_o and param_rp_i
++ Introduce NFG_CHECK which checks string is in NFG form
++ Fix concatenation bug when renormalization needed
++ JIT setcodeobj and captureinnerlex
+
+New in 2017.07
+
++ Full Unicode 9.0 and Emoji 4.0 text segmentation support
+    + Improvements to segmentation of Emoji w/ GCB=Other
+    + Use GCB instead of HST to avoid property lookup for Hangul
+    + Reorder conditional in maybe_hangul() to be more clear
+    + Work Hangul grapheme segmentation into GCB switches
+    + Don't break after ZWJ for Emoji=True + GCB=Other
++ Make string_index 16% faster for non-identical string types
++ Greatly reduce the cases when string concatenation needs renormalization
+    + Use normalize_should_break to decide if concat needs normalization
+    + Rename should_break to MVM_unicode_normalize_should_break
+    + Fix memory leak in MVM_nfg_is_concat_stable
+    + If both last_a and first_b during concat are non-0 CCC, re-NFG
++ Improve the speed of normalization. Improves speed of slurping non-ASCII Unicode files
+    + Speed up ccc by making ccc_relative using integer prop lookup
+    + Rename is_control_beyond_latin1 to is_control_full
+    + Use MVM_string_graphs_nocheck in more places throughout strings/ops.c
+    + Rename relative_ccc to MVM_unicode_relative_ccc
++ Remove arbitrary string repeat limit
++ unicmp_s improvements
+    + unicmp_s can now reverse any of the collation levels
+    + Handle additional possible cases in collation
+    + Store collation levels in an array not a single value
+    + Handle quaternary collation level being both enabled and reversed
++ Improved instruction and basic block deletion handling to allow further code
+  elimination
++ Only compile in \n -> \r\n on Windows
++ JIT-compile write_fhb and encode ops
++ Include return type facts for the encode op
++ Implement setbuffersize_fh op, which sets up output buffering for synchronous
+  file handles
++ Fix error message for decodersetlineseps getting non-decoder
++ JIT open_fh, close_fh, read_fhb, decoderaddbytes, fc, chr, getcp_s, and
+  objectid
++ Remove synchronous process support
++ Add new asynchronous permit mechanism, which can be used to provide delayed
+  starting of reads and back-pressure
++ Implement permits handling for asynchronous processes
++ Convey file descriptors of stdout/stderr pipes when spawning an asynchronous
+  process
++ Add debug helpers: MVM_dump_bytecode, MVM_dump_bytecode_stackframe and
+  MVM_dump_bytecode_staticframe
++ Add gdb command to give a history of spesh optimization decisions
++ Improve specialization dump: less trailing spaces, chop up facts list by
+  register
++ Empty out instruction list of removed basic blocks
++ Eliminate duplicate code in utf8 decoder
++ Fix overflow in uniprop lookups
++ Fix ASCII streaming decode error handling
++ Make illegal synthetic an oops, not a panic
++ Make some fixes to the Unicode data file downloader
++ Use MVMint64 for MVM_string_chr (oplist/function mismatch)
++ Fix an accidental nested redeclaration in process handling
++ Tweak the format of oops messages
++ Improved debug output for serialization errors
++ Fix ARM build
++ Clear cached dynamics when taking continuation
++ Missing MVMROOT during an allocation
++ Remove never-assinged use_mode_frame field from CallCapture
++ Remove now-unused cur_usecapture per thread
++ Eliminate mode flag from CallCapture
++ Fix invokewithcapture to keep the used capture alive
++ Always copy callsite into an MVMCallCapture unless it's interned
++ Remove now-unrequired effective_callsite
++ Add decodertakecharseof op
++ Copy correct length in get_all_in_buffer
++ Fix ctxcode op to not leak a NULL
++ Fix decoder typos
+
+New in 2017.06
+
++ Make coerce_s_n work more like the Perl 6 Str.Num method
++ Eliminate socket string I/O
++ Re-implement synchronous sockets without using libuv, enabling them to be
+  passed between threads
++ Add ability to get port from already bind-ed socket
++ Add cpucores op to get the number of CPU cores
++ Fix inconsistency in decode stream take bytes API, so it returns null if
+  that number of bytes is not available
++ Fix memory leak in syncpipe
++ Removed unsed header file in threads.c
+* Remove unused args to bind_stdio_handle
++ Remove char-level I/O ops and the functions they called
++ Remove char-level I/O from synchronous I/O vtables
++ Remove unused encoding option in dir handle
++ Re-implement print/say debug output ops to encode and then use binary I/O
++ Eliminate use of libuv in synchronous file handles
++ Switch standard handles to use the new synchronous file handle code, which
+  means they can now be safely used from multiple threads also
++ Remove unused ->filename slot of syncfile
++ Debugging aid for introspecting P6opaque objects
++ Support merge_bytes in async proc ops, for reading STDOUT and STDERR
+  together
++ Support binding handles to file descriptors in async procs
++ Fix off-by-one in profiler node GC
++ Add string eqat/index ignorecase+ignoremark functions
++ Add new eqaticim_s and indexicim_s ops ignorecase+ignoremark
++ Use norm instead of n for the normalizer variable
++ Add improved support for GCB=Prepend
++ Improve Regional Indicators support during normalization
++ Serialize a Decoder REPR object into null, so incidental file handle
+  serialization in Perl 6 does not blow up
++ Improve named argument optimization, so we can specialize and throw out
+  instructions in more cases
++ JIT decodertakeline
++ Fix missed opportunity to run JITted code
++ Have inline log note what couldn't inline also
++ Remove successor when optional named argument is passed, so default code
+  can be eliminated
++ Flag writers that die when a basic block is eliminated, and disregard them
+  in PHI node analysis, provide more precise type information
++ Make a basic block elimination pre-pass before the main optimization work
++ Set dead writer when deleting instructions also, to further aid PHI merges
++ Track which basic blocks are part of a jump list
++ Delete pointless goto instructions (those at the end of a basic block that
+  simply go to the next block)
++ Remove bad Windows quoting option async proc code
++ Actually log inlines to stderr as the comment up top claims
++ Make find_separator only look at the last chars, which is far cheaper
++ Add help text for environment variables to Configure
++ Move NFG initialization into nfg.c
++ Cache CRLF grapheme value
++ Cache maximum separator length, to save recomputing it for every line that
+  is read
++ Cache a list of final separator graphemes, for faster stopper detection in
+  streaming decoders
++ Introduce a max final grapheme codepoint filter, for faster stopper
+  detection in streaming decoders
++ Add a UTF-8 decoding fast-path that doesn't need to go through the full
+  normalizer
++ Keep last freed chars buffer handy for re-use in streaming decoder
++ Make a smarter guess at decode result buffer size in streaming decoder
++ Don't copy when we can steal decoder output, saving a memory copy in most
+  line reading operations
++ Various micro-optimizations to UTF-8 decoding fast path
++ Fix newline translation in various encoding's streaming decoder
+
+New in 2017.05
+
++ Mark profiler call graphs iteratively instead of recursively
++ Keep around line number annotations in spesh, for more accurate source
+  position information for coverage data in specialized code
++ Introduce "telemeh", a high-precision-time low-impact logger
++ Fix error reporting in chdir
++ Fix memory leak on error in chdir
++ Travis: readlink doesn't have `-f` on MacOS so make our own solution
++ Fix bug in index ignorecase and equal at ignorecase
++ Fix all known remaining bugs in indexic and eqatic
++ Zero slot when popping a VMArray, to avoid junk reads if it grows again later
++ Add can_fit_into_8bit funct, put logic used many places into one function
++ Use -1 instead of 0 when long right-shifting negative smallints
++ Remove workaround for tommath issue #56, which is now fixed upstream
++ Don't crash on reading a closed dir handle
++ Remove deprecated async string I/O ops
+
+New in 2017.04
+
++ Shorten the nursery when creating large bigints, to bring GC forward and
+  resolve excessive memory use
++ Use correct format for repeat/concat errors
++ Fix bug in indexic_s if expanding codepoint is the last codepoint
++ Special case "\r\n" in MVM_nfg_is_concat_stable for performance reasons
++ Further optimize MVM_nfg_is_concat_stable to speed up concatenation
++ Do not set use rpath if installing into proper system locations
++ Optimize passes_quickcheck_and_zero_ccc to be much faster
++ Give this_repr constants more meaningful names to aid debugging
++ Streamline MVM_bigint_radix and MVM_radix for Nd Unicode #'s
++ Fix case-insensitive string compare bug when synthetics are in the haystack
++ Improve description for "should eventually be unreachable" error
++ Correctly detect and handle overflow in mp_get_int64
++ Split into mp_get_int64 and mp_get_uint64
++ Only allocate and normalize for cp's that require it in MVM_string_chr, and
+  short-circuit Unicode property test for codepoints below 0x300
++ Provide a better error when failing to encode surrogates in UTF-8
++ Add a cast to suppress a compiler warning in strings/ops.c
++ Factor out code from equal_at_ignore_case for use in index_ignore_case also
++ Use both hex and decimal for UTF8 encoding error messages
++ Add parentheses in various places to suppress compiler warnings
++ Use PRIu64 in fprintf's to fix compiler warning about incorrect types
++ Add a check that introspection->is_tty is not NULL, avoiding a crash
++ Mention debug_name in errors about uncomposed repr
++ Add new --coverage option for Configure.pl
++ First prototype of a per-line coverage reporter, enabled by setting
+  MVM_COVERAGE_LOG
++ Cope with a native type with no nativesize, but signedness
++ Remove two functions in normalize.c that have been superseded
++ Give collapse_strands a 5.4% speed boost under some workloads
++ Add MVM_string_graphs_nocheck funct, use it in places we previously already
+  checked
++ Have a two-part loop in collapse strands to make loop tighter when possible
++ Implement serialize/deserialize in VMHash REPR.
++ Use memmem in string index. Uses Knuth-Morris-Pratt on glibc, and adds the
+  FreeBSD memmem.c for use on Windows
++ Fix a join NFG bug when there was an  empty string and an empty seperator
++ Reorder MVMStaticFrameBody to save 16 bytes according to pahole; similarly
+  save 16 bytes in MVMCompUnitBody, 24 bytes in MVMJitCode, 8 bytes in
+  MVMIOSyncStreamData, SerializationRoot and SerializationReader
++ Remove arbitrary and small length range check for reading bytes from a file
++ Remove unused defines in threadcontext.h
++ Greatly reduce contention in the fixed-size allocator for multi-threaded
+  programs, giving up to 40% speedup in some cases
++ Add continuous coverage analysis to Travis builds, along with other Travis
+  improvements
++ Mark thread GC blocked when doing synchronous writes
++ Add missing MVMROOT when reading bytes, which could result in occasional
+  data loss
+
+New in 2017.03
+
++ Fix some missing variable initializations
++ Set effective_handlers in context-only frame
++ Streamline code in hash computation, hopefully fixing a Coverity warning
++ Detect and throw on over-size array
++ Put in a limit for codepoints in a grapheme, to avoid various overflows
++ Fix a missing NULL check at end of profiling
++ Panic when a new thread context can't create an uv_loop
++ Better handling of out of memory when creating a thread
++ Another attempt at silencing the pthread_yield warnings
++ Missing GC block marking in event loop starting, fixing a deadlock
++ Fix CArray marshalling of type objects
++ Provide a way to put Decoder in nl-translate mode
++ Ensure Decoder REPR never sees concurrent use
++ Debug option to detect concurrent VMArray use
++ Encode strings as UTF-8 in MVM_unicode_string_from_name
++ Reword exception message for read() outside original thread
++ Check that results of repeat/concat fit in an MVMString
++ Fix div_i JIT round to negative infinity
++ Ignore SIGPIPE by default
++ Only start readers if a process spawned OK
++ Remove deprecated char-mode async proc reading
++ Signal error to stdout/stderr on spawn failure
++ Do gen2 sweep before letting stolen threads go, fixing occasional SEGVs
++ Turn libtommath dependency into a submodule, use a MoarVM fork
++ Update libtommath fork to have expmod hang fix
++ Change MVM_string_equal_at_ignore_case to use fc
++ Fix MVM_string_equal_at_ignore_case when folding the haystack changes length
++ MVM_string_equal_at_ignore_case no longer applies a case changing
+  operation to the entire haystack. It now only changes case for as
+  much of the haystack length as is needed. ~30%+ or faster depending on on
+  haystack length.
++ Mention debug name and REPR name in "requires obj with repr X" errors
++ Remove unneeded variable in MVM_string_index
++ Add MVM_string_index_ignore_case function and indexic_s op
++ A range of improvements to the MoarVM GDB plug-in
+
+New in 2017.02
+
++ Fix format strings that warn during compile
++ Implement missing cleanup of async task handles, fixing a memory leak
++ Make Unicode sequence and codepoint name lookup case-insensitive
++ Add Unicode sequences from NamedSequences.txt in the Unicode database
++ Remove second declaration of MVM_frame_destroy
++ JIT MVM_radix()
++ Make radix and radix_I 50% faster with Unicode Nd
++ Add East_Asian_Width prop
++ Fix memory leaks in synchronous sockets
++ Fix crashes in socket connect error handling
++ Don't leak memory in STable repossession
++ Missing MVMROOT around a lock acquisition
++ Refuse to form an NFA with a zeroed to-state
++ Add data section for JIT code, and use it for extop 'fake' registers
++ Correct typo in NFG trie node struct name
++ Fix overflow in div_i op
++ Implement support for synthetic graphemes in MVM_unicode_string_compare
++ Implement configurable collation_mode for MVM_unicode_string_compare
++ Use LDFLAGS in ld invocations
++ On Windows, create UTF-8 encoded argv upon program entry
++ On Windows, populate environment hash from Unicode environment
++ Some additional heuristics to cut down on cross-thread write log output
++ Fix abs_n op for negative zeros
++ Sort out semantics of closed async sockets
++ Fix overflow on 32-bit systems in is_full_collection()
++ Rename MVMArray file and constant to VMArray
++ Remove bogus indication that MoarVM builds on `cygwin`
++ Use utf8 for unicode_db files
++ Fix invalid read when GC was triggered in the string repeat op
++ Don't call MVM_string_graphs twice in indexing op, plus cleanup
+
+New in 2017.01
+
++ Extract spesh block allocator from spesh, for wider use
++ Add a number of missing MVMROOTs, which could lead to outdated pointers;
+  also removed some unrequired MVMROOTs
++ Fix arg_flags allocation sizes
++ Remove an obsolete path from ldrpath
++ Check lexical accesses in GC debug mode 2 also
++ Add a #define to turn on inline logging
++ Fix callstack reset bug, which could corrupt deeply recursing callstacks
++ Don't allow re-compose of a P6opaque
++ Add a new unicmp_s op, which compares using the Unicode Collation Algorithm
++ Make sure we generate all values of the Line_Break property
++ Re-implement utf8-c8 encoding, fixing bugs and ensuring that non-NFC input
+  will round-trip properly also
++ Implement Bidi_Mirroring_Glyph as an integer property
++ Implement Emoji grapheme breaking and other combined codes
++ Add support for Grapheme_Cluster_Break=Prepend from Unicode 9.0
++ Make sure we break after Prepend if it's a control character
++ Add a script to download the latest version of all of the Unicode data
++ Missing rooting GC in rare exit handler case
++ Implement new setdispatcherfor op and add JIT for it
++ Use much faster atoi function in normalizer; 14% less CPU use when slurping
+  a file in UTF-8 encoding
++ For Decompose_Type, use int lookup instead of str for better performance
++ Fix heap snapshot crash on eventloop thread
++ Use /usr/bin/env perl for ./Configure.pl
++ Don't break after ZWJ or for MALE SIGN and FEMALE SIGN
++ Take into account actual allocated size of I/O buffers in gen2 promotion
+  statistics
++ Tweak full collection criteria in heap profiling
++ Free up spesh log slots after specialization, avoiding some leaks
++ Removed the getregref_ ops (unused by NQP or Perl 6)
++ Removed the continuationclone op (unused by Perl 6)
++ Enforce one-shot invocation of continuations
++ Greatly simplify handling of call frame working register lifetimes, leading
+  to consistently shorter lifetimes, less memory pressure, and faster calling
++ Eliminate now-unused `tc` field in MVMFrame, saving a pointer per callframe
++ Simplify args cleanup functions
++ Reduce number of checks in call frame marking, making it faster
++ Implement getstrfromname op, to get named Unicode sequences
++ Fix GC in spesh triggered by managed mutex use
++ Fix data race in inlining extop fixup
++ Fix data race in callsite fixup during inlining
++ Fix data race in string fixup during inlining
++ Fix charname lookups of LINE FEED and CARRIAGE RETURN
++ Remove Unicode 1 names and add Unicode Name Aliases
++ Convert MVM_malloc+memset to MVM_calloc
++ Clean out ancient "remove after rebootstrap" line
++ Fix typo in MVM_CALLSTACK_REGIONS_SIZE's name
++ Fix missing cleanup of managed DecodeStream
++ Have DecodeStrem clean leftover char buffers
++ Fix a typo in decode stream destroy function
+
+New in 2016.12
+
++ Decode Latin-1 and UTF-8 strings to 8-bit width when possible
++ Teach a few string functions to compress results into 8-bit storage
++ Fix for AIX's INFINITY not being a constant
++ Unlink libmoar before (re)installing it
++ Add configuration for AIX
++ Support Perl older than 5.10 for Configure.pl
++ Use "pkgconfig --libs libffi" additionally to --cflags
++ Fix powerpc detection on AIX (gcc)
++ Make multidim error messages say they are multidim
++ Add comment about where to find UNIDATA
++ Implement captureinnerlex op, for fixing QUIT/LAST phaser scoping in Perl 6
++ Fix mis-sized free in the NFG trie that only showed up in 32-bit
++ Add GC debug helper to "find" a pointer in nurseries/gen2 bins
++ Make ASSERT_NOT_FROMSPACE check fromspaces of all threads
++ Fix missing MVMROOT around an allocation
++ Fix typo in nfg.h comment
++ Fix native callback and GC interaction when embedded
++ Add GC block management functions to the public API
++ Mark throwpayload* as :throwish in oplist
++ Optimize the check for negative bignums
++ Remove useless mp_neg calls
++ Fix premature free of UV socket handles
++ Fix premature handle free in async UDP sockets
++ Add a "check every register access" GC debug mode
++ Provide a #define to disable dynlex caching
++ Provide a #define for deopt logging
++ Invalidate dynlex caches during deopt
++ Fix pow_I when it takes an exponent larger than 2**32
++ Only do MVM_ASSERT_NOT_FROMSPACE in GC debug mode
++ Add a fromspace assertion in finalize
++ Avoid a number of spesh GC invariant violations
++ Panic if we try to GC when speshing/JITing
++ Ensure we don't leak partially deserialized objects
++ Fix unrooted frame around SC object lookup
++ Remove some GC debug code
++ Avoid reading nativerefs in spesh, since it can cause boxing and thus GC
++ Cope with push being used on concurrent queues
++ MVMROOT around putting work on concurrent queue
++ MVMROOT eventloop queue when polling it
++ Do MVM_ASSIGN_REF after block/unblock in concurrent queue
++ Fix more unrooted frame around SC object lookup
+
+New in 2016.11
+
++ Workaround tommath issue #56 which affects random bigint numbers > 32 bits
++ Fix memory leaks in nqp_nfa_run
++ Fix a sizeof arg that allocated a much-too-big buffer for callsite arg names
++ Add missing breaks in MVMString's copy_to
++ Prevent null deref when calling MVM_string_utf16_encode
++ Corrections to mkdir on Windows
++ Introduce MVM_SPESH_LIMIT, which limits how many specializations will be
+  performed; this is useful for debugging which specialized block is to blame
+  for a bug
++ Make sure we never box a NULL filename when creating backtraces
++ Fix the nativecall attribute error messages
++ Remove (non-existent) num16 from error message
++ Make the fixed size allocator provide useful information to Valgrind
++ Implement serialization of SCRef
++ Include file/line of unserializable closure, to aid debugging
++ Add type info when failing to bind an attribute
++ Use ffi_arg type for libffi nativecall return types
++ Handle libffi return type more correctly
++ Work around missing libatomic_ops prototype on s390x
++ Panic when trying to GC a locked mutex
++ Make VM panic output state that a panic occurred
++ Fix JIT code generation bug in nqp::exception
++ Add missing rooting of value pushed to concurrent queue
++ Add src/gc/debug.h dependency to Makefile
++ Mark a thread GC-blocked while it is in native code
++ Have "Cannot * a type object" also outputs the type's debug name
++ Don't reveal partially deserialized method cache
++ Give a bunch of exception ops REPR and debug name output
++ Prevent segfault when null string used as hash key
++ Request POSIX.1.c compliance on solaris
++ Change to use readdir insteal of readdir_r
++ Use GCC on solaris by default
++ give diagnostic output when compiling fails
++ Handle current Solaris compiler not understanding -mt
++ Fixed readdir so it won't check old errno
++ Work around clock_gettime issue on OSX
++ Refactor hashes to no longer need to flatten ropes in string keys
++ Save 8 (64-bit) or 4 (32-bit) bytes per entry in the MVMHash REPR
++ Remove the deprecated flattenropes op
++ Remove now-unused MVM_string_flatten function
++ Don't treat an nread of 0 in libuv read callbacks as an error
++ Bump to latest libatomic_ops
+
+New in 2016.10
+
++ Fix build without libtommath source
++ Make MVM_file_open_fh() throw if the file we opened was a directory
++ Fix bug and memory leaks in MVM_file_open_fh()
++ Add error message for likely MacOS build failure
++ Don't set inheriting process on inherited pipe, fixing a segfault
++ Update to the Unicode 9 database
++ Die on CStruct without any fields
++ Constant-fold unipropcode and unipvalcode
++ Use PRId64 instead of %d for 64 bit int format string args
++ "Cannot unbox type object" error gets debugname and native type info
++ Fix uninitialized arg_names of an MVMCallsite
++ Handle C++ constructors on libffi
++ Fix CUnion get_attribute treating inlined attrs as pointers
++ Fix 32 bit issue with rw args in NativeCall callbacks
++ Use better throw-away type for void nativecalls
++ Gracefully handle a 0 RSS reported by the Linux kernel
++ Fix "Invalid free()" in empty repossessed arrays
++ Make sure we mean "signed char" when we say "char"
++ Fix calculating structure sizes for arm64 and others
++ Disable JIT on x32, since it has a different calling convention
++ Fix pointer size unit in configure message
++ Use set_uint64 in from_num, otherwise we overflow on x32
++ Rewrite mkdir_p api, no function changes
++ Improve nativecall attribute error messages
++ Include debug_name in crossthreadwritelog and serialization errors
++ Deprecate async string I/O ops
++ Deprecate flattenropes op
++ Implement indexingoptimized op (replaces flattenropes, but is not in-place)
++ Fix memory leadk in ord_basechar_at
++ Ensure errno is grabbed before MVM_free is called
++ Make extra sure unlock only happens if lock happened
+
+New in 2016.09
+
++ Do not crash when the container configuration can't be read
++ Correctly calculate the work_size when inlining between compilation units
++ Validate indices of param_ ops and require checkarity before param_*
++ Fix tautological comprison; snprintf returns an int, not a size_t
++ Fix tell for files that haven't been read from
++ Don't allow zero alignment in P6opaque storage spec
++ Index check lexicals when reading static flags
++ Add Decoder REPR and a number of ops that provide access to VM-backed
+  streaming decoding
++ Don't segfault when serializing an uncomposed p6opaque
++ Don't read_int into a size_t which is unsigned
++ Never leak sym_name from nativecall_build
++ Fix a couple of potential leaks in heap snapshots
++ Kick arg_ and argconst_ ops from the correct basic block when inlining
++ Use HASH_FIND_CACHE instead of HASH_FIND in MVMHash
++ Correct wording of named arguments error
++ Bounds check for hints in get_attribute and bind_attribute
++ Use hints for is_attribute_initialized, and null-check repr_data
++ Clean up various unused variables
++ Mark thread GC blocked while accepting a socket to prevent deadlocks
++ Configure.pl now has an explicit use lib "."
++ Fix missing finalization queue cleanup at thread exit
++ Mark SC used in bytecode loading as claimed to avoid keeping them around
+  for too long
++ Fix an error in multi caching of named arguments that could cause lookups
+  to fail and the cache to keep growing
+
+New in 2016.08
+
++ Don't crash in P6opaque on NULL name_to_index_mapping
++ Fix off-by-one in grapheme iterator
++ Block/unblock thread for GC on semaphore wait
++ Mark blocked around some more lock acquisitions
++ Fix various cases of out-dated pointer reads on concurrency control constructs
++ Hold uv_sem_t at a level of indirection, so it won't move in memory
++ Add a flag for PIPE_MERGED_OUT_ERR; fix stdio setup for merge
++ Fix EOF detection when reading files from /proc and similar
++ Fix lost socket listen errors
++ Implement async cancellation completion notifications
++ Add some missing fact dependencies in spesh, fixing some wrong guard eliminations
++ Avoid use of possibly-invalidated decont facts in spesh
++ Remove keep_caller from MVMFrame
++ Correctly NULL-terminate the buffer in MVM_vm_dump_file
+
+New in 2016.07
+
++ Implement a new multi-dispatch cache, structured as a tree, able to
+  hold more entries more memory-compactly, and able to cache dispatches
+  involving named parameters
++ JIT read_fhs op
++ Implement elems REPR function for MVMContext
++ Implement a BB-splitting manipulation function in the optimizer
++ Fix sha1 op to work with null bytes
++ Fix bad interaction between profiling and dead allocation elimination;
+  the presence of allocation logging would prevent the optimization, leading
+  to misleading profiler output results
+
+New in 2016.06
+
++ Serialize the HLL role field of STables
++ Avoid VMNull setup memcpy/loop in specialized frame initialization
++ Stop caching MVMContext on a frame
++ Use frames directly when serializing closures, rather than having to create
+  an MVMContext wrapper for every one
++ Write SC index when deserializing, repossessing, and preparing to serialize,
+  saving a huge amount of linear scanning
++ Only used cached SC index if SC itself matches
++ Remove an unrequired memset to clear the args buffer
++ Inline args preparation into interpreter, and JIT it directly instead of
+  making a call to a tiny function
++ Mark getlexcaller as :noinline
++ Don't lose handlers during multi-level inlines
++ Eliminate loop in P6opaque's get_boxed_ref function, decreasing cost
++ Implement payload throw/handler support
++ Implement callerlex throwing mode
++ Make moar-gdb.py source-able, instead of only autoloadable
++ Fix inlining causing wrong lexical handler lookup
++ Make build in dir containing space work
++ Allow HLL handler for unhandled lexical exception
++ Add debug_name to "cannot iterate X with Y REPR" message
++ Give "this is not a X iterator" more info, too
+
+New in 2016.05
+
++ Use MSVC-provided stdint.h and inttypes.h when possible
++ Improved various error messages to include the debug type name
++ Eliminate call frame reference counts, instead using a linear call stack for
+  frames that never become heap-referenced and using the garbage collector to
+  manage those that do
++ Tune number of gen2 sized bins
++ Improve error reporting in P6opaque's compose function
++ Improved GC debugging support to catch more problems
++ Fix a race between serialization context resolution and garbage collection
++ Add a missing MVMROOT in shell/spawn
++ Fix segfault when trying to serialize an uncomposed P6opaque type
++ Update the build system to autodetect system provided libs
++ Add missing rooting, since the instrumentation level barrier may allocate
++ Fix cleanup of temp roots at thread exit
++ Add missing rooting of exception message in `die`
++ Fix CUnion layout computation GC issues
++ Fix data race in clearing of "in inter-gen set" flag
++ Various improvements and fixes to the spesh_graph tool
++ Add missing optimization of decont_s and decont_u ops
++ Eliminate duplicate MVMContext creation code
++ Fix full cleanup crash: the NFG uses the FSA, so have to destroy NFG first
++ Close dynvar log filehandle in instance destroy
++ Clean up cross-thread write logging mutex
++ Free debug names in STables
++ Free the string_heap_fast_table in CompUnit bodies
++ Free permroot descriptions
++ Free thread's finalization queue in tc destruction
++ Add docs about MVMROOT
++ Fix crash when GCing an ended thread
++ Implement loadbytecodebuffer and loadbytecodefh ops
++ Speed up initialization of non-specialized frames
++ Use varints to make serialization of various integers more compact, reducing
+  size of compiled output
++ Ensure we always produce at least one snapshot when heap profiling
++ Remove debug output when taking heap snapshots
+
+New in 2016.04
+
++ Implement heap snapshots support, exposed through the profiling API
++ Don't mark tc->cur_frame twice during GC
++ Move thread object mark into thread root mark, removing a special case in the
+  main collector
++ Add API for adding a permanent root together with a description
++ Mark thread blocked for GC when doing synchronous reads
++ Make MVM_bigint_from_num jit-friendly
++ JIT coerce_nI as a call to bigint_from_num
++ Set debug_name on a few more built-in types
++ Add REPR API for getting unmanaged size, implement it for many REPRs
++ Fix compile on FreeBSD 9
++ Handle single-char build directory names by changing capture to lookahead
++ Fix performance of reading very long lines
++ Fix utf8-c8 decode crash caused by off-by-1
++ Fix a full vs. partial collection detection bug
++ Factor unmanaged size into promoted bytes.
++ Enhance scheme for deciding when to do a full collect
++ Bail out if HLL name string index is invalid in bytecode unpack
++ Don't try to set flags beyond num_lexicals when reading in call frames
++ Adjust byte count when UTF-16 BOM marker consumed
++ Fix buffer overrun in utf8-c8 decoding
++ Initialize object registers with VMNull when allocating frames, to avoid a
+  number of possible segfaults
++ Fix incorrect boolification of "" under mode MODE_UNBOX_STR_NOT_EMPTY_OR_ZERO
++ Utilize debug_name in nativecall error messages
+
 New in 2016.03
 
 + Fix the build when not bundling libtommath
@@ -522,7 +1819,7 @@ New in 2014.11
   escape, blshift_i,  brshift_i, write_fhs, cmp_I
 + Optimize out a bunch of unnecessary "set" instructions
 + Turn a bunch of const_s + findmeth_s into cheaper findmeth
-+ Implement nqp::closefh_i which retuns the exit code of a pipe
++ Implement nqp::closefh_i which returns the exit code of a pipe
 + Allow nativecasting a CStruct to another CStruct
 + Fix temp register usage in optimize_istrue_isfalse
 + Fix a regression by eagerly deserializing stables/objects
@@ -926,3 +2223,7 @@ New in 2014.02
 + Better estimate and perhaps shrink string memory for UTF-8 decode
 + Added probing to Configure to learn how the compiler does 'static inline'
 + Switched many macros over to static inline functions
+
+New in 2014.01
+
+The first official MoarVM release! Capable of running the 2014.01 release of Rakudo Perl 6, the first one with MoarVM support. (No change log for this initial release, since it's basically "all the things".)

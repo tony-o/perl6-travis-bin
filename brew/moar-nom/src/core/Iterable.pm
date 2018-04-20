@@ -5,8 +5,11 @@
 # Additionally, as .lazy and .eager are about iterator behavior, they are
 # provided by this role. Overriding those is not likely to be needed, and
 # discouraged to maintain predictable semantics. Finally, both .hyper() and
-# .race() are implemented here, and return a HyperSeq wrapping the iterator.
+# .race() are methods to enter the hyper and race paradigm and implemented
+# here, so they can use any Iterable as a source.
 my class HyperSeq { ... }
+my class RaceSeq { ... }
+my role Rakudo::Internals::HyperIteratorBatcher { ... }
 my class X::Invalid::Value { ... }
 my role Iterable {
     method iterator() { ... }
@@ -21,60 +24,59 @@ my role Iterable {
             has Iterator $!nested;
 
             method new(\source) {
-                my \iter = nqp::create(self);
-                nqp::bindattr(iter, self, '$!source', source);
-                iter
+                nqp::p6bindattrinvres(nqp::create(self),self,'$!source',source)
             }
 
-            my constant NO_RESULT_YET = nqp::create(Mu);
             method pull-one() is raw {
-                my $result := NO_RESULT_YET;
-                my $got;
-                while nqp::eqaddr($result, NO_RESULT_YET) {
-                    if $!nested {
-                        $got := $!nested.pull-one;
-                        nqp::eqaddr($got, IterationEnd)
-                          ?? ($!nested := Iterator)
-                          !! ($result := $got);
-                    }
-                    else {
-                        $got := $!source.pull-one();
-                        nqp::istype($got, Iterable) && !nqp::iscont($got)
-                          ?? ($!nested := $got.flat.iterator)
-                          !! ($result := $got);
-                    }
-                }
-                $result
+                nqp::if(
+                  $!nested,
+                  nqp::if(
+                    nqp::eqaddr((my $got := $!nested.pull-one),IterationEnd),
+                    nqp::stmts(
+                      ($!nested := Iterator),
+                      self.pull-one
+                    ),
+                    $got
+                  ),
+                  nqp::if(
+                    nqp::iscont($got := $!source.pull-one),
+                    $got,
+                    nqp::if(
+                      nqp::istype($got,Iterable),
+                      nqp::stmts(
+                        ($!nested := $got.flat.iterator),
+                        self.pull-one
+                      ),
+                      $got
+                    )
+                  )
+                )
             }
-            method push-all($target) {
-                my $got;
-                until ($got := $!source.pull-one) =:= IterationEnd {
-                    if nqp::istype($got, Iterable) && !nqp::iscont($got) {
-                        my $nested := $got.flat.iterator;
+
+            method push-all($target --> IterationEnd) {
+                nqp::stmts(
+                  nqp::if(
+                    $!nested,
+                    nqp::stmts(
+                      $!nested.push-all($target),
+                      ($!nested := Iterator)
+                    )
+                  ),
+                  nqp::until(
+                    nqp::eqaddr((my $got := $!source.pull-one), IterationEnd),
+                    nqp::if(
+                      nqp::iscont($got),
+                      $target.push($got),
+                      nqp::if(
+                        nqp::istype($got,Iterable),
+                        $got.flat.iterator.push-all($target),
                         $target.push($got)
-                          until ($got := $nested.pull-one) =:= IterationEnd;
-                    }
-                    else {
-                        $target.push($got);
-                    }
-                }
-                IterationEnd
+                      )
+                    )
+                  )
+                )
             }
-            method count-only() {
-                my int $found;
-                my $got;
-                until ($got := $!source.pull-one) =:= IterationEnd {
-                    if nqp::istype($got, Iterable) && !nqp::iscont($got) {
-                        my $nested := $got.flat.iterator;
-                        $found = $found + 1
-                          until ($got := $nested.pull-one) =:= IterationEnd;
-                    }
-                    else {
-                        $found = $found + 1;
-                    }
-                }
-                nqp::p6box_i($found)
-            }
+            method is-lazy() { $!source.is-lazy }
         }.new(self.iterator))
     }
 
@@ -89,9 +91,9 @@ my role Iterable {
             has $!iterator;
 
             method new(\iterable) {
-                my \iter = nqp::create(self);
-                nqp::bindattr(iter, self, '$!iterable', iterable);
-                iter
+                nqp::p6bindattrinvres(
+                  nqp::create(self),self,'$!iterable',iterable
+                )
             }
 
             method pull-one() is raw {
@@ -109,43 +111,78 @@ my role Iterable {
     }
 
     method !valid-hyper-race($method,$batch,$degree --> Nil) {
-        fail X::Invalid::Value.new(:$method,:name<batch>,:value($batch))
-          if $batch <= 0;
-        fail X::Invalid::Value.new(:$method,:name<degree>,:value($degree))
-          if $degree <= 0;
+        $batch <= 0
+          ?? X::Invalid::Value.new(
+               :$method,:name<batch>,:value($batch)).throw
+          !! $degree <= 0
+            ?? X::Invalid::Value.new(
+                 :$method,:name<degree>,:value($degree)).throw
+            !! Nil
     }
 
     method hyper(Int(Cool) :$batch = 64, Int(Cool) :$degree = 4) {
-        self!valid-hyper-race('hyper',$batch,$degree);
-        self!go-hyper(HyperConfiguration.new(:!race, :$batch, :$degree))
+        self!valid-hyper-race('hyper', $batch, $degree);
+        HyperSeq.new:
+            configuration => HyperConfiguration.new(:$degree, :$batch),
+            work-stage-head => Rakudo::Internals::HyperIteratorBatcher.new(
+                iterator => self.iterator
+            )
     }
 
     method race(Int(Cool) :$batch = 64, Int(Cool) :$degree = 4) {
-        self!valid-hyper-race('race',$batch,$degree);
-        self!go-hyper(HyperConfiguration.new(:race, :$batch, :$degree))
+        self!valid-hyper-race('race', $batch, $degree);
+        RaceSeq.new:
+            configuration => HyperConfiguration.new(:$degree, :$batch),
+            work-stage-head => Rakudo::Internals::HyperIteratorBatcher.new(
+                iterator => self.iterator
+            )
     }
 
-    method !go-hyper($configuration) {
-        HyperSeq.new(class :: does HyperIterator {
-            has $!source;
-            has $!configuration;
-
-            method new(\iter, $configuration) {
-                my \hyper-iter = nqp::create(self);
-                nqp::bindattr(hyper-iter, self, '$!source', iter);
-                nqp::bindattr(hyper-iter, self, '$!configuration', $configuration);
-                hyper-iter
-            }
-
-            method fill-buffer(HyperWorkBuffer:D $work, int $items) {
-                $!source.push-exactly($work.input, $items)
-            }
-
-            method process-buffer(HyperWorkBuffer:D $work --> Nil) { }
-
-            method configuration() { $!configuration }
-        }.new(self.iterator, $configuration));
+    sub MIXIFY(\iterable, \type) {
+        nqp::if(
+          (my $iterator := iterable.flat.iterator).is-lazy,
+          Failure.new(X::Cannot::Lazy.new(:action<coerce>,:what(type.^name))),
+          nqp::create(type).SET-SELF(
+            Rakudo::QuantHash.ADD-PAIRS-TO-MIX(
+              nqp::create(Rakudo::Internals::IterationSet),$iterator
+            )
+          )
+        )
     }
+    multi method Mix(Iterable:D:)     { MIXIFY(self, Mix)     }
+    multi method MixHash(Iterable:D:) { MIXIFY(self, MixHash) }
+
+    sub BAGGIFY(\iterable, \type) {
+        nqp::if(
+          (my $iterator := iterable.flat.iterator).is-lazy,
+          Failure.new(X::Cannot::Lazy.new(:action<coerce>,:what(type.^name))),
+          nqp::create(type).SET-SELF(
+            Rakudo::QuantHash.ADD-PAIRS-TO-BAG(
+              nqp::create(Rakudo::Internals::IterationSet),$iterator
+            )
+          )
+        )
+    }
+    multi method Bag(Iterable:D:)     { BAGGIFY(self, Bag)     }
+    multi method BagHash(Iterable:D:) { BAGGIFY(self, BagHash) }
+
+    sub SETIFY(\iterable, \type) {
+        nqp::if(
+          (my $iterator := iterable.flat.iterator).is-lazy,
+          Failure.new(X::Cannot::Lazy.new(:action<coerce>,:what(type.^name))),
+          nqp::create(type).SET-SELF(
+            Rakudo::QuantHash.ADD-PAIRS-TO-SET(
+              nqp::create(Rakudo::Internals::IterationSet),$iterator
+            )
+          )
+        )
+    }
+    multi method Set(Iterable:D:)     { SETIFY(self,Set)     }
+    multi method SetHash(Iterable:D:) { SETIFY(self,SetHash) }
 }
+
+#?if jvm
+nqp::p6setitertype(Iterable);
+#?endif
 
 # vim: ft=perl6 expandtab sw=4

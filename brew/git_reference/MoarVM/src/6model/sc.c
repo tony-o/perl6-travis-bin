@@ -5,22 +5,21 @@
  * their to-resolve list after installing itself in the appropriate slot. */
 MVMObject * MVM_sc_create(MVMThreadContext *tc, MVMString *handle) {
     MVMSerializationContext     *sc;
-    MVMSerializationContextBody *scb;
+    MVMSerializationContextBody *scb = NULL;
 
     /* Allocate. */
     MVMROOT(tc, handle, {
         sc = (MVMSerializationContext *)REPR(tc->instance->SCRef)->allocate(tc, STABLE(tc->instance->SCRef));
         MVMROOT(tc, sc, {
             /* Add to weak lookup hash. */
-            uv_mutex_lock(&tc->instance->mutex_sc_weakhash);
-            MVM_string_flatten(tc, handle);
+            uv_mutex_lock(&tc->instance->mutex_sc_registry);
             MVM_HASH_GET(tc, tc->instance->sc_weakhash, handle, scb);
             if (!scb) {
                 sc->body = scb = MVM_calloc(1, sizeof(MVMSerializationContextBody));
                 MVM_ASSIGN_REF(tc, &(sc->common.header), scb->handle, handle);
                 MVM_HASH_BIND(tc, tc->instance->sc_weakhash, handle, scb);
                 /* Calling repr_init will allocate, BUT if it does so, and we
-                 * get unlucky, the GC will try to acquire mutex_sc_weakhash.
+                 * get unlucky, the GC will try to acquire mutex_sc_registry.
                  * This deadlocks. Thus, we force allocation in gen2, which
                  * can never trigger GC. Note that releasing the mutex early
                  * is not a good way to fix this, as it leaves a race to
@@ -44,7 +43,7 @@ MVMObject * MVM_sc_create(MVMThreadContext *tc, MVMString *handle) {
                 MVM_repr_init(tc, (MVMObject *)sc);
                 MVM_gc_allocate_gen2_default_clear(tc);
             }
-            uv_mutex_unlock(&tc->instance->mutex_sc_weakhash);
+            uv_mutex_unlock(&tc->instance->mutex_sc_registry);
         });
     });
 
@@ -52,19 +51,26 @@ MVMObject * MVM_sc_create(MVMThreadContext *tc, MVMString *handle) {
 }
 
 /* Makes an entry in all SCs list, the index of which is used to refer to
- * SCs in object headers. */
+ * SCs in object headers. This must only be called while holding the SC
+ * registry mutex. However, the all SCs list is read without the lock.
+ * Thus we allocate memory using the FSA and free it at a safepoint. */
 void MVM_sc_add_all_scs_entry(MVMThreadContext *tc, MVMSerializationContextBody *scb) {
     if (tc->instance->all_scs_next_idx == tc->instance->all_scs_alloc) {
-        tc->instance->all_scs_alloc += 32;
         if (tc->instance->all_scs_next_idx == 0) {
             /* First time; allocate, and NULL first slot as it is
              * the "no SC" sentinel value. */
-            tc->instance->all_scs    = MVM_malloc(tc->instance->all_scs_alloc * sizeof(MVMSerializationContextBody *));
+            tc->instance->all_scs_alloc = 32;
+            tc->instance->all_scs    = MVM_fixed_size_alloc(tc, tc->instance->fsa,
+                tc->instance->all_scs_alloc * sizeof(MVMSerializationContextBody *));
             tc->instance->all_scs[0] = NULL;
             tc->instance->all_scs_next_idx++;
         }
         else {
-            tc->instance->all_scs = MVM_realloc(tc->instance->all_scs,
+            MVMuint32 orig_alloc = tc->instance->all_scs_alloc;
+            tc->instance->all_scs_alloc += 32;
+            tc->instance->all_scs = MVM_fixed_size_realloc_at_safepoint(tc,
+                tc->instance->fsa, tc->instance->all_scs,
+                orig_alloc * sizeof(MVMSerializationContextBody *),
                 tc->instance->all_scs_alloc * sizeof(MVMSerializationContextBody *));
         }
     }
@@ -92,8 +98,8 @@ void MVM_sc_set_description(MVMThreadContext *tc, MVMSerializationContext *sc, M
 MVMint64 MVM_sc_find_object_idx(MVMThreadContext *tc, MVMSerializationContext *sc, MVMObject *obj) {
     MVMObject **roots;
     MVMint64    i, count;
-    MVMuint32   cached = MVM_get_idx_in_sc(&obj->header);
-    if (cached != ~0)
+    MVMuint32   cached = MVM_sc_get_idx_in_sc(&obj->header);
+    if (cached != ~0 && MVM_sc_get_collectable_sc(tc, &obj->header) == sc)
         return cached;
     roots = sc->body->root_objects;
     count = sc->body->num_objects;
@@ -115,20 +121,23 @@ MVMint64 MVM_sc_find_object_idx_jit(MVMThreadContext *tc, MVMObject *sc, MVMObje
 /* Given an SC, looks up the index of an STable that is in its root set. */
 MVMint64 MVM_sc_find_stable_idx(MVMThreadContext *tc, MVMSerializationContext *sc, MVMSTable *st) {
     MVMuint64 i;
-    MVMuint32 cached = MVM_get_idx_in_sc(&st->header);
-    if (cached != ~0)
+    MVMuint32 cached = MVM_sc_get_idx_in_sc(&st->header);
+    if (cached != ~0 && MVM_sc_get_collectable_sc(tc, &st->header) == sc)
         return cached;
     for (i = 0; i < sc->body->num_stables; i++)
         if (sc->body->root_stables[i] == st)
             return i;
     MVM_exception_throw_adhoc(tc,
-        "STable does not exist in serialization context");
+        "STable %s does not exist in serialization context", MVM_6model_get_stable_debug_name(tc, st));
 }
 
 /* Given an SC, looks up the index of a code ref that is in its root set. */
 MVMint64 MVM_sc_find_code_idx(MVMThreadContext *tc, MVMSerializationContext *sc, MVMObject *obj) {
     MVMObject *roots;
     MVMint64   i, count;
+    MVMuint32 cached = MVM_sc_get_idx_in_sc(&obj->header);
+    if (cached != ~0 && MVM_sc_get_collectable_sc(tc, &obj->header) == sc)
+        return cached;
     roots = sc->body->root_codes;
     count = MVM_repr_elems(tc, roots);
     for (i = 0; i < count; i++) {
@@ -150,8 +159,9 @@ MVMint64 MVM_sc_find_code_idx(MVMThreadContext *tc, MVMSerializationContext *sc,
     }
 }
 
-/* Given a compilation unit and dependency index, returns that SC. */
-MVMSerializationContext * MVM_sc_get_sc(MVMThreadContext *tc, MVMCompUnit *cu, MVMint16 dep) {
+/* Given a compilation unit and dependency index, returns that SC. Slow path
+ * for when the SC may be NULL. */
+MVMSerializationContext * MVM_sc_get_sc_slow(MVMThreadContext *tc, MVMCompUnit *cu, MVMint16 dep) {
     MVMSerializationContext *sc = cu->body.scs[dep];
     if (sc == NULL) {
         MVMSerializationContextBody *scb = cu->body.scs_to_resolve[dep];
@@ -162,6 +172,7 @@ MVMSerializationContext * MVM_sc_get_sc(MVMThreadContext *tc, MVMCompUnit *cu, M
         if (sc == NULL)
             return NULL;
         MVM_ASSIGN_REF(tc, &(cu->common.header), cu->body.scs[dep], sc);
+        scb->claimed = 1;
     }
     return sc;
 }
@@ -170,6 +181,17 @@ MVMSerializationContext * MVM_sc_get_sc(MVMThreadContext *tc, MVMCompUnit *cu, M
 MVM_STATIC_INLINE MVMint64 sc_working(MVMSerializationContext *sc) {
     MVMSerializationReader *sr = sc->body->sr;
     return sr && sr->working;
+}
+
+MVMuint8 MVM_sc_is_object_immediately_available(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint64 idx) {
+    MVMObject **roots = sc->body->root_objects;
+    MVMint64    count = sc->body->num_objects;
+    if (idx >= 0 && idx < count) {
+        if (roots[idx] && !sc_working(sc)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* Given an SC and an index, fetch the object stored there. */
@@ -190,16 +212,11 @@ MVMObject * MVM_sc_get_object(MVMThreadContext *tc, MVMSerializationContext *sc,
 }
 
 MVMObject * MVM_sc_get_sc_object(MVMThreadContext *tc, MVMCompUnit *cu,
-                                 MVMint16 dep, MVMint64 idx) {
-    if (dep >= 0 && dep < cu->body.num_scs) {
-        MVMSerializationContext *sc = MVM_sc_get_sc(tc, cu, dep);
-        if (sc == NULL)
-            MVM_exception_throw_adhoc(tc, "SC not yet resolved; lookup failed");
-        return MVM_sc_get_object(tc, sc, idx);
-    }
-    else {
-        MVM_exception_throw_adhoc(tc, "Invalid SC index in bytecode stream");
-    }
+                                 MVMuint16 dep, MVMuint64 idx) {
+    MVMSerializationContext *sc = MVM_sc_get_sc(tc, cu, dep);
+    if (sc == NULL)
+        MVM_exception_throw_adhoc(tc, "SC not yet resolved; lookup failed");
+    return MVM_sc_get_object(tc, sc, idx);
 }
 
 /* Given an SC and an index, fetch the object stored there, or return NULL if
@@ -207,7 +224,7 @@ MVMObject * MVM_sc_get_sc_object(MVMThreadContext *tc, MVMCompUnit *cu,
 MVMObject * MVM_sc_try_get_object(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint64 idx) {
     MVMObject **roots = sc->body->root_objects;
     MVMint64    count = sc->body->num_objects;
-    if (idx > 0 && idx < count)
+    if (idx > 0 && idx < count && !sc_working(sc))
         return roots[idx];
     else
         return NULL;
@@ -227,14 +244,13 @@ void MVM_sc_set_object(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint
             sc->body->alloc_objects *= 2;
             if (sc->body->alloc_objects < idx + 1)
                 sc->body->alloc_objects = idx + 1;
-            sc->body->root_objects = MVM_realloc(sc->body->root_objects,
-                sc->body->alloc_objects * sizeof(MVMObject *));
-            memset(sc->body->root_objects + orig_size, 0,
-                (sc->body->alloc_objects - orig_size) * sizeof(MVMObject *));
+            sc->body->root_objects = MVM_recalloc(sc->body->root_objects,
+                orig_size * sizeof(MVMObject *), sc->body->alloc_objects * sizeof(MVMObject *));
         }
         MVM_ASSIGN_REF(tc, &(sc->common.header), sc->body->root_objects[idx], obj);
         sc->body->num_objects = idx + 1;
     }
+    MVM_sc_set_idx_in_sc(&obj->header, idx);
 }
 
 /* Given an SC and an index, fetch the STable stored there. */
@@ -321,10 +337,9 @@ MVMObject * MVM_sc_get_code(MVMThreadContext *tc, MVMSerializationContext *sc, M
 /* Resolves an SC handle using the SC weakhash. */
 MVMSerializationContext * MVM_sc_find_by_handle(MVMThreadContext *tc, MVMString *handle) {
     MVMSerializationContextBody *scb;
-    MVM_string_flatten(tc, handle);
-    uv_mutex_lock(&tc->instance->mutex_sc_weakhash);
+    uv_mutex_lock(&tc->instance->mutex_sc_registry);
     MVM_HASH_GET(tc, tc->instance->sc_weakhash, handle, scb);
-    uv_mutex_unlock(&tc->instance->mutex_sc_weakhash);
+    uv_mutex_unlock(&tc->instance->mutex_sc_registry);
     return scb && scb->sc ? scb->sc : NULL;
 }
 
@@ -377,6 +392,14 @@ void MVM_sc_disclaim(MVMThreadContext *tc, MVMSerializationContext *sc) {
         col->sc_forward_u.sc.sc_idx = 0;
     }
     sc->body->root_codes = NULL;
+}
+
+/* SC repossession barrier. */
+void MVM_SC_WB_OBJ(MVMThreadContext *tc, MVMObject *obj) {
+    assert(!(obj->header.flags & MVM_CF_FORWARDER_VALID));
+    assert(MVM_sc_get_idx_of_sc(&obj->header) != ~0);
+    if (MVM_sc_get_idx_of_sc(&obj->header) > 0)
+        MVM_sc_wb_hit_obj(tc, obj);
 }
 
 /* Called when an object triggers the SC repossession write barrier. */
@@ -432,8 +455,9 @@ void MVM_sc_wb_hit_obj(MVMThreadContext *tc, MVMObject *obj) {
         MVM_repr_push_i(tc, comp_sc->body->rep_indexes, new_slot << 1);
         MVM_repr_push_o(tc, comp_sc->body->rep_scs, (MVMObject *)MVM_sc_get_obj_sc(tc, obj));
 
-        /* Update SC of the object, claiming it. */
+        /* Update SC of the object, claiming it, and update index too. */
         MVM_sc_set_obj_sc(tc, obj, comp_sc);
+        MVM_sc_set_idx_in_sc(&(obj->header), new_slot);
     }
 }
 
@@ -461,5 +485,6 @@ void MVM_sc_wb_hit_st(MVMThreadContext *tc, MVMSTable *st) {
 
         /* Update SC of the STable, claiming it. */
         MVM_sc_set_stable_sc(tc, st, comp_sc);
+        MVM_sc_set_idx_in_sc(&(st->header), new_slot);
     }
 }

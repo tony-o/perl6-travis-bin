@@ -1,53 +1,92 @@
-var Map = require('es6-map');
+'use strict';
 
-function Hash() {
-  this.content = new Map();
-}
+const NQPObject = require('./nqp-object.js');
+const Null = require('./null.js');
 
-Hash.prototype.$$bindkey = function(key, value) {
-  return this.content.set(key, value);
-  return value;
-};
+const HashIter = require('./hash-iter.js');
 
-Hash.prototype.$$atkey = function(key) {
-  return this.content.has(key) ? this.content.get(key) : null;
-};
+const repossession = require('./repossession.js');
+const compilingSCs = repossession.compilingSCs;
 
-Hash.prototype.$$existskey = function(key) {
-  return this.content.has(key);
-};
 
-Hash.prototype.$$deletekey = function(key) {
-  this.content.delete(key);
-  return this;
-};
+class Hash extends NQPObject {
+  constructor() {
+    super();
+    this._SC = undefined;
+    this.content = new Map();
+  }
 
-Hash.prototype.$$clone = function() {
-  var clone = new Hash();
-  this.content.forEach(function(value, key, map) {
-    clone.content.set(key, value);
-  });
-  return clone;
-};
+  $$bindkey(key, value) {
+    this.content.set(key, value);
+    if (this._SC !== undefined) this.$$scwb();
+    return value;
+  }
 
-Hash.prototype.$$elems = function() {
-  return this.content.size;
-};
+  $$atkey(key) {
+    return this.content.has(key) ? this.content.get(key) : Null;
+  }
 
-Hash.prototype.Num = function() {
-  return this.$$elems();
-};
+  $$existskey(key) {
+    return this.content.has(key);
+  }
 
-Hash.prototype.$$toObject = function() {
-  var ret = {};
-  this.content.forEach(function(value, key, map) {
-    ret[key] = value;
-  });
-  return ret;
-};
+  $$deletekey(key) {
+    if (this._SC !== undefined) this.$$scwb();
+    this.content.delete(key);
+    return this;
+  }
 
-Hash.prototype.$$to_bool = function() {
-  return this.content.size == 0 ? 0 : 1;
+  $$clone() {
+    const clone = new Hash();
+    this.content.forEach(function(value, key, map) {
+      clone.content.set(key, value);
+    });
+    return clone;
+  }
+
+  $$elems() {
+    return this.content.size;
+  }
+
+  $$numify() {
+    return this.$$elems();
+  }
+
+  $$toObject() {
+    const ret = {};
+    this.content.forEach(function(value, key, map) {
+      ret[key] = value;
+    });
+    return ret;
+  }
+
+  $$toBool() {
+    return this.content.size == 0 ? 0 : 1;
+  }
+
+  $$iterator() {
+    return new HashIter(this);
+  }
+
+  // TODO: avoid copy and paste
+  $$scwb() {
+    if (compilingSCs.length == 0 || repossession.scwbDisableDepth || repossession.neverRepossess.get(this)) {
+      return;
+    }
+
+    if (compilingSCs[compilingSCs.length - 1] !== this._SC) {
+      const owned = this._SC.ownedObjects.get(this);
+      compilingSCs[compilingSCs.length - 1].repossessObject(owned === undefined ? this : owned);
+    }
+  }
+
+  $$istype(ctx, type) {
+    return 0;
+  }
+
+  $$can(ctx, name) {
+    return 0;
+  }
 };
 
 module.exports = Hash;

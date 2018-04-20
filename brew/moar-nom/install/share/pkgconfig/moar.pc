@@ -1,4 +1,4 @@
-# pkg-config information for MoarVM 2016.03
+# pkg-config information for MoarVM 2017.10
 #
 prefix=/home/travis/brew/moar-nom/install
 package=moar
@@ -6,16 +6,16 @@ includedir=/home/travis/brew/moar-nom/install/include
 bindir=/home/travis/brew/moar-nom/install/bin
 libdir=/home/travis/brew/moar-nom/install/lib
 mastdir=/home/travis/brew/moar-nom/install/share/nqp/lib/MAST
-ldopts= -O3 -DNDEBUG -Wl,-rpath,/home/travis/brew/moar-nom/install/lib -Wl,-rpath,/home/travis/brew/moar-nom/install/share/perl6/site/lib
+ldopts= -O3 -DNDEBUG -Wl,-rpath,"//home/travis/brew/moar-nom/install/lib"
 exeext=
-version=2016.03
+version=2017.10
 moar=/home/travis/brew/moar-nom/install/bin/moar
-libs= -O3 -DNDEBUG -Wl,-rpath,/home/travis/brew/moar-nom/install/lib -Wl,-rpath,/home/travis/brew/moar-nom/install/share/perl6/site/lib -L/home/travis/brew/moar-nom/install/lib -lmoar
+libs= -O3 -DNDEBUG -Wl,-rpath,"//home/travis/brew/moar-nom/install/lib" -L/home/travis/brew/moar-nom/install/lib -lmoar
 static_libs=
 
 Name:           MoarVM
 Description:    A virtual machine for Rakudo Perl 6 and NQP
 URL:            http://moarvm.org
-Version:        2016.03
-Libs:            -O3 -DNDEBUG -Wl,-rpath,/home/travis/brew/moar-nom/install/lib -Wl,-rpath,/home/travis/brew/moar-nom/install/share/perl6/site/lib -L/home/travis/brew/moar-nom/install/lib -lmoar
+Version:        2017.10
+Libs:            -O3 -DNDEBUG -Wl,-rpath,"//home/travis/brew/moar-nom/install/lib" -L/home/travis/brew/moar-nom/install/lib -lmoar
 Cflags:         -I/home/travis/brew/moar-nom/install/include

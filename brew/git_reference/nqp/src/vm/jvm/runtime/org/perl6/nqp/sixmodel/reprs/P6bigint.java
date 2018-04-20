@@ -29,7 +29,7 @@ public class P6bigint extends REPR {
         obj.st = st;
         return obj;
     }
-    
+
     public StorageSpec get_storage_spec(ThreadContext tc, STable st) {
         StorageSpec ss = new StorageSpec();
         ss.inlineable = StorageSpec.INLINED;
@@ -38,15 +38,15 @@ public class P6bigint extends REPR {
         ss.can_box = StorageSpec.CAN_BOX_INT;
         return ss;
     }
-    
+
     public void inlineStorage(ThreadContext tc, STable st, ClassWriter cw, String prefix) {
         cw.visitField(Opcodes.ACC_PUBLIC, prefix, Type.getType(BigInteger.class).getDescriptor(), null, null);
     }
-    
+
     public void inlineBind(ThreadContext tc, STable st, MethodVisitor mv, String className, String prefix) {
         String bigIntegerType = Type.getType(BigInteger.class).getDescriptor();
         String bigIntegerIN = Type.getType(BigInteger.class).getInternalName();
-        
+
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitInsn(Opcodes.ICONST_0 + ThreadContext.NATIVE_JVM_OBJ);
         mv.visitFieldInsn(Opcodes.PUTFIELD, "org/perl6/nqp/runtime/ThreadContext", "native_type", "I");
@@ -58,7 +58,7 @@ public class P6bigint extends REPR {
         mv.visitFieldInsn(Opcodes.PUTFIELD, className, prefix, bigIntegerType);
         mv.visitInsn(Opcodes.RETURN);
     }
-    
+
     public void inlineGet(ThreadContext tc, STable st, MethodVisitor mv, String className, String prefix) {
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitInsn(Opcodes.DUP);
@@ -71,7 +71,7 @@ public class P6bigint extends REPR {
                 Type.getType(Object.class).getDescriptor());
         mv.visitInsn(Opcodes.RETURN);
     }
-    
+
     public void inlineDeserialize(ThreadContext tc, STable st, MethodVisitor mv, String className, String prefix) {
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitTypeInsn(Opcodes.NEW, "java/math/BigInteger");
@@ -85,7 +85,7 @@ public class P6bigint extends REPR {
     public void generateBoxingMethods(ThreadContext tc, STable st, ClassWriter cw, String className, String prefix) {
         String bigIntegerType = Type.getType(BigInteger.class).getDescriptor();
         String bigIntegerIN = Type.getType(BigInteger.class).getInternalName();
-        
+
         String getDesc = "(Lorg/perl6/nqp/runtime/ThreadContext;)J";
         MethodVisitor getMeth = cw.visitMethod(Opcodes.ACC_PUBLIC, "get_int", getDesc, null, null);
         getMeth.visitVarInsn(Opcodes.ALOAD, 0);
@@ -114,14 +114,23 @@ public class P6bigint extends REPR {
     }
 
     public SixModelObject deserialize_stub(ThreadContext tc, STable st) {
-        throw new RuntimeException("Deserialization NYI for P6bigint");
+        P6bigintInstance obj = new P6bigintInstance();
+        // "error: BigInteger(long) has private access in BigInteger"
+        obj.value = new BigInteger("0");
+        obj.st = st;
+        return obj;
     }
 
     public void deserialize_finish(ThreadContext tc, STable st,
             SerializationReader reader, SixModelObject obj) {
-        throw new RuntimeException("Deserialization NYI for P6bigint");
+        ((P6bigintInstance)obj).value = new BigInteger(reader.readStr());
     }
-    
+
+    public void serialize(ThreadContext tc, SerializationWriter writer, SixModelObject obj) {
+        /* Write out as String. */
+        writer.writeStr(((P6bigintInstance)obj).value.toString());
+    }
+
     public void serialize_inlined(ThreadContext tc, STable st, SerializationWriter writer,
             String prefix, SixModelObject obj) {
         try {

@@ -12,8 +12,7 @@ static void on_changed(uv_fs_event_t *handle, const char *filename, int events, 
     WatchInfo        *wi  = (WatchInfo *)handle->data;
     MVMThreadContext *tc  = wi->tc;
     MVMObject        *arr = MVM_repr_alloc_init(tc, tc->instance->boot_types.BOOTArray);
-    MVMAsyncTask     *t   = (MVMAsyncTask *)MVM_repr_at_pos_o(tc,
-        tc->instance->event_loop_active, wi->work_idx);
+    MVMAsyncTask     *t   = MVM_io_eventloop_get_active_work(tc, wi->work_idx);
     MVM_repr_push_o(tc, arr, t->body.schedulee);
     MVMROOT(tc, t, {
     MVMROOT(tc, arr, {
@@ -46,10 +45,9 @@ static void setup(MVMThreadContext *tc, uv_loop_t *loop, MVMObject *async_task, 
     int        r;
 
     /* Add task to active list. */
-    wi->work_idx    = MVM_repr_elems(tc, tc->instance->event_loop_active);
+    wi->work_idx    = MVM_io_eventloop_add_active_work(tc, async_task);
     wi->tc          = tc;
     wi->handle.data = wi;
-    MVM_repr_push_o(tc, tc->instance->event_loop_active, async_task);
 
     /* Start watching. */
     uv_fs_event_init(loop, &wi->handle);
@@ -82,6 +80,7 @@ static void gc_free(MVMThreadContext *tc, MVMObject *t, void *data) {
 /* Operations table for a file watcher task. */
 static const MVMAsyncTaskOps op_table = {
     setup,
+    NULL,
     NULL,
     NULL,
     gc_free
@@ -118,7 +117,9 @@ MVMObject * MVM_io_file_watch(MVMThreadContext *tc, MVMObject *queue,
     task->body.data  = watch_info;
 
     /* Hand the task off to the event loop. */
-    MVM_io_eventloop_queue_work(tc, (MVMObject *)task);
+    MVMROOT(tc, task, {
+        MVM_io_eventloop_queue_work(tc, (MVMObject *)task);
+    });
 
     return (MVMObject *)task;
 }

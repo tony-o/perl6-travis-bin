@@ -9,6 +9,10 @@ void MVM_repr_init(MVMThreadContext *tc, MVMObject *obj) {
         REPR(obj)->initialize(tc, STABLE(obj), obj, OBJECT_BODY(obj));
 }
 
+MVMObject * MVM_repr_alloc(MVMThreadContext *tc, MVMObject *type) {
+    return REPR(type)->allocate(tc, STABLE(type));
+}
+
 MVMObject * MVM_repr_alloc_init(MVMThreadContext *tc, MVMObject *type) {
     MVMObject *obj = REPR(type)->allocate(tc, STABLE(type));
 
@@ -44,7 +48,7 @@ MVM_PUBLIC void MVM_repr_pos_set_elems(MVMThreadContext *tc, MVMObject *obj, MVM
         OBJECT_BODY(obj), elems);
 }
 
-static void populate_indices_array(MVMThreadContext *tc, MVMObject *arr, MVMint64 *elems) {
+void MVM_repr_populate_indices_array(MVMThreadContext *tc, MVMObject *arr, MVMint64 *elems) {
     MVMint64 i;
     *elems = MVM_repr_elems(tc, arr);
     if (*elems > tc->num_multi_dim_indices)
@@ -57,7 +61,7 @@ static void populate_indices_array(MVMThreadContext *tc, MVMObject *arr, MVMint6
 void MVM_repr_set_dimensions(MVMThreadContext *tc, MVMObject *obj, MVMObject *dims) {
     if (IS_CONCRETE(obj)) {
         MVMint64 num_dims;
-        populate_indices_array(tc, dims, &num_dims);
+        MVM_repr_populate_indices_array(tc, dims, &num_dims);
         REPR(obj)->pos_funcs.set_dimensions(tc, STABLE(obj), obj,
             OBJECT_BODY(obj), num_dims, tc->multi_dim_indices);
     }
@@ -102,17 +106,17 @@ MVMString * MVM_repr_at_pos_s(MVMThreadContext *tc, MVMObject *obj, MVMint64 idx
 
 MVMObject * MVM_repr_at_pos_o(MVMThreadContext *tc, MVMObject *obj, MVMint64 idx) {
     if (IS_CONCRETE(obj)) {
-            MVMRegister value;
-            REPR(obj)->pos_funcs.at_pos(tc, STABLE(obj), obj, OBJECT_BODY(obj),
+        MVMRegister value;
+        REPR(obj)->pos_funcs.at_pos(tc, STABLE(obj), obj, OBJECT_BODY(obj),
                                         idx, &value, MVM_reg_obj);
-            return value.o;
+        return value.o;
     }
-    return NULL;
+    return tc->instance->VMNull;
 }
 
 static void at_pos_multidim(MVMThreadContext *tc, MVMObject *obj, MVMObject *indices, MVMRegister *value, MVMuint16 kind) {
     MVMint64 num_indices;
-    populate_indices_array(tc, indices, &num_indices);
+    MVM_repr_populate_indices_array(tc, indices, &num_indices);
     REPR(obj)->pos_funcs.at_pos_multidim(tc, STABLE(obj), obj,
         OBJECT_BODY(obj), num_indices, tc->multi_dim_indices, value, kind);
 }
@@ -231,7 +235,7 @@ void MVM_repr_bind_pos_o(MVMThreadContext *tc, MVMObject *obj, MVMint64 idx, MVM
 
 static void bind_pos_multidim(MVMThreadContext *tc, MVMObject *obj, MVMObject *indices, MVMRegister value, MVMuint16 kind) {
     MVMint64 num_indices;
-    populate_indices_array(tc, indices, &num_indices);
+    MVM_repr_populate_indices_array(tc, indices, &num_indices);
     REPR(obj)->pos_funcs.bind_pos_multidim(tc, STABLE(obj), obj,
         OBJECT_BODY(obj), num_indices, tc->multi_dim_indices, value, kind);
 }
@@ -451,7 +455,7 @@ MVMObject * MVM_repr_at_key_o(MVMThreadContext *tc, MVMObject *obj, MVMString *k
                                     (MVMObject *)key, &value, MVM_reg_obj);
         return value.o;
     }
-    return NULL;
+    return tc->instance->VMNull;
 }
 
 void MVM_repr_bind_key_i(MVMThreadContext *tc, MVMObject *obj, MVMString *key, MVMint64 val) {
@@ -527,25 +531,25 @@ MVMint64 MVM_repr_num_dimensions(MVMThreadContext *tc, MVMObject *obj) {
 
 MVMint64 MVM_repr_get_int(MVMThreadContext *tc, MVMObject *obj) {
     if (!IS_CONCRETE(obj))
-        MVM_exception_throw_adhoc(tc, "Cannot unbox a type object");
+        MVM_exception_throw_adhoc(tc, "Cannot unbox a type object (%s) to int.", MVM_6model_get_debug_name(tc, obj));
     return REPR(obj)->box_funcs.get_int(tc, STABLE(obj), obj, OBJECT_BODY(obj));
 }
 
 MVMnum64 MVM_repr_get_num(MVMThreadContext *tc, MVMObject *obj) {
     if (!IS_CONCRETE(obj))
-        MVM_exception_throw_adhoc(tc, "Cannot unbox a type object");
+        MVM_exception_throw_adhoc(tc, "Cannot unbox a type object (%s) to a num.", MVM_6model_get_debug_name(tc, obj));
     return REPR(obj)->box_funcs.get_num(tc, STABLE(obj), obj, OBJECT_BODY(obj));
 }
 
 MVMString * MVM_repr_get_str(MVMThreadContext *tc, MVMObject *obj) {
     if (!IS_CONCRETE(obj))
-        MVM_exception_throw_adhoc(tc, "Cannot unbox a type object");
+        MVM_exception_throw_adhoc(tc, "Cannot unbox a type object (%s) to a str.", MVM_6model_get_debug_name(tc, obj));
     return REPR(obj)->box_funcs.get_str(tc, STABLE(obj), obj, OBJECT_BODY(obj));
 }
 
 MVMuint64 MVM_repr_get_uint(MVMThreadContext *tc, MVMObject *obj) {
     if (!IS_CONCRETE(obj))
-        MVM_exception_throw_adhoc(tc, "Cannot unbox a type object");
+        MVM_exception_throw_adhoc(tc, "Cannot unbox a type object (%s) to an unsigned int.", MVM_6model_get_debug_name(tc, obj));
     return REPR(obj)->box_funcs.get_uint(tc, STABLE(obj), obj, OBJECT_BODY(obj));
 }
 
@@ -600,7 +604,7 @@ MVM_PUBLIC MVMint64 MVM_repr_get_attr_i(MVMThreadContext *tc, MVMObject *object,
                                            MVMString *name, MVMint16 hint) {
     MVMRegister result_reg;
     if (!IS_CONCRETE(object))
-        MVM_exception_throw_adhoc(tc, "Cannot look up attributes in a type object");
+        MVM_exception_throw_adhoc(tc, "Cannot look up attributes in a %s type object", MVM_6model_get_debug_name(tc, object));
     REPR(object)->attr_funcs.get_attribute(tc,
             STABLE(object), object, OBJECT_BODY(object),
             type, name,
@@ -612,7 +616,7 @@ MVM_PUBLIC MVMnum64 MVM_repr_get_attr_n(MVMThreadContext *tc, MVMObject *object,
                                            MVMString *name, MVMint16 hint) {
     MVMRegister result_reg;
     if (!IS_CONCRETE(object))
-        MVM_exception_throw_adhoc(tc, "Cannot look up attributes in a type object");
+        MVM_exception_throw_adhoc(tc, "Cannot look up attributes in a %s type object", MVM_6model_get_debug_name(tc, object));
     REPR(object)->attr_funcs.get_attribute(tc,
             STABLE(object), object, OBJECT_BODY(object),
             type, name,
@@ -624,7 +628,7 @@ MVM_PUBLIC MVMString * MVM_repr_get_attr_s(MVMThreadContext *tc, MVMObject *obje
                                            MVMString *name, MVMint16 hint) {
     MVMRegister result_reg;
     if (!IS_CONCRETE(object))
-        MVM_exception_throw_adhoc(tc, "Cannot look up attributes in a type object");
+        MVM_exception_throw_adhoc(tc, "Cannot look up attributes in a %s type object", MVM_6model_get_debug_name(tc, object));
     REPR(object)->attr_funcs.get_attribute(tc,
             STABLE(object), object, OBJECT_BODY(object),
             type, name,
@@ -636,7 +640,7 @@ MVM_PUBLIC MVMObject * MVM_repr_get_attr_o(MVMThreadContext *tc, MVMObject *obje
                                            MVMString *name, MVMint16 hint) {
     MVMRegister result_reg;
     if (!IS_CONCRETE(object))
-        MVM_exception_throw_adhoc(tc, "Cannot look up attributes in a type object");
+        MVM_exception_throw_adhoc(tc, "Cannot look up attributes in a %s type object", MVM_6model_get_debug_name(tc, object));
     REPR(object)->attr_funcs.get_attribute(tc,
             STABLE(object), object, OBJECT_BODY(object),
             type, name,
@@ -648,7 +652,7 @@ MVM_PUBLIC MVMObject * MVM_repr_get_attr_o(MVMThreadContext *tc, MVMObject *obje
 MVM_PUBLIC void MVM_repr_bind_attr_inso(MVMThreadContext *tc, MVMObject *object, MVMObject *type,
                                            MVMString *name, MVMint16 hint, MVMRegister value_reg, MVMuint16 kind) {
     if (!IS_CONCRETE(object))
-        MVM_exception_throw_adhoc(tc, "Cannot bind attributes in a type object");
+        MVM_exception_throw_adhoc(tc, "Cannot bind attributes in a %s type object", MVM_6model_get_debug_name(tc, object));
     REPR(object)->attr_funcs.bind_attribute(tc,
             STABLE(object), object, OBJECT_BODY(object),
             type, name,
@@ -659,7 +663,7 @@ MVM_PUBLIC void MVM_repr_bind_attr_inso(MVMThreadContext *tc, MVMObject *object,
 MVM_PUBLIC MVMint64 MVM_repr_attribute_inited(MVMThreadContext *tc, MVMObject *obj, MVMObject *type,
                                               MVMString *name) {
     if (!IS_CONCRETE(obj))
-        MVM_exception_throw_adhoc(tc, "Cannot look up attributes in a type object");
+        MVM_exception_throw_adhoc(tc, "Cannot look up attributes in a %s type object", MVM_6model_get_debug_name(tc, obj));
     return REPR(obj)->attr_funcs.is_attribute_initialized(tc,
         STABLE(obj), OBJECT_BODY(obj),
         type, name, MVM_NO_HINT);

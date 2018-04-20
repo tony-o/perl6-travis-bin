@@ -101,37 +101,44 @@ typedef enum {
     /* Is an STable. */
     MVM_CF_STABLE = 2,
 
+    /* Is a heap-promoted call frame. */
+    MVM_CF_FRAME = 4,
+
     /* Has already been seen once in GC nursery. */
-    MVM_CF_NURSERY_SEEN = 4,
+    MVM_CF_NURSERY_SEEN = 8,
 
     /* Has been promoted to the old generation. */
-    MVM_CF_SECOND_GEN = 8,
+    MVM_CF_SECOND_GEN = 16,
 
     /* Is shared - that is, more than one thread knows about it. */
-    MVM_CF_SHARED = 16,
+    MVM_CF_SHARED = 32,
 
     /* Has already been added to the gen2 aggregates pointing to nursery
      * objects list. */
-    MVM_CF_IN_GEN2_ROOT_LIST = 32,
+    MVM_CF_IN_GEN2_ROOT_LIST = 64,
 
     /* A full GC run has found this object to be live. */
-    MVM_CF_GEN2_LIVE = 64,
+    MVM_CF_GEN2_LIVE = 128,
 
     /* This object in fromspace is live with a valid forwarder. */
     /* TODO - should be possible to use the same bit for this and GEN2_LIVE. */
-    MVM_CF_FORWARDER_VALID = 128,
+    MVM_CF_FORWARDER_VALID = 256,
 
     /* Have we allocated memory to store a serialization index? */
-    MVM_CF_SERIALZATION_INDEX_ALLOCATED = 256,
+    MVM_CF_SERIALZATION_INDEX_ALLOCATED = 512,
 
     /* Have we arranged a persistent object ID for this object? */
-    MVM_CF_HAS_OBJECT_ID = 512,
+    MVM_CF_HAS_OBJECT_ID = 1024,
 
     /* Have we flagged this object as something we must never repossess? */
     /* Note: if you're hunting for a flag, some day in the future when we
      * have used them all, this one is easy enough to eliminate by having the
      * tiny number of objects marked this way in a remembered set. */
-    MVM_CF_NEVER_REPOSSESS = 1024
+    MVM_CF_NEVER_REPOSSESS = 2048,
+
+    /* Has this item been chained into a gen2 freelist? This is only used in
+     * GC debug more. */
+    MVM_CF_DEBUG_IN_GEN2_FREE_LIST = 4096,
 } MVMCollectableFlags;
 
 #ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
@@ -231,7 +238,7 @@ struct MVMBoolificationSpec {
 /* Constant for incrementing the type cache ID for new STables. This leaves
  * the lowest bits free for caches to attach flags (of note, the multi
  * dispatch cache). */
-#define MVM_TYPE_CACHE_ID_INCR 128
+#define MVM_TYPE_CACHE_ID_INCR 256
 
 /* S-table, representing a meta-object/representation pairing. Note that the
  * items are grouped in hope that it will pack decently and do decently in
@@ -346,6 +353,10 @@ struct MVMSTable {
     /* A string associated with this STable for debugging purposes.
      * Usually the name of the class this belongs to. */
     char *debug_name;
+
+    /* If this STable is currently in the process of being repossessed. Used
+     * to trigger clearup of memory pre-repossession. */
+    MVMuint8 being_repossessed;
 };
 
 /* The representation operations table. Note that representations are not
@@ -375,6 +386,13 @@ struct MVMREPROps_Attribute {
     MVMint64 (*is_attribute_initialized) (MVMThreadContext *tc, MVMSTable *st,
         void *data, MVMObject *class_handle, MVMString *name,
         MVMint64 hint);
+
+    /* Provided the attribute is a native integer of the architecture's atomic
+     * size, returns an AO_t * referencing it. This is only valid until the
+     * next safepoint. If rebless is called on the object, updates may be lost
+     * although memory safety must not be violated. */
+    AO_t * (*attribute_as_atomic) (MVMThreadContext *tc, MVMSTable *st,
+        void *data, MVMObject *class_handle, MVMString *name);
 };
 struct MVMREPROps_Boxing {
     /* Used with boxing. Sets an integer value, for representations that
@@ -491,6 +509,16 @@ struct MVMREPROps_Positional {
 
     /* Gets the STable representing the declared element type. */
     MVMStorageSpec (*get_elem_storage_spec) (MVMThreadContext *tc, MVMSTable *st);
+
+    /* Provided the array consists of integers of the architecture's atomic
+     * size, gets an AO_t * pointing to that element and valid until the next
+     * safepoint. */
+    AO_t * (*pos_as_atomic) (MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
+        void *data, MVMint64 index);
+
+    /* Multi-dim version of as_atomic. */
+    AO_t * (*pos_as_atomic_multidim) (MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
+        void *data, MVMint64 num_indices, MVMint64 *indices);
 };
 struct MVMREPROps_Associative {
     /* Gets the value at the specified key and places it in the passed
@@ -618,13 +646,13 @@ struct MVMREPROps {
     /* The representation's ID. */
     MVMuint32 ID;
 
-    /* Does this representation reference frames (either MVMStaticFrame or
-     * MVMFrame)? */
-    MVMuint32 refs_frames;
-
     /* Optional API, for representations that allocate additonal memory and
      * want to report its size for debugging purposes. */
     MVMuint64 (*unmanaged_size) (MVMThreadContext *tc, MVMSTable *st, void *data);
+
+    /* Optional API to describe references to other Collectables either by
+     * index or by name, i.E. names of attributes or lexicals. */
+    void (*describe_refs) (MVMThreadContext *tc, MVMHeapSnapshotState *ss, MVMSTable *st, void *data);
 };
 
 /* Various handy macros for getting at important stuff. */
@@ -638,7 +666,8 @@ struct MVMREPROps {
 /* Some functions related to 6model core functionality. */
 MVM_PUBLIC MVMObject * MVM_6model_get_how(MVMThreadContext *tc, MVMSTable *st);
 MVM_PUBLIC MVMObject * MVM_6model_get_how_obj(MVMThreadContext *tc, MVMObject *obj);
-void MVM_6model_find_method(MVMThreadContext *tc, MVMObject *obj, MVMString *name, MVMRegister *res);
+void MVM_6model_find_method(MVMThreadContext *tc, MVMObject *obj, MVMString *name,
+    MVMRegister *res, MVMint64 throw_if_not_found);
 MVM_PUBLIC MVMObject * MVM_6model_find_method_cache_only(MVMThreadContext *tc, MVMObject *obj, MVMString *name);
 MVMint32 MVM_6model_find_method_spesh(MVMThreadContext *tc, MVMObject *obj, MVMString *name,
                                       MVMint32 ss_idx, MVMRegister *res);
@@ -651,3 +680,10 @@ void MVM_6model_invoke_default(MVMThreadContext *tc, MVMObject *invokee, MVMCall
 void MVM_6model_stable_gc_free(MVMThreadContext *tc, MVMSTable *st);
 MVMuint64 MVM_6model_next_type_cache_id(MVMThreadContext *tc);
 void MVM_6model_never_repossess(MVMThreadContext *tc, MVMObject *obj);
+
+MVM_STATIC_INLINE char *MVM_6model_get_debug_name(MVMThreadContext *tc, MVMObject *obj) {
+    return STABLE(obj)->debug_name ? STABLE(obj)->debug_name : "";
+}
+MVM_STATIC_INLINE char *MVM_6model_get_stable_debug_name(MVMThreadContext *tc, MVMSTable *stable) {
+    return stable->debug_name ? stable->debug_name : "";
+}

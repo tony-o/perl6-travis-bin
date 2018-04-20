@@ -120,79 +120,19 @@ MVMnum64 MVM_file_time(MVMThreadContext *tc, MVMString *filename, MVMint64 statu
 
 /* copy a file from one to another */
 void MVM_file_copy(MVMThreadContext *tc, MVMString *src, MVMString * dest) {
-    /* TODO: on Windows we can use the CopyFile API, which is probaly
-       more efficient, not to mention easier to use. */
+    char * const a = MVM_string_utf8_c8_encode_C_string(tc, src);
+    char * const b = MVM_string_utf8_c8_encode_C_string(tc, dest);
     uv_fs_t req;
-    char * a, * b;
-    uv_file in_fd = -1, out_fd = -1;
-    MVMuint64 size, offset;
 
-    a = MVM_string_utf8_c8_encode_C_string(tc, src);
-    b = MVM_string_utf8_c8_encode_C_string(tc, dest);
-
-    /* If the file cannot be stat(), there is little point in going any further. */
-    if (uv_fs_stat(tc->loop, &req, a, NULL) < 0)
-        goto failure;
-    size = req.statbuf.st_size;
-
-    in_fd = uv_fs_open(tc->loop, &req, (const char *)a, O_RDONLY, 0, NULL);
-    if (in_fd < 0) {
-        goto failure;
-    }
-
-    out_fd = uv_fs_open(tc->loop, &req, (const char *)b, O_WRONLY | O_CREAT | O_TRUNC, DEFAULT_MODE, NULL);
-    if (out_fd < 0) {
-        goto failure;
-    }
-
-    offset = 0;
-    do {
-        /* sendfile() traditionally takes offset as a pointer argument
-         * used a both input and output. libuv deviates by making
-         * offset an integer and returning the number of bytes
-         * sent. So it is necessary to add these explicitly. */
-        MVMint64 sent = uv_fs_sendfile(tc->loop, &req, out_fd, in_fd, offset, size - offset, NULL);
-        if (sent < 0) {
-            goto failure;
-        }
-        offset += sent;
-    } while (offset < size);
-
-    /* Cleanup */
-    if(uv_fs_close(tc->loop, &req, in_fd, NULL) < 0) {
-        goto failure;
-    }
-    in_fd = -1;
-
-    if (uv_fs_close(tc->loop, &req, out_fd, NULL) < 0) {
-        goto failure;
-    }
-
-    MVM_free(b);
-    MVM_free(a);
-    return;
-
- failure: {
-        /* First get the error, since it may be overwritten further on. */
-        const char * error = uv_strerror(req.result);
-        /* Basic premise: dealing with all failure cases is hard.
-         * So to simplify, a and b are allocated in all conditions.
-         * Also to simplify, in_fd are nonnegative if open, negative
-         * otherwise. */
-        MVM_free(b);
+    if(uv_fs_copyfile(tc->loop, &req, a, b, 0, NULL) < 0) {
         MVM_free(a);
-        /* If any of these fail there is nothing
-         * further to do, since we're already failing */
-        if (in_fd >= 0)
-            uv_fs_close(tc->loop, &req, in_fd, NULL);
-        if (out_fd >= 0)
-            uv_fs_close(tc->loop, &req, out_fd, NULL);
-        /* This function only throws adhoc errors, so the message is for
-         * progammer eyes only */
-        MVM_exception_throw_adhoc(tc, "Failed to copy file: %s", error);
+        MVM_free(b);
+        MVM_exception_throw_adhoc(tc, "Failed to copy file: %s", uv_strerror(req.result));
     }
-}
 
+    MVM_free(a);
+    MVM_free(b);
+}
 
 /* rename one file to another. */
 void MVM_file_rename(MVMThreadContext *tc, MVMString *src, MVMString *dest) {
@@ -281,7 +221,7 @@ MVMint64 MVM_file_isexecutable(MVMThreadContext *tc, MVMString *filename, MVMint
         if ((statbuf.st_mode & S_IFMT) == S_IFDIR)
             return 1;
         else {
-            // true if fileext is in PATHEXT=.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC
+            /* true if fileext is in PATHEXT=.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC */
             MVMString *dot = MVM_string_ascii_decode_nt(tc, tc->instance->VMString, ".");
             MVMROOT(tc, dot, {
                 MVMint64 n = MVM_string_index_from_end(tc, filename, dot, 0);
@@ -323,55 +263,9 @@ FILE_IS(writable, W)
 FILE_IS(executable, X)
 #endif
 
-/* Read all of a file into a string. */
-MVMString * MVM_file_slurp(MVMThreadContext *tc, MVMString *filename, MVMString *encoding) {
-    MVMString *mode = MVM_string_utf8_decode(tc, tc->instance->VMString, "r", 1);
-    MVMObject *oshandle = (MVMObject *)MVM_file_open_fh(tc, filename, mode);
-    MVMString *result;
-    MVM_io_set_encoding(tc, oshandle, encoding);
-    result = MVM_io_slurp(tc, oshandle);
-    MVM_io_close(tc, oshandle);
-    return result;
-}
-
-/* Writes a string to a file, overwriting it if necessary */
-void MVM_file_spew(MVMThreadContext *tc, MVMString *output, MVMString *filename, MVMString *encoding) {
-    MVMString *mode = MVM_string_utf8_decode(tc, tc->instance->VMString, "w", 1);
-    MVMObject *fh = MVM_file_open_fh(tc, filename, mode);
-    MVM_io_set_encoding(tc, fh, encoding);
-    MVM_io_write_string(tc, fh, output, 0);
-    MVM_io_close(tc, fh);
-}
-
-/* return an OSHandle representing one of the standard streams */
-MVMObject * MVM_file_get_stdstream(MVMThreadContext *tc, MVMuint8 type, MVMuint8 readable) {
-    switch(uv_guess_handle(type)) {
-        case UV_TTY: {
-            uv_tty_t * const handle = MVM_malloc(sizeof(uv_tty_t));
-            uv_tty_init(tc->loop, handle, type, readable);
-#ifdef _WIN32
-            uv_stream_set_blocking((uv_stream_t *)handle, 1);
-#else
-            ((uv_stream_t *)handle)->flags = 0x80; /* UV_STREAM_BLOCKING */
-#endif
-            return MVM_io_syncstream_from_uvstream(tc, (uv_stream_t *)handle, 1);
-        }
-        case UV_FILE:
-            return MVM_file_handle_from_fd(tc, type);
-        case UV_NAMED_PIPE: {
-            uv_pipe_t * const handle = MVM_malloc(sizeof(uv_pipe_t));
-            uv_pipe_init(tc->loop, handle, 0);
-#ifdef _WIN32
-            uv_stream_set_blocking((uv_stream_t *)handle, 1);
-#else
-            ((uv_stream_t *)handle)->flags = 0x80; /* UV_STREAM_BLOCKING */
-#endif
-            uv_pipe_open(handle, type);
-            return MVM_io_syncstream_from_uvstream(tc, (uv_stream_t *)handle, 0);
-        }
-        default:
-            MVM_exception_throw_adhoc(tc, "get_stream failed, unsupported std handle");
-    }
+/* Get a MoarVM file handle representing one of the standard streams */
+MVMObject * MVM_file_get_stdstream(MVMThreadContext *tc, MVMint32 descriptor) {
+    return MVM_file_handle_from_fd(tc, descriptor);
 }
 
 /* Takes a filename and prepends any --libpath value we have, if it's not an

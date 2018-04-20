@@ -220,7 +220,7 @@ knowhow NQPConcreteRoleHOW {
     # to go with it, and return that.
     method new_type(:$name = '<anon>', :$instance_of!) {
         my $metarole := self.new(:name($name), :instance_of($instance_of));
-        nqp::newtype($metarole, 'Uninstantiable');
+        nqp::setdebugtypename(nqp::newtype($metarole, 'Uninstantiable'), $name);
     }
 
     method add_method($obj, $name, $code_obj) {
@@ -285,7 +285,7 @@ knowhow NQPConcreteRoleHOW {
     ## Introspecty
     ##
 
-    method methods($obj, :$local) {
+    method methods($obj, :$local, :$all) {
         my @meths;
         for %!methods {
             nqp::push(@meths, nqp::iterval($_));
@@ -503,7 +503,9 @@ knowhow NQPParametricRoleHOW {
     # to go with it, and return that.
     method new_type(:$name = '<anon>') {
         my $metarole := self.new(:name($name));
-        nqp::setwho(nqp::newtype($metarole, 'Uninstantiable'), {});
+        nqp::setdebugtypename(
+            nqp::setwho(nqp::newtype($metarole, 'Uninstantiable'), {}),
+            $name);
     }
     
     method set_body_block($obj, $body_block) {
@@ -589,7 +591,7 @@ knowhow NQPParametricRoleHOW {
             my $meth := nqp::can(nqp::iterval($_), 'instantiate_generic')
                 ?? nqp::iterval($_).instantiate_generic($pad)
                 !! nqp::iterval($_).clone();
-            if nqp::substr($name, 0, 12) eq '!!LATENAME!!' {
+            if nqp::eqat($name, '!!LATENAME!!', 0) {
                 $name := nqp::atkey($pad, nqp::substr($name, 12));
                 $meth.'!set_name'($name);
             }
@@ -614,7 +616,7 @@ knowhow NQPParametricRoleHOW {
     ## Introspecty
     ##
 
-    method methods($obj, :$local) {
+    method methods($obj, :$local, :$all) {
         my @meths;
         for %!methods {
             nqp::push(@meths, nqp::iterval($_));
@@ -683,10 +685,11 @@ knowhow NQPClassHOW {
     # Full list of roles that we do.
     has @!done;
     
-    # Cached values, which are thrown away if the class changes.
+    # Cached values, which are thrown away if the class changes. We don't ever
+    # mutate the %!caches hash, but instead clone/mutate/replace; additions
+    # are rare compared to lookups, and this beats locking.
     has %!caches;
     has $!is_mixin;
-
 
     # Call tracing.
     has $!trace;
@@ -737,7 +740,9 @@ knowhow NQPClassHOW {
     # to go with it, and return that.
     method new_type(:$name = '<anon>', :$repr = 'P6opaque') {
         my $metaclass := self.new(:name($name));
-        nqp::setwho(nqp::newtype($metaclass, $repr), {});
+        nqp::setdebugtypename(
+            nqp::setwho(nqp::newtype($metaclass, $repr), {}),
+            $name);
     }
 
     method add_method($obj, $name, $code_obj) {
@@ -864,7 +869,6 @@ knowhow NQPClassHOW {
         self.publish_method_cache($obj);
         self.publish_boolification_spec($obj);
 
-        
         # Create BUILDPLAN.
         self.create_BUILDPLAN($obj);
         
@@ -987,7 +991,7 @@ knowhow NQPClassHOW {
             if nqp::elems(@immediate_parents) == 1 {
                 @result := compute_c3_mro(@immediate_parents[0]);
             } else {
-                # Build merge list of lineraizations of all our parents, add
+                # Build merge list of linearizations of all our parents, add
                 # immediate parents and merge.
                 my @merge_list;
                 for @immediate_parents {
@@ -1072,8 +1076,16 @@ knowhow NQPClassHOW {
 
     method publish_type_cache($obj) {
         my @tc;
-        for @!mro { nqp::push(@tc, $_); }
-        for @!done { nqp::push(@tc, $_); }
+
+        for self.mro($obj) {
+            nqp::push(@tc, $_);
+            if nqp::can($_.HOW, 'role_typecheck_list') {
+                for $_.HOW.role_typecheck_list($_) {
+                    nqp::push(@tc, $_);
+                }
+            }
+        }
+
         nqp::settypecache($obj, @tc)
     }
     
@@ -1111,13 +1123,16 @@ knowhow NQPClassHOW {
     # Creates the plan for building up the object. This works
     # out what we'll need to do up front, so we can just zip
     # through the "todo list" each time we need to make an object.
-    # The plan is an array of arrays. The first element of each
-    # nested array is an "op" representing the task to perform:
-    #   0 code = call specified BUILD method
-    #   1 class name attr_name = try to find initialization value
-    #   2 class name attr_name = try to find initialization value, or set nqp::list()
-    #   3 class name attr_name = try to find initialization value, or set nqp::hash()
-    #   4 class attr_name code = call default value closure if needed
+    # The plan is an array of tasks. A task is either a method to
+    # be called, or an array in which The first element is an "op"
+    # representing the task to perform:
+    #   code = call specified BUILD method
+    #   0 class name attr_name = find initialization value
+    #   4 class attr_name code = call default value closure if uninitialized
+    #   11 class name attr_name = find initialization value, or set nqp::list()
+    #   12 class name attr_name = find initialization value, or set nqp::hash()
+    # Note the numbers are a bit odd, but they are this way to conform to the
+    # HLL version of BUILDALL.
     method create_BUILDPLAN($obj) {
         # First, we'll create the build plan for just this class.
         my @plan;
@@ -1127,7 +1142,7 @@ knowhow NQPClassHOW {
         my $build := $obj.HOW.method_table($obj)<BUILD>;
         if nqp::defined($build) {
             # We'll call the custom one.
-            nqp::push(@plan, [0, $build]);
+            nqp::push(@plan, $build);
         }
         else {
             # No custom BUILD. Rather than having an actual BUILD
@@ -1137,8 +1152,8 @@ knowhow NQPClassHOW {
                 my $attr_name := $_.name;
                 my $name      := nqp::substr($attr_name, 2);
                 my $sigil     := nqp::substr($attr_name, 0, 1);
-                my $sigop     := $sigil eq '@' ?? 2 !! $sigil eq '%' ?? 3 !! 1;
-                nqp::push(@plan, [$sigop, $obj, $name, $attr_name]);
+                my $sigop     := $sigil eq '@' ?? 11 !! $sigil eq '%' ?? 12 !! 0;
+                nqp::push(@plan, [$sigop, $obj, $attr_name, $name]);
             }
         }
         
@@ -1194,7 +1209,11 @@ knowhow NQPClassHOW {
         @!roles
     }
 
-    method methods($obj, :$local = 0) {
+    method role_typecheck_list($obj) {
+        @!done;
+    }
+
+    method methods($obj, :$local = 0, :$all) {
         if $local {
             @!method_order
         }
@@ -1302,25 +1321,15 @@ knowhow NQPClassHOW {
         nqp::null()
     }
 
-    method make_tracer($name, $found) {
-        -> *@pos, *%named { 
-            nqp::say(nqp::x('  ', $!trace_depth) ~ "Calling $name");
-            $!trace_depth := $!trace_depth + 1;
-            my $result := $found(|@pos, |%named);
-            $!trace_depth := $!trace_depth - 1;
-            $result
-        }
-    }
-
     ##
     ## Cache-related
     ##
 
     method cache($obj, $key, $value_generator) {
-        %!caches := nqp::hash() unless nqp::ishash(%!caches);
-        nqp::existskey(%!caches, $key) ??
-            %!caches{$key} !!
-            (%!caches{$key} := $value_generator())
+        my %orig_cache := %!caches;
+        nqp::ishash(%orig_cache) && nqp::existskey(%!caches, $key)
+            ?? %!caches{$key}
+            !! self.cache_add($obj, $key, $value_generator())
     }
     
     method flush_cache($obj) {
@@ -1335,8 +1344,13 @@ knowhow NQPClassHOW {
     }
 
     method cache_add($obj, $key, $value) {
-        %!caches := nqp::hash() unless nqp::ishash(%!caches);
-        %!caches{$key} := $value;
+        my %orig_cache := %!caches;
+        my %copy := nqp::ishash(%orig_cache) ?? nqp::clone(%orig_cache) !! {};
+        %copy{$key} := $value;
+        nqp::scwbdisable();
+        %!caches := %copy;
+        nqp::scwbenable();
+        $value
     }
 
     ##
@@ -1398,14 +1412,33 @@ knowhow NQPClassHOW {
         $!trace := 1;
         $!trace_depth := $depth // 0;
         @!trace_exclude := @exclude;
-        nqp::setmethcacheauth($obj, 0);
-        nqp::setmethcache($obj, nqp::hash());
+        my %trace_cache;
+        my @mro_reversed := reverse(@!mro);
+        for @mro_reversed {
+            for $_.HOW.method_table($_) {
+                my $name := nqp::iterkey_s($_);
+                %trace_cache{$name} := self.should_trace($obj, $name)
+                    ?? self.make_tracer($name, nqp::iterval($_))
+                    !! nqp::iterval($_);
+            }
+        }
+        nqp::setmethcache($obj, %trace_cache);
     }
     method trace-off($obj) {
+        self.publish_method_cache($obj);
         $!trace := 0;
     }
+    method make_tracer($name, $found) {
+        -> *@pos, *%named {
+            nqp::say(nqp::x('  ', $!trace_depth) ~ "Calling $name");
+            $!trace_depth := $!trace_depth + 1;
+            my $result := $found(|@pos, |%named);
+            $!trace_depth := $!trace_depth - 1;
+            $result
+        }
+    }
     method should_trace($obj, $name) {
-        return 0 if nqp::substr($name, 0, 1) eq '!';
+        return 0 if nqp::eqat($name, '!', 0);
         for @!trace_exclude {
             return 0 if $name eq $_;
         }
@@ -1443,7 +1476,9 @@ knowhow NQPNativeHOW {
     # XXX Should check that this is an inlineable REPR.
     method new_type(:$name = '<anon>', :$repr!) {
         my $metaclass := self.new(:name($name));
-        nqp::setwho(nqp::newtype($metaclass, $repr), {});
+        nqp::setdebugtypename(
+            nqp::setwho(nqp::newtype($metaclass, $repr), {}),
+            $name)
     }
 
     method add_method($obj, $name, $code_obj) {
@@ -1595,7 +1630,9 @@ knowhow NQPModuleHOW {
     # to go with it, and return that.
     method new_type(:$name = '<anon>') {
         my $metaclass := self.new(:name($name));
-        nqp::setwho(nqp::newtype($metaclass, 'Uninstantiable'), {});
+        nqp::setdebugtypename(
+            nqp::setwho(nqp::newtype($metaclass, 'Uninstantiable'), {}),
+            $name);
     }
 
     method add_method($obj, $name, $code_obj) {

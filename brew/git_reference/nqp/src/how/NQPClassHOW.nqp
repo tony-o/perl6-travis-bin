@@ -32,15 +32,11 @@ knowhow NQPClassHOW {
     # Full list of roles that we do.
     has @!done;
     
-    # Cached values, which are thrown away if the class changes.
+    # Cached values, which are thrown away if the class changes. We don't ever
+    # mutate the %!caches hash, but instead clone/mutate/replace; additions
+    # are rare compared to lookups, and this beats locking.
     has %!caches;
     has $!is_mixin;
-
-#?if parrot
-    # Parrot-specific vtable mapping hash. Maps vtable name to method.
-    has %!parrot_vtable_mapping;
-    has %!parrot_vtable_handler_mapping;
-#?endif
 
     # Call tracing.
     has $!trace;
@@ -79,10 +75,6 @@ knowhow NQPClassHOW {
         %!method-vtable-slots := nqp::hash();
         @!mro := nqp::list();
         @!done := nqp::list();
-#?if parrot
-        %!parrot_vtable_mapping := nqp::hash();
-        %!parrot_vtable_handler_mapping := nqp::hash();
-#?endif
         @!BUILDALLPLAN := nqp::list();
         @!BUILDPLAN := nqp::list();
         $!is_mixin := 0;
@@ -95,7 +87,9 @@ knowhow NQPClassHOW {
     # to go with it, and return that.
     method new_type(:$name = '<anon>', :$repr = 'P6opaque') {
         my $metaclass := self.new(:name($name));
-        nqp::setwho(nqp::newtype($metaclass, $repr), {});
+        nqp::setdebugtypename(
+            nqp::setwho(nqp::newtype($metaclass, $repr), {}),
+            $name);
     }
 
     method add_method($obj, $name, $code_obj) {
@@ -174,10 +168,6 @@ knowhow NQPClassHOW {
         self.publish_type_cache($obj);
         self.publish_method_cache($obj);
         self.publish_boolification_spec($obj);
-#?if parrot
-        self.publish_parrot_vtable_mapping($obj);
-		self.publish_parrot_vtablee_handler_mapping($obj);
-#?endif
         1;
     }
 
@@ -190,25 +180,6 @@ knowhow NQPClassHOW {
         nqp::push(@!roles, $role);
     }
 
-#?if parrot
-    method add_parrot_vtable_mapping($obj, $name, $meth) {
-        if nqp::defined(%!parrot_vtable_mapping{$name}) {
-            nqp::die("Class '" ~ $!name ~
-                "' already has a Parrot v-table override for '" ~
-                $name ~ "'");
-        }
-        %!parrot_vtable_mapping{$name} := $meth;
-    }
-
-    method add_parrot_vtable_handler_mapping($obj, $name, $att_name) {
-        if nqp::defined(%!parrot_vtable_handler_mapping{$name}) {
-            nqp::die("Class '" ~ $!name ~
-                "' already has a Parrot v-table handler for '" ~
-                $name ~ "'");
-        }
-        %!parrot_vtable_handler_mapping{$name} := [ $obj, $att_name ];
-    }
-#?endif
 
     method compose($obj) {
         # Incorporate roles. First, specialize them with the type object
@@ -245,12 +216,6 @@ knowhow NQPClassHOW {
         self.publish_method_cache($obj);
         self.publish_boolification_spec($obj);
 
-#?if parrot
-        # Install Parrot v-table mapping.
-        self.publish_parrot_vtable_mapping($obj);
-		self.publish_parrot_vtablee_handler_mapping($obj);
-#?endif
-        
         # Create BUILDPLAN.
         self.create_BUILDPLAN($obj);
         
@@ -373,7 +338,7 @@ knowhow NQPClassHOW {
             if nqp::elems(@immediate_parents) == 1 {
                 @result := compute_c3_mro(@immediate_parents[0]);
             } else {
-                # Build merge list of lineraizations of all our parents, add
+                # Build merge list of linearizations of all our parents, add
                 # immediate parents and merge.
                 my @merge_list;
                 for @immediate_parents {
@@ -458,8 +423,16 @@ knowhow NQPClassHOW {
 
     method publish_type_cache($obj) {
         my @tc;
-        for @!mro { nqp::push(@tc, $_); }
-        for @!done { nqp::push(@tc, $_); }
+
+        for self.mro($obj) {
+            nqp::push(@tc, $_);
+            if nqp::can($_.HOW, 'role_typecheck_list') {
+                for $_.HOW.role_typecheck_list($_) {
+                    nqp::push(@tc, $_);
+                }
+            }
+        }
+
         nqp::settypecache($obj, @tc)
     }
     
@@ -493,50 +466,20 @@ knowhow NQPClassHOW {
         }
     }
 
-#?if parrot
-    method publish_parrot_vtable_mapping($obj) {
-        my %mapping;
-        my %seen_handlers;
-        for @!mro {
-            for $_.HOW.parrot_vtable_handler_mappings($_, :local(1)) {
-                %seen_handlers{$_.key} := 1;
-            }
-            for $_.HOW.parrot_vtable_mappings($_, :local(1)) {
-                unless nqp::existskey(%mapping, $_.key)
-                        || nqp::existskey(%seen_handlers, $_.key) {
-                    %mapping{$_.key} := $_.value;
-                }
-            }
-        }
-        if +%mapping {
-            pir::stable_publish_vtable_mapping__0PP($obj, %mapping);
-        }
-    }
-
-    method publish_parrot_vtablee_handler_mapping($obj) {
-        my %mapping;
-        my @mro_reversed := reverse(@!mro);
-        for @mro_reversed {
-            for $_.HOW.parrot_vtable_handler_mappings($_, :local(1)) {
-                %mapping{$_.key} := $_.value;
-            }
-        }
-        if +%mapping {
-            pir::stable_publish_vtable_handler_mapping__0PP($obj, %mapping);
-        }
-    }
-#?endif
 
     # Creates the plan for building up the object. This works
     # out what we'll need to do up front, so we can just zip
     # through the "todo list" each time we need to make an object.
-    # The plan is an array of arrays. The first element of each
-    # nested array is an "op" representing the task to perform:
-    #   0 code = call specified BUILD method
-    #   1 class name attr_name = try to find initialization value
-    #   2 class name attr_name = try to find initialization value, or set nqp::list()
-    #   3 class name attr_name = try to find initialization value, or set nqp::hash()
-    #   4 class attr_name code = call default value closure if needed
+    # The plan is an array of tasks. A task is either a method to
+    # be called, or an array in which The first element is an "op"
+    # representing the task to perform:
+    #   code = call specified BUILD method
+    #   0 class name attr_name = find initialization value
+    #   4 class attr_name code = call default value closure if uninitialized
+    #   11 class name attr_name = find initialization value, or set nqp::list()
+    #   12 class name attr_name = find initialization value, or set nqp::hash()
+    # Note the numbers are a bit odd, but they are this way to conform to the
+    # HLL version of BUILDALL.
     method create_BUILDPLAN($obj) {
         # First, we'll create the build plan for just this class.
         my @plan;
@@ -546,7 +489,7 @@ knowhow NQPClassHOW {
         my $build := $obj.HOW.method_table($obj)<BUILD>;
         if nqp::defined($build) {
             # We'll call the custom one.
-            nqp::push(@plan, [0, $build]);
+            nqp::push(@plan, $build);
         }
         else {
             # No custom BUILD. Rather than having an actual BUILD
@@ -556,8 +499,8 @@ knowhow NQPClassHOW {
                 my $attr_name := $_.name;
                 my $name      := nqp::substr($attr_name, 2);
                 my $sigil     := nqp::substr($attr_name, 0, 1);
-                my $sigop     := $sigil eq '@' ?? 2 !! $sigil eq '%' ?? 3 !! 1;
-                nqp::push(@plan, [$sigop, $obj, $name, $attr_name]);
+                my $sigop     := $sigil eq '@' ?? 11 !! $sigil eq '%' ?? 12 !! 0;
+                nqp::push(@plan, [$sigop, $obj, $attr_name, $name]);
             }
         }
         
@@ -613,7 +556,11 @@ knowhow NQPClassHOW {
         @!roles
     }
 
-    method methods($obj, :$local = 0) {
+    method role_typecheck_list($obj) {
+        @!done;
+    }
+
+    method methods($obj, :$local = 0, :$all) {
         if $local {
             @!method_order
         }
@@ -666,15 +613,6 @@ knowhow NQPClassHOW {
         @attrs
     }
 
-#?if parrot
-    method parrot_vtable_mappings($obj, :$local!) {
-        %!parrot_vtable_mapping
-    }
-
-    method parrot_vtable_handler_mappings($obj, :$local!) {
-        %!parrot_vtable_handler_mapping
-    }
-#?endif
 
     ##
     ## Checky
@@ -730,25 +668,15 @@ knowhow NQPClassHOW {
         nqp::null()
     }
 
-    method make_tracer($name, $found) {
-        -> *@pos, *%named { 
-            nqp::say(nqp::x('  ', $!trace_depth) ~ "Calling $name");
-            $!trace_depth := $!trace_depth + 1;
-            my $result := $found(|@pos, |%named);
-            $!trace_depth := $!trace_depth - 1;
-            $result
-        }
-    }
-
     ##
     ## Cache-related
     ##
 
     method cache($obj, $key, $value_generator) {
-        %!caches := nqp::hash() unless nqp::ishash(%!caches);
-        nqp::existskey(%!caches, $key) ??
-            %!caches{$key} !!
-            (%!caches{$key} := $value_generator())
+        my %orig_cache := %!caches;
+        nqp::ishash(%orig_cache) && nqp::existskey(%!caches, $key)
+            ?? %!caches{$key}
+            !! self.cache_add($obj, $key, $value_generator())
     }
     
     method flush_cache($obj) {
@@ -763,8 +691,13 @@ knowhow NQPClassHOW {
     }
 
     method cache_add($obj, $key, $value) {
-        %!caches := nqp::hash() unless nqp::ishash(%!caches);
-        %!caches{$key} := $value;
+        my %orig_cache := %!caches;
+        my %copy := nqp::ishash(%orig_cache) ?? nqp::clone(%orig_cache) !! {};
+        %copy{$key} := $value;
+        nqp::scwbdisable();
+        %!caches := %copy;
+        nqp::scwbenable();
+        $value
     }
 
     ##
@@ -826,14 +759,33 @@ knowhow NQPClassHOW {
         $!trace := 1;
         $!trace_depth := $depth // 0;
         @!trace_exclude := @exclude;
-        nqp::setmethcacheauth($obj, 0);
-        nqp::setmethcache($obj, nqp::hash());
+        my %trace_cache;
+        my @mro_reversed := reverse(@!mro);
+        for @mro_reversed {
+            for $_.HOW.method_table($_) {
+                my $name := nqp::iterkey_s($_);
+                %trace_cache{$name} := self.should_trace($obj, $name)
+                    ?? self.make_tracer($name, nqp::iterval($_))
+                    !! nqp::iterval($_);
+            }
+        }
+        nqp::setmethcache($obj, %trace_cache);
     }
     method trace-off($obj) {
+        self.publish_method_cache($obj);
         $!trace := 0;
     }
+    method make_tracer($name, $found) {
+        -> *@pos, *%named {
+            nqp::say(nqp::x('  ', $!trace_depth) ~ "Calling $name");
+            $!trace_depth := $!trace_depth + 1;
+            my $result := $found(|@pos, |%named);
+            $!trace_depth := $!trace_depth - 1;
+            $result
+        }
+    }
     method should_trace($obj, $name) {
-        return 0 if nqp::substr($name, 0, 1) eq '!';
+        return 0 if nqp::eqat($name, '!', 0);
         for @!trace_exclude {
             return 0 if $name eq $_;
         }

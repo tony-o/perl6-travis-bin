@@ -1,7 +1,7 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps MultiDimArray_this_repr;
 
 /* Computes the flat number of elements from the given dimension list. */
 static MVMint64 flat_elements(MVMint64 num_dimensions, MVMint64 *dimensions) {
@@ -42,7 +42,7 @@ MVM_STATIC_INLINE size_t indices_to_flat_index(MVMThreadContext *tc, MVMint64 nu
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st  = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st  = MVM_gc_allocate_stable(tc, &MultiDimArray_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -247,7 +247,7 @@ static void gc_mark(MVMThreadContext *tc, MVMSTable *st, void *data, MVMGCWorkli
 
 /* Called by the VM in order to free memory associated with this object. */
 static void gc_free(MVMThreadContext *tc, MVMObject *obj) {
-	MVMMultiDimArray *arr = (MVMMultiDimArray *)obj;
+    MVMMultiDimArray *arr = (MVMMultiDimArray *)obj;
     MVMMultiDimArrayREPRData *repr_data = (MVMMultiDimArrayREPRData *)STABLE(obj)->REPR_data;
     if (arr->body.slots.any)
         MVM_fixed_size_free(tc, tc->instance->fsa,
@@ -292,7 +292,7 @@ static void serialize(MVMThreadContext *tc, MVMSTable *st, void *data, MVMSerial
 
     /* Write out dimensions. */
     for (i = 0; i < repr_data->num_dimensions; i++)
-        MVM_serialization_write_varint(tc, writer, body->dimensions[i]);
+        MVM_serialization_write_int(tc, writer, body->dimensions[i]);
 
     /* Write out values. */
     flat_elems = flat_elements(repr_data->num_dimensions, body->dimensions);
@@ -305,28 +305,28 @@ static void serialize(MVMThreadContext *tc, MVMSTable *st, void *data, MVMSerial
                 MVM_serialization_write_str(tc, writer, body->slots.s[i]);
                 break;
             case MVM_ARRAY_I64:
-                MVM_serialization_write_varint(tc, writer, (MVMint64)body->slots.i64[i]);
+                MVM_serialization_write_int(tc, writer, (MVMint64)body->slots.i64[i]);
                 break;
             case MVM_ARRAY_I32:
-                MVM_serialization_write_varint(tc, writer, (MVMint64)body->slots.i32[i]);
+                MVM_serialization_write_int(tc, writer, (MVMint64)body->slots.i32[i]);
                 break;
             case MVM_ARRAY_I16:
-                MVM_serialization_write_varint(tc, writer, (MVMint64)body->slots.i16[i]);
+                MVM_serialization_write_int(tc, writer, (MVMint64)body->slots.i16[i]);
                 break;
             case MVM_ARRAY_I8:
-                MVM_serialization_write_varint(tc, writer, (MVMint64)body->slots.i8[i]);
+                MVM_serialization_write_int(tc, writer, (MVMint64)body->slots.i8[i]);
                 break;
             case MVM_ARRAY_U64:
-                MVM_serialization_write_varint(tc, writer, (MVMint64)body->slots.u64[i]);
+                MVM_serialization_write_int(tc, writer, (MVMint64)body->slots.u64[i]);
                 break;
             case MVM_ARRAY_U32:
-                MVM_serialization_write_varint(tc, writer, (MVMint64)body->slots.u32[i]);
+                MVM_serialization_write_int(tc, writer, (MVMint64)body->slots.u32[i]);
                 break;
             case MVM_ARRAY_U16:
-                MVM_serialization_write_varint(tc, writer, (MVMint64)body->slots.u16[i]);
+                MVM_serialization_write_int(tc, writer, (MVMint64)body->slots.u16[i]);
                 break;
             case MVM_ARRAY_U8:
-                MVM_serialization_write_varint(tc, writer, (MVMint64)body->slots.u8[i]);
+                MVM_serialization_write_int(tc, writer, (MVMint64)body->slots.u8[i]);
                 break;
             case MVM_ARRAY_N64:
                 MVM_serialization_write_num(tc, writer, (MVMnum64)body->slots.n64[i]);
@@ -345,11 +345,10 @@ static void deserialize(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, vo
     MVMMultiDimArrayREPRData *repr_data = (MVMMultiDimArrayREPRData *)st->REPR_data;
     MVMMultiDimArrayBody     *body      = (MVMMultiDimArrayBody *)data;
     MVMint64 i, flat_elems;
-    size_t size;
 
     /* Read in dimensions. */
     for (i = 0; i < repr_data->num_dimensions; i++)
-        body->dimensions[i] = MVM_serialization_read_varint(tc, reader);
+        body->dimensions[i] = MVM_serialization_read_int(tc, reader);
 
     /* Allocate storage. */
     body->slots.any = MVM_fixed_size_alloc_zeroed(tc, tc->instance->fsa,
@@ -366,28 +365,28 @@ static void deserialize(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, vo
                 MVM_ASSIGN_REF(tc, &(root->header), body->slots.s[i], MVM_serialization_read_str(tc, reader));
                 break;
             case MVM_ARRAY_I64:
-                body->slots.i64[i] = MVM_serialization_read_varint(tc, reader);
+                body->slots.i64[i] = MVM_serialization_read_int(tc, reader);
                 break;
             case MVM_ARRAY_I32:
-                body->slots.i32[i] = (MVMint32)MVM_serialization_read_varint(tc, reader);
+                body->slots.i32[i] = (MVMint32)MVM_serialization_read_int(tc, reader);
                 break;
             case MVM_ARRAY_I16:
-                body->slots.i16[i] = (MVMint16)MVM_serialization_read_varint(tc, reader);
+                body->slots.i16[i] = (MVMint16)MVM_serialization_read_int(tc, reader);
                 break;
             case MVM_ARRAY_I8:
-                body->slots.i8[i] = (MVMint8)MVM_serialization_read_varint(tc, reader);
+                body->slots.i8[i] = (MVMint8)MVM_serialization_read_int(tc, reader);
                 break;
             case MVM_ARRAY_U64:
-                body->slots.i64[i] = MVM_serialization_read_varint(tc, reader);
+                body->slots.i64[i] = MVM_serialization_read_int(tc, reader);
                 break;
             case MVM_ARRAY_U32:
-                body->slots.i32[i] = (MVMuint32)MVM_serialization_read_varint(tc, reader);
+                body->slots.i32[i] = (MVMuint32)MVM_serialization_read_int(tc, reader);
                 break;
             case MVM_ARRAY_U16:
-                body->slots.i16[i] = (MVMuint16)MVM_serialization_read_varint(tc, reader);
+                body->slots.i16[i] = (MVMuint16)MVM_serialization_read_int(tc, reader);
                 break;
             case MVM_ARRAY_U8:
-                body->slots.i8[i] = (MVMuint8)MVM_serialization_read_varint(tc, reader);
+                body->slots.i8[i] = (MVMuint8)MVM_serialization_read_int(tc, reader);
                 break;
             case MVM_ARRAY_N64:
                 body->slots.n64[i] = MVM_serialization_read_num(tc, reader);
@@ -415,7 +414,14 @@ static void serialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerializ
 
 /* Deserializes the REPR data. */
 static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerializationReader *reader) {
-    MVMint64 num_dims = MVM_serialization_read_int(tc, reader);
+    MVMint64 num_dims;
+
+    if (reader->root.version >= 19) {
+        num_dims = MVM_serialization_read_int(tc, reader);
+    } else {
+        num_dims = MVM_serialization_read_int64(tc, reader);
+    }
+
     if (num_dims > 0) {
         MVMMultiDimArrayREPRData *repr_data = (MVMMultiDimArrayREPRData *)MVM_malloc(sizeof(MVMMultiDimArrayREPRData));
         MVMObject *type;
@@ -676,7 +682,7 @@ static void set_dimensions(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
     }
     else {
         MVM_exception_throw_adhoc(tc,
-            "Array type of %"PRId64" dimensions cannot be intialized with %"PRId64" dimensions",
+            "Array type of %"PRId64" dimensions cannot be initialized with %"PRId64" dimensions",
             repr_data->num_dimensions, num_dimensions);
     }
 }
@@ -747,12 +753,42 @@ static MVMStorageSpec get_elem_storage_spec(MVMThreadContext *tc, MVMSTable *st)
     return spec;
 }
 
-/* Initializes the representation. */
-const MVMREPROps * MVMMultiDimArray_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+AO_t * pos_as_atomic_multidim(MVMThreadContext *tc, MVMSTable *st,
+                              MVMObject *root, void *data,
+                              MVMint64 num_indices, MVMint64 *indices) {
+    MVMMultiDimArrayREPRData *repr_data = (MVMMultiDimArrayREPRData *)st->REPR_data;
+    if (num_indices == repr_data->num_dimensions) {
+        MVMMultiDimArrayBody *body = (MVMMultiDimArrayBody *)data;
+        size_t flat_index = indices_to_flat_index(tc, repr_data->num_dimensions,
+            body->dimensions, indices);
+        if (sizeof(AO_t) == 8 && (repr_data->slot_type == MVM_ARRAY_I64 ||
+                repr_data->slot_type == MVM_ARRAY_U64))
+            return (AO_t *)&(body->slots.i64[flat_index]);
+        if (sizeof(AO_t) == 4 && (repr_data->slot_type == MVM_ARRAY_I32 ||
+                repr_data->slot_type == MVM_ARRAY_U32))
+            return (AO_t *)&(body->slots.i32[flat_index]);
+        MVM_exception_throw_adhoc(tc,
+            "Can only do integer atomic operation on native integer array element of atomic size");
+    }
+    else {
+        MVM_exception_throw_adhoc(tc,
+            "Cannot access %"PRId64" dimension array with %"PRId64" indices",
+            repr_data->num_dimensions, num_indices);
+    }
 }
 
-static const MVMREPROps this_repr = {
+static AO_t * pos_as_atomic(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
+                            void *data, MVMint64 index) {
+    return pos_as_atomic_multidim(tc, st, root, data, 1, &index);
+}
+
+
+/* Initializes the representation. */
+const MVMREPROps * MVMMultiDimArray_initialize(MVMThreadContext *tc) {
+    return &MultiDimArray_this_repr;
+}
+
+static const MVMREPROps MultiDimArray_this_repr = {
     type_object_for,
     allocate,
     NULL, /* initialize */
@@ -772,7 +808,9 @@ static const MVMREPROps this_repr = {
         bind_pos_multidim,
         dimensions,
         set_dimensions,
-        get_elem_storage_spec
+        get_elem_storage_spec,
+        pos_as_atomic,
+        pos_as_atomic_multidim
     },
     MVM_REPR_DEFAULT_ASS_FUNCS,
     elems,
@@ -792,6 +830,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "MultiDimArray", /* name */
     MVM_REPR_ID_MultiDimArray,
-    0, /* refs_frames */
     NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

@@ -92,6 +92,11 @@ public class HLLConfig {
     public SixModelObject exitHandler;
 
     /**
+     * HLL Handler for lexical exceptions without handler.
+     */
+    public SixModelObject lexicalHandlerNotFoundError;
+
+    /**
      * Native reference types.
      */
     public SixModelObject intLexRef;
@@ -103,4 +108,7 @@ public class HLLConfig {
     public SixModelObject intPosRef;
     public SixModelObject numPosRef;
     public SixModelObject strPosRef;
+    public SixModelObject intMultidimRef;
+    public SixModelObject numMultidimRef;
+    public SixModelObject strMultidimRef;
 }

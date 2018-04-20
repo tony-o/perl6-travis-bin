@@ -7,9 +7,9 @@
  */
 
 /* Version information. */
-#define MVM_VERSION "2016.03"
-#define MVM_VERSION_MAJOR 2016
-#define MVM_VERSION_MINOR 03
+#define MVM_VERSION "2017.10"
+#define MVM_VERSION_MAJOR 2017
+#define MVM_VERSION_MINOR 10
 #define MVM_VERSION_PATCH 0
 
 /* Various compiler-specific pragmii. */
@@ -29,8 +29,8 @@
 #endif
 
 /* pthread_yield() detection */
-#if 1
-#define MVM_HAS_PTHREAD_YIELD 1
+#if 0
+#define MVM_HAS_PTHREAD_YIELD 0
 #endif
 
 /* How this compiler does static inline functions. */
@@ -50,9 +50,14 @@
 
 #define MVM_PTR_SIZE 8
 
+
 #if 1
 #define MVM_BOOL _Bool
 #endif
 
 /* Should we translate \n to \r\n on output? */
 #define MVM_TRANSLATE_NEWLINE_OUTPUT 0
+
+#define MVM_JIT_ARCH MVM_JIT_ARCH_X64
+#define MVM_JIT_PLATFORM MVM_JIT_PLATFORM_POSIX
+

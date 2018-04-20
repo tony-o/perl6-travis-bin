@@ -26,10 +26,10 @@ knowhow ModuleLoader {
 #                nqp::push(@search_paths, $_)
 #            }
         }
-        
-        # Add CWD and blib.
-        nqp::push(@search_paths, '.');
-        nqp::push(@search_paths, 'blib');
+        my %env := nqp::getenvhash();
+        if nqp::existskey(%env, 'NQP_LIB') {
+            nqp::push(@search_paths, %env<NQP_LIB>);
+        }
     
         @search_paths
     }
@@ -44,19 +44,7 @@ knowhow ModuleLoader {
         # its mainline. Otherwise, we already loaded it so go on
         # with what we already have.
         my $module_ctx;
-        my $path := nqp::join('/', nqp::split('::', $module_name));
-
-#        my @prefixes := self.search_path('module-path');
-#        for @prefixes -> $prefix {
-#            if nqp::stat("$prefix/$path.jar", 0) {
-#                $path := "$prefix/$path.jar";
-#                last;
-#            }
-#            if nqp::stat("$prefix/$path.class", 0) {
-#                $path := "$prefix/$path.class";
-#                last;
-#            }
-#        }
+        my $path := $module_name;
 
         if nqp::existskey(%modules_loaded, $path) {
             $module_ctx := %modules_loaded{$path};
@@ -167,17 +155,6 @@ knowhow ModuleLoader {
         if $setting_name ne 'NULL' {
             # Add path prefix and .setting suffix.
             my $path := "$setting_name.setting";
-#            my @prefixes := self.search_path('setting-path');
-#            for @prefixes -> $prefix {
-#                if nqp::stat("$prefix/$path.jar", 0) {
-#                    $path := "$prefix/$path.jar";
-#                    last;
-#                }
-#                if nqp::stat("$prefix/$path.class", 0) {
-#                    $path := "$prefix/$path.class";
-#                    last;
-#                }
-#            }
 
             # Unless we already did so, load the setting.
             unless nqp::existskey(%settings_loaded, $path) {
@@ -203,6 +180,11 @@ knowhow ModuleLoader {
                     nqp::die("Unable to load setting $setting_name; maybe it is missing a YOU_ARE_HERE?");
                 }
                 %settings_loaded{$path} := $*MAIN_CTX;
+
+                # HACK - we can't but sprintf into the setting normally as it uses grammars
+                if $setting_name eq 'NQPCORE' {
+                    nqp::loadbytecode("sprintf");
+                }
             }
             
             $setting := %settings_loaded{$path};
@@ -212,6 +194,4 @@ knowhow ModuleLoader {
     }
 }
 
-# Since this *is* the module loader, we can't locate it the normal way by
-# GLOBAL merging. So instead we stash it away in the Parrot namespace tree.
 nqp::bindcurhllsym('ModuleLoader', ModuleLoader);

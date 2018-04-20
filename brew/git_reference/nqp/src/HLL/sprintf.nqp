@@ -7,14 +7,14 @@ my module sprintf {
             :my $*ARGS_USED := 0;
             ^ <statement>* $
         }
-        
-        method panic($message, $payload) { 
+
+        method panic($message, $payload) {
             my $ex := nqp::newexception();
             nqp::setmessage($ex, $message);
             nqp::setpayload($ex, $payload);
             nqp::throw($ex);
         }
-        
+
         token statement {
             [
             | <?[%]> [ [ <directive> | <escape> ]
@@ -37,13 +37,13 @@ my module sprintf {
 
         proto token escape { <...> }
         token escape:sym<%> { '%' <flags>* <size>? <sym> }
-        
+
         token literal { <-[%]>+ }
-        
+
         token idx {
             $<param_index>=[\d+] '$'
         }
-        
+
         token flags {
             | $<space> = ' '
             | $<plus>  = '+'
@@ -51,7 +51,7 @@ my module sprintf {
             | $<zero>  = '0'
             | $<hash>  = '#'
         }
-        
+
         token size {
             \d* | $<star>='*'
         }
@@ -71,7 +71,7 @@ my module sprintf {
                     ~ (+@*ARGS_HAVE < 1      ?? "no argument was"
                         !! +@*ARGS_HAVE == 1 ?? "1 argument was"
                                              !! +@*ARGS_HAVE ~ " arguments were")
-                    ~ " supplied", nqp::hash('DIRECTIVES_COUNT', 
+                    ~ " supplied", nqp::hash('DIRECTIVES_COUNT',
                             nqp::hash('ARGS_HAVE', +@*ARGS_HAVE, 'ARGS_USED', $*ARGS_USED)))
             }
             make nqp::join('', @statements);
@@ -86,11 +86,11 @@ my module sprintf {
 
         sub bad-type-for-directive($type, $directive) {
             my $message := "Directive $directive not applicable for type " ~ $type.HOW.name($type);
-            my $payload := nqp::hash('BAD_TYPE_FOR_DIRECTIVE', 
+            my $payload := nqp::hash('BAD_TYPE_FOR_DIRECTIVE',
                 nqp::hash('TYPE', $type.HOW.name($type), 'DIRECTIVE', $directive));
             panic($message, $payload);
         }
-        
+
         sub infix_x($s, $n) {
             my @strings;
             my int $i := 0;
@@ -106,6 +106,15 @@ my module sprintf {
             else {
                 @*ARGS_HAVE[$*ARGS_USED++]
             }
+        }
+
+        sub floatify($n) {
+            unless $n =:= NQPMu {
+                for @handlers {
+                    return $_.float: $n if $_.mine: $n;
+                }
+            }
+            $n
         }
 
         sub intify($number_representation) {
@@ -158,6 +167,7 @@ my module sprintf {
             elsif $<escape> { $st := $<escape> }
             else { $st := $<literal> }
             my @pieces;
+            # Adds padding chars on in certain cases
             @pieces.push: infix_x(padding_char($st), $st<size>.made - nqp::chars($st.made)) if $st<size>;
             has_flag($st, 'minus')
                 ?? @pieces.unshift: $st.made
@@ -171,23 +181,36 @@ my module sprintf {
                 bad-type-for-directive($next, 'b');
             }
             my $int := intify($next);
-            $int := nqp::base_I($int, 2);
-            my $pre := ($<sym> eq 'b' ?? '0b' !! '0B') if $int ne '0' && has_flag($/, 'hash');
+            my $pad := padding_char($/);
+            my $sign := nqp::islt_I($int, $zero) ?? '-'
+                     !! has_flag($/, 'plus') ?? '+'
+                     !! has_flag($/, 'space') ?? ' '
+                     !! '';
+            $int := nqp::base_I(nqp::abs_I($int, $knowhow), 2);
+            my $size := $<size> ?? $<size>.made !! 0;
+            my $pre := '';
+            $pre := ($<sym> eq 'b' ?? '0b' !! '0B') if $int ne '0' && has_flag($/, 'hash');
             if nqp::chars($<precision>) {
-                $int := '' if $<precision>.made == 0 && $int == 0;
-                $int := $pre ~ infix_x('0', $<precision>.made - nqp::chars($int)) ~ $int;
+                $int := ($<precision>.made == 0 && $int == 0) ?? ''
+                     !! $sign ~ $pre ~ infix_x('0', $<precision>.made - nqp::chars($int)) ~ $int;
             }
             else {
-                $int := $pre ~ $int
+                if $pad ne ' ' && $size {
+                    my $chars_sign_pre := $sign ?? nqp::chars($pre) + 1 !! nqp::chars($pre);
+                    $int := $sign ~ $pre ~ infix_x($pad, $size - $chars_sign_pre - nqp::chars($int)) ~ $int;
+                } else {
+                    $int := $sign ~ $pre ~ $int;
+                }
             }
             make $int;
         }
+
         method directive:sym<c>($/) {
             my $next := next_argument($/);
             CATCH {
                 bad-type-for-directive($next, 'c');
             }
-            make nqp::chr($next)
+            make nqp::chr(intify($next))
         }
 
         method directive:sym<d>($/) {
@@ -198,11 +221,25 @@ my module sprintf {
             my $int := intify($next);
             my $pad := padding_char($/);
             my $sign := nqp::islt_I($int, $zero) ?? '-'
-                     !! has_flag($/, 'plus') ?? '+' 
-                     !! has_flag($/, 'space') ?? ' ' 
+                     !! has_flag($/, 'plus') ?? '+'
+                     !! has_flag($/, 'space') ?? ' '
                      !! '';
             $int := nqp::tostr_I(nqp::abs_I($int, $knowhow));
-            $int := nqp::substr($int, 0, $<precision>.made) if nqp::chars($<precision>);
+
+            # For `d`, precision is how many digits long the number should be,
+            # prefixing it with zeros, as needed. If precision is zero and
+            # our number is zero, then the result is an empty string.
+            if nqp::chars($<precision>) {
+                if my $prec := +$<precision>.made {
+                    if (my $rep := $prec - nqp::chars($int)) > 0 {
+                        $int := infix_x('0', $rep) ~ $int;
+                    }
+                }
+                else {
+                    $int := '' if $int == 0;
+                }
+            }
+
             if $pad ne ' ' && $<size> {
                 $int := $sign ~ infix_x($pad, $<size>.made - nqp::chars($int) - 1) ~ $int;
             }
@@ -223,7 +260,7 @@ my module sprintf {
         sub normalize($float) {
             my @parts := nqp::split('e', nqp::lc($float));
             my $sign := '';
-            if nqp::substr(@parts[0],0,1) eq '-' {
+            if nqp::eqat(@parts[0], '-', 0) {
                 $sign := '-';
                 @parts[0] := nqp::substr(@parts[0], 1);
             }
@@ -257,19 +294,19 @@ my module sprintf {
 
             my $zeroes := infix_x("0", 1 + ($precision > $d ?? $precision - $d  !! 0));
 
-            $lhs_s := nqp::substr($lhs_s, 1) if nqp::substr($lhs_s, 0, 1) eq '-';
+            $lhs_s := nqp::substr($lhs_s, 1) if nqp::eqat($lhs_s, '-', 0);
             my $lhs_I := nqp::fromstr_I($lhs_s, $knowhow);
             my $rhs_I := nqp::fromstr_I("1" ~ $rhs_s ~ $zeroes, $knowhow);      # The leading 1 is to preserve leading zeroes
             my $cc := nqp::chars(nqp::tostr_I($rhs_I));
 
             my $e := nqp::fromnum_I($d > $precision ?? $d - $precision !! 0, $knowhow);
             my $pot := nqp::pow_I(nqp::fromnum_I(10, $knowhow), $e, $knowhow, $knowhow);   # power of ten
-            my $rounder := nqp::mul_I(nqp::fromnum_I(5, $knowhow), $pot, $knowhow);          
+            my $rounder := nqp::mul_I(nqp::fromnum_I(5, $knowhow), $pot, $knowhow);
 
             $rhs_I := nqp::add_I($rhs_I, $rounder, $knowhow);
             $rhs_s := nqp::tostr_I($rhs_I);
 
-            $lhs_I := nqp::add_I($lhs_I, nqp::fromnum_I(1,$knowhow), $knowhow) 
+            $lhs_I := nqp::add_I($lhs_I, nqp::fromnum_I(1,$knowhow), $knowhow)
                 if nqp::substr($rhs_s,0,1) ne '1';          # we had a carry
 
             $lhs_s := nqp::tostr_I($lhs_I);
@@ -295,18 +332,24 @@ my module sprintf {
 #?endif
         }
         sub fixed-point($float, $precision, $size, $pad, $/) {
-            my $sign := $float < 0 ?? '-' 
-                     !! has_flag($/, 'plus') ?? '+' 
-                     !! has_flag($/, 'space') ?? ' ' 
+            # if we have zero; handle its sign: 1/0e0 == +Inf, 1/-0e0 == -Inf
+            my $sign := $float < 0
+                || ( $float == 0 && nqp::islt_n(nqp::div_n(1e0,$float), 0e0) )
+                ?? '-'
+                     !! has_flag($/, 'plus') ?? '+'
+                     !! has_flag($/, 'space') ?? ' '
                      !! '';
             $float := nqp::abs_n($float);
             $float := stringify-to-precision($float, $precision) unless nqp::isnanorinf($float);
             pad-with-sign($sign, $float, $size, $pad);
         }
         sub scientific($float, $e, $precision, $size, $pad, $/) {
-            my $sign := $float < 0 ?? '-' 
-                     !! has_flag($/, 'plus') ?? '+' 
-                     !! has_flag($/, 'space') ?? ' ' 
+            # if we have zero; handle its sign: 1/0e0 == +Inf, 1/-0e0 == -Inf
+            my $sign := $float < 0
+                || ( $float == 0 && nqp::islt_n(nqp::div_n(1e0,$float), 0e0) )
+                ?? '-'
+                     !! has_flag($/, 'plus') ?? '+'
+                     !! has_flag($/, 'space') ?? ' '
                      !! '';
             $float := nqp::abs_n($float);
             unless nqp::isnanorinf($float) {
@@ -323,9 +366,12 @@ my module sprintf {
             pad-with-sign($sign, $float, $size, $pad);
         }
         sub shortest($float, $e, $precision, $size, $pad, $/) {
-            my $sign := $float < 0 ?? '-' 
-                     !! has_flag($/, 'plus') ?? '+' 
-                     !! has_flag($/, 'space') ?? ' ' 
+            # if we have zero; handle its sign: 1/0e0 == +Inf, 1/-0e0 == -Inf
+            my $sign := $float < 0
+                || ( $float == 0 && nqp::islt_n(nqp::div_n(1e0,$float), 0e0) )
+                ?? '-'
+                     !! has_flag($/, 'plus') ?? '+'
+                     !! has_flag($/, 'space') ?? ' '
                      !! '';
             $float := nqp::abs_n($float);
 
@@ -347,7 +393,7 @@ my module sprintf {
                 } else {
                     $sci := $float ~ $e ~ '+' ~ ($exp < 10 ?? '0' !! '') ~ $exp;
                 }
-                
+
                 pad-with-sign($sign, $sci, $size, $pad);
             }
         }
@@ -357,7 +403,7 @@ my module sprintf {
             CATCH {
                 bad-type-for-directive($next, 'e');
             }
-            my $float := $next;
+            my $float := floatify($next);
             my $precision := $<precision> ?? $<precision>.made !! 6;
             my $pad := padding_char($/);
             my $size := $<size> ?? $<size>.made !! 0;
@@ -368,7 +414,7 @@ my module sprintf {
             CATCH {
                 bad-type-for-directive($next, 'f');
             }
-            my $int := $next;
+            my $int := floatify($next);
             my $precision := $<precision> ?? $<precision>.made !! 6;
             my $pad := padding_char($/);
             my $size := $<size> ?? $<size>.made !! 0;
@@ -379,7 +425,7 @@ my module sprintf {
             CATCH {
                 bad-type-for-directive($next, 'g');
             }
-            my $float := $next;
+            my $float := floatify($next);
             my $precision := $<precision> ?? $<precision>.made !! 6;
             my $pad := padding_char($/);
             my $size := $<size> ?? $<size>.made !! 0;
@@ -395,6 +441,7 @@ my module sprintf {
             my $pre := '0' if $int ne '0' && has_flag($/, 'hash');
             if nqp::chars($<precision>) {
                 $int := '' if $<precision>.made == 0 && $int == 0;
+                $pre := '' if $<precision>.made > nqp::chars($int);
                 $int := $pre ~ infix_x('0', intify($<precision>.made) - nqp::chars($int)) ~ $int;
             }
             else {
@@ -423,10 +470,7 @@ my module sprintf {
             }
             my $int := intify($next);
             if nqp::islt_I($int, $zero) {
-                    my $err := nqp::getstderr();
-                    nqp::printfh($err, "negative value '" 
-                                    ~ $int
-                                    ~ "' for %u in sprintf");
+                    note("negative value '$int' for %u in sprintf");
                     $int := 0;
             }
 
@@ -460,13 +504,13 @@ my module sprintf {
         }
 
         method idx($/) {
-            my $index := $<param_index> - 1;
+            my $index := nqp::radix(10, $<param_index>, 0, 0)[0] - 1;
             nqp::die("Parameter index starts to count at 1 but 0 was passed") if $index < 0;
             make $index
         }
 
         method size($/) {
-            make $<star> ?? next_argument({}) !! ~$/
+            make $<star> ?? next_argument({}) !! ~nqp::radix(10, $/, 0, 0)[0]
         }
     }
 
@@ -491,9 +535,9 @@ my module sprintf {
             make $<directive> && !$<directive><idx> ?? 1 !! 0
         }
     }
-    
+
     my $directives := Directives.new();
-    
+
     sub sprintfdirectives($format) {
         return Syntax.parse( $format, :actions($directives) ).made;
     }

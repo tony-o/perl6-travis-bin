@@ -30,7 +30,7 @@ MVM_STATIC_INLINE void MVM_gc_root_temp_push(MVMThreadContext *tc, MVMCollectabl
 
 /* Pop top root from the per-thread temporary roots stack. */
 MVM_STATIC_INLINE void MVM_gc_root_temp_pop(MVMThreadContext *tc) {
-    #if MVM_TEMP_ROOT_DEBUG
+#if MVM_TEMP_ROOT_DEBUG
     if (tc->num_temproots <= 0)
         MVM_panic(1, "Illegal attempt to pop empty temporary root stack");
 #endif
@@ -39,7 +39,7 @@ MVM_STATIC_INLINE void MVM_gc_root_temp_pop(MVMThreadContext *tc) {
 
 /* Pop top n roots from the per-thread temporary roots stack. */
 MVM_STATIC_INLINE void MVM_gc_root_temp_pop_n(MVMThreadContext *tc, MVMuint32 n) {
-    #if MVM_TEMP_ROOT_DEBUG
+#if MVM_TEMP_ROOT_DEBUG
     if (tc->num_temproots < n)
         MVM_panic(MVM_exitcode_gcroots, "Illegal attempt to pop insufficiently large temporary root stack");
 #endif
@@ -58,6 +58,7 @@ void MVM_gc_root_temp_pop_all(MVMThreadContext *tc);
 void MVM_gc_root_add_temps_to_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMHeapSnapshotState *snapshot);
 void MVM_gc_root_gen2_add(MVMThreadContext *tc, MVMCollectable *c);
 void MVM_gc_root_add_gen2s_to_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist);
+void MVM_gc_root_add_gen2s_to_snapshot(MVMThreadContext *tc, MVMHeapSnapshotState *snapshot);
 void MVM_gc_root_gen2_cleanup(MVMThreadContext *tc);
 void MVM_gc_root_add_frame_roots_to_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMFrame *start_frame);
 void MVM_gc_root_add_frame_registers_to_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMFrame *frame);
@@ -68,4 +69,44 @@ void MVM_gc_root_add_frame_registers_to_worklist(MVMThreadContext *tc, MVMGCWork
     MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref)); \
     block \
     MVM_gc_root_temp_pop(tc); \
+ } while (0)
+#define MVMROOT2(tc, obj_ref1, obj_ref2, block) do {\
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref1)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref2)); \
+    block \
+    MVM_gc_root_temp_pop_n(tc, 2); \
+ } while (0)
+#define MVMROOT3(tc, obj_ref1, obj_ref2, obj_ref3, block) do {\
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref1)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref2)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref3)); \
+    block \
+    MVM_gc_root_temp_pop_n(tc, 3); \
+ } while (0)
+#define MVMROOT4(tc, obj_ref1, obj_ref2, obj_ref3, obj_ref4, block) do {\
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref1)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref2)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref3)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref4)); \
+    block \
+    MVM_gc_root_temp_pop_n(tc, 4); \
+ } while (0)
+#define MVMROOT5(tc, obj_ref1, obj_ref2, obj_ref3, obj_ref4, obj_ref5, block) do {\
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref1)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref2)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref3)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref4)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref5)); \
+    block \
+    MVM_gc_root_temp_pop_n(tc, 5); \
+ } while (0)
+#define MVMROOT6(tc, obj_ref1, obj_ref2, obj_ref3, obj_ref4, obj_ref5, obj_ref6, block) do {\
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref1)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref2)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref3)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref4)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref5)); \
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&(obj_ref6)); \
+    block \
+    MVM_gc_root_temp_pop_n(tc, 6); \
  } while (0)

@@ -1,12 +1,12 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps SCRef_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st  = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st  = MVM_gc_allocate_stable(tc, &SCRef_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -133,12 +133,74 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info) {
     /* Nothing to do for this REPR. */
 }
 
-/* Initializes the representation. */
-const MVMREPROps * MVMSCRef_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+static MVMuint64 unmanaged_size(MVMThreadContext *tc, MVMSTable *st, void *data) {
+    MVMSerializationContextBody     *body      = ((MVMSerializationContextBody **)data)[0];
+    MVMuint64 size = 0;
+
+    size += sizeof(MVMObject *) * body->num_objects;
+    size += sizeof(MVMSTable *) * body->num_stables;
+
+    /* XXX probably have to measure the MVMSerializationReader, too */
+
+    return size;
 }
 
-static const MVMREPROps this_repr = {
+static void describe_refs(MVMThreadContext *tc, MVMHeapSnapshotState *ss, MVMSTable *st, void *data) {
+    MVMSerializationContextBody *body = ((MVMSerializationContextBody **)data)[0];
+    MVMuint64 index;
+
+    if (body->sr)
+        return;
+
+    for (index = 0; index < body->num_objects; index++)
+        MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+            (MVMCollectable *)body->root_objects[index], "Object root set");
+    for (index = 0; index < body->num_stables; index++)
+        MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+            (MVMCollectable *)body->root_stables[index], "STable root set");
+
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->root_codes, "Root code refs");
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->rep_indexes, "Repossession indices");
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->rep_scs, "Repossession SCs");
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->owned_objects, "Owned Objects");
+
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->handle, "Handle");
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->description, "Description");
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->sc, "SC");
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->mutex, "Mutex");
+
+    /* Mark serialization reader, if we have one. */
+    if (body->sr) {
+        MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+            (MVMCollectable *)body->sr->root.sc, "Reader Root SC");
+        for (index = 0; index < body->sr->root.num_dependencies; index++)
+            MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+                (MVMCollectable *)body->sr->root.dependent_scs[index], "SC Dependency (Reader)");
+        MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+            (MVMCollectable *)body->sr->root.string_heap, "String heap (Reader)");
+        MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+            (MVMCollectable *)body->sr->root.string_comp_unit, "String compilation unit (Reader)");
+        MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+            (MVMCollectable *)body->sr->codes_list, "Code objects list (Reader)");
+        MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+            (MVMCollectable *)body->sr->current_object, "Current object (Reader)");
+    }
+}
+
+/* Initializes the representation. */
+const MVMREPROps * MVMSCRef_initialize(MVMThreadContext *tc) {
+    return &SCRef_this_repr;
+}
+
+static const MVMREPROps SCRef_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     initialize,
@@ -164,5 +226,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "SCRef", /* name */
     MVM_REPR_ID_SCRef,
-    0, /* refs_frames */
+    unmanaged_size,
+    describe_refs,
 };

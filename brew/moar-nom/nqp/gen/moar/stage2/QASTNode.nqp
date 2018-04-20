@@ -82,7 +82,7 @@ role QAST::Children {
                 nqp::push(@onto, "\n");
             }
         }
-	CATCH { nqp::push(@onto, "Oops!!!") }
+	CATCH { nqp::push(@onto, "Oops!!! {nqp::getmessage($_)}\n") }
     }
 
     method extra_children() {
@@ -96,7 +96,7 @@ role QAST::Children {
                 nqp::push(@onto, nqp::x(' ', $indent));
                 nqp::push(@onto, "[" ~ $tag ~ "]");
                 nqp::push(@onto, "\n");
-                self.dump_node_list($indent+2, @onto, $nodes);
+                self.dump_node_list($indent+2, @onto, nqp::islist($nodes) ?? $nodes !! [$nodes]);
             }
             $extra := $extra + nqp::elems($nodes);
         }
@@ -115,6 +115,7 @@ class QAST::Node {
     has %!annotations;
     has $!node;
     has $!returns;
+    has int $!flags;
 
     method new(*@children, *%options) {
         nqp::die('Can not instantiate QAST::Node; please use a subclass');
@@ -162,6 +163,30 @@ class QAST::Node {
         }
     }
     
+    method setflag($bit)   { $!flags := nqp::bitor_i($!flags, $bit) }
+    method clearflag($bit) { $!flags := nqp::bitand_i($!flags, nqp::bitneg_i($bit)) }
+    method isflag($bit)    { nqp::istrue(nqp::bitand_i($!flags, $bit)) }
+
+    method wanted ($value = NO_VALUE) { $value =:= NO_VALUE ?? self.isflag(0x1) !! $value ?? self.setflag(0x1) !! self.clearflag(0x1) }
+    method sunk   ($value = NO_VALUE) { $value =:= NO_VALUE ?? self.isflag(0x2) !! $value ?? self.setflag(0x2) !! self.clearflag(0x2) }
+    method nosink ($value = NO_VALUE) { $value =:= NO_VALUE ?? self.isflag(0x4) !! $value ?? self.setflag(0x4) !! self.clearflag(0x4) }
+    method sinkok ($value = NO_VALUE) { $value =:= NO_VALUE ?? self.isflag(0x8) !! $value ?? self.setflag(0x8) !! self.clearflag(0x8) }
+    method final  ($value = NO_VALUE) { $value =:= NO_VALUE ?? self.isflag(0x10) !! $value ?? self.setflag(0x10) !! self.clearflag(0x10) }
+    method okifnil($value = NO_VALUE) { $value =:= NO_VALUE ?? self.isflag(0x20) !! $value ?? self.setflag(0x20) !! self.clearflag(0x20) }
+
+    method dump_flags() {
+	my @flags;
+	if $!flags {
+	    nqp::push(@flags, 'wanted')  if self.wanted;
+	    nqp::push(@flags, 'sunk')    if self.sunk;
+	    nqp::push(@flags, 'nosink')  if self.nosink;
+	    nqp::push(@flags, 'sinkok')  if self.sinkok;
+	    nqp::push(@flags, 'final')   if self.final;
+	    nqp::push(@flags, 'okifnil') if self.okifnil;
+	}
+	@flags ?? '<' ~ nqp::join(' ',@flags) ~ '>' !! '';
+    }
+
     method has_compile_time_value() {
         0
     }
@@ -239,17 +264,16 @@ class QAST::Node {
 
     method dump_annotations() {
 	my @anns;
+	nqp::push(@anns, self.dump_flags);
+
         if nqp::ishash(%!annotations) {
 	    for %!annotations {
 		my $k := $_.key;
 		my $v := $_.value;
 		try {
 		    if nqp::isconcrete($v) {
-			if $k eq 'context' || $k eq 'IN_DECL' || $k eq 'BY' {
+			if $k eq 'IN_DECL' || $k eq 'BY' {
 			    nqp::push(@anns, ':' ~ $k ~ '<' ~ $v ~ '>');
-			}
-			elsif $k eq 'sink_ok' || $k eq 'WANTED' || $k eq 'final' {
-			    nqp::push(@anns, ':' ~ $k);
 			}
 			else {   # dunno how to introspect
 			    nqp::push(@anns, ':' ~ $k ~ '<?>');
@@ -270,6 +294,7 @@ class QAST::Node {
 class QAST::NodeList is QAST::Node does QAST::Children {
     method new(*@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::NodeList, '@!children', @children);
         $node.set(%options) if %options;
         $node
@@ -284,6 +309,11 @@ role QAST::RegexCursorType {
         $!cursor_type := $value unless $value =:= NO_VALUE;
         $!cursor_type
     }
+
+    method dump_extra_node_info() {
+        my $info := QAST::Regex.HOW.method_table(QAST::Regex)<dump_extra_node_info>(self);
+        $info ~ " :cursor_type({$!cursor_type.HOW.name($!cursor_type)})"
+    }
 }
 
 class QAST::Regex is QAST::Node does QAST::Children {
@@ -297,6 +327,7 @@ class QAST::Regex is QAST::Node does QAST::Children {
     
     method new(str :$rxtype, str :$subtype, *@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Regex, '@!children', @children);
         nqp::bindattr_s($node, QAST::Regex, '$!rxtype', $rxtype);
         nqp::bindattr_s($node, QAST::Regex, '$!subtype', $subtype);
@@ -339,6 +370,7 @@ class QAST::IVal is QAST::Node {
 
     method new(:$value, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr_i($node, QAST::IVal, '$!value', $value);
         nqp::bindattr($node, QAST::Node, '$!returns', int);
         $node.set(%options) if %options;
@@ -365,6 +397,7 @@ class QAST::NVal is QAST::Node {
 
     method new(:$value, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr_n($node, QAST::NVal, '$!value', $value);
         nqp::bindattr($node, QAST::Node, '$!returns', num);
         $node.set(%options) if %options;
@@ -392,6 +425,7 @@ class QAST::SVal is QAST::Node {
 
     method new(:$value, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr_s($node, QAST::SVal, '$!value', $value);
         nqp::bindattr($node, QAST::Node, '$!returns', str);
         $node.set(%options) if %options;
@@ -420,6 +454,7 @@ class QAST::BVal is QAST::Node {
 
     method new(:$value, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::BVal, '$!value', $value);
         $node.set(%options) if %options;
         $node
@@ -438,6 +473,7 @@ class QAST::BVal is QAST::Node {
 class QAST::WVal is QAST::Node does QAST::CompileTimeValue {
     method new(:$value, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::WVal, '$!compile_time_value', $value);
         $node.set(%options) if %options;
         $node
@@ -470,6 +506,7 @@ class QAST::WVal is QAST::Node does QAST::CompileTimeValue {
 class QAST::Want is QAST::Node does QAST::Children {
     method new(*@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Want, '@!children', @children);
         $node.set(%options) if %options;
         $node
@@ -527,6 +564,7 @@ class QAST::Var is QAST::Node does QAST::Children {
 
     method new(:$name, str :$scope, str :$decl, *@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Var, '@!children', @children);
         nqp::bindattr_s($node, QAST::Var, '$!name', $name);
         nqp::bindattr_s($node, QAST::Var, '$!scope', $scope);
@@ -585,6 +623,7 @@ class QAST::VarWithFallback is QAST::Var {
 class QAST::ParamTypeCheck is QAST::Node does QAST::Children {
     method new(*@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::ParamTypeCheck, '@!children', @children);
         $node.set(%options) if %options;
         $node
@@ -600,6 +639,7 @@ class QAST::Op is QAST::Node does QAST::Children {
 
     method new(str :$name, str :$op, *@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Op, '@!children', @children);
         nqp::bindattr_s($node, QAST::Op, '$!name', $name);
         nqp::bindattr_s($node, QAST::Op, '$!op', $op);
@@ -667,6 +707,7 @@ class QAST::VM is QAST::Node does QAST::Children {
     
     method new(*@children, *%alternatives) {
         my $obj := nqp::create(self);
+        nqp::bindattr_i($obj, QAST::Node, '$!flags', 0);
         nqp::bindattr($obj, QAST::VM, '@!children', @children);
         nqp::bindattr($obj, QAST::VM, '%!alternatives', %alternatives);
         $obj
@@ -711,6 +752,7 @@ class QAST::Stmts is QAST::Node does QAST::Children {
 
     method new(*@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Stmts, '@!children', @children);
         $node.set(%options) if %options;
         $node
@@ -760,6 +802,7 @@ class QAST::Stmt is QAST::Node does QAST::Children {
 
     method new(*@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Stmt, '@!children', @children);
         $node.set(%options) if %options;
         $node
@@ -817,6 +860,7 @@ class QAST::Block is QAST::Node does QAST::Children {
 
     method new(str :$name, str :$blocktype, *@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Block, '@!children', @children);
         nqp::bindattr_s($node, QAST::Block, '$!name', $name);
         nqp::bindattr_s($node, QAST::Block, '$!blocktype', $blocktype);
@@ -896,7 +940,7 @@ class QAST::Block is QAST::Node does QAST::Children {
     }
 
     method dump_extra_node_info() {
-        nqp::chars(self.blocktype) ?? ":decl($!blocktype)" !! "";
+        nqp::chars(self.blocktype) ?? ":blocktype($!blocktype)" !! "";
     }
 }
 # From src/QAST/Unquote.nqp
@@ -906,6 +950,7 @@ class QAST::Unquote is QAST::Node {
 
     method new(int :$position, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr_i($node, QAST::Unquote, '$!position', $position);
         $node.set(%options) if %options;
         $node
@@ -952,8 +997,11 @@ class QAST::CompUnit is QAST::Node does QAST::Children {
     # What to run if this is the main entry point.
     has $!main;
 
+    has $!is_nested;
+
     method new(*@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::CompUnit, '@!children', @children);
         $node.set(%options) if %options;
         $node
@@ -981,11 +1029,16 @@ class QAST::CompUnit is QAST::Node does QAST::Children {
     method code_ref_blocks($value = NO_VALUE) {
         $!code_ref_blocks := $value unless $value =:= NO_VALUE; $!code_ref_blocks
     }
+    method is_nested($value = NO_VALUE) {
+        $!is_nested := $value unless $value =:= NO_VALUE; $!is_nested
+    }
 
     method extra_children() {
         [
             'pre_deserialize', self.pre_deserialize,
-            'post_deserialize', self.post_deserialize
+            'post_deserialize', self.post_deserialize,
+            'main', self.main ?? [self.main] !! [],
+            'load', self.load ?? [self.load] !! [],
         ];
     }
 }
@@ -998,6 +1051,7 @@ class QAST::InlinePlaceholder is QAST::Node {
 
     method new(:$position, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr_i($node, QAST::InlinePlaceholder, '$!position', $position);
         $node.set(%options) if %options;
         $node

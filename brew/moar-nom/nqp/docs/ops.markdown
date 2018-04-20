@@ -1,295 +1,334 @@
-# TABLE OF CONTENTS
+# NQP Opcode List
+
+## Table of Contents
+
 - [NQP Opcodes](#nqp-opcodes)
 - [Arithmetic Opcodes](#-arithmetic-opcodes)
-    - [abs](#abs)
-    - [add](#add)
-    - [div](#div)
-    - [gcd](#gcd)
-    - [lcm](#lcm)
-    - [mod](#mod)
-    - [mul](#mul)
-    - [neg](#neg)
-    - [sub](#sub)
+  * [abs](#abs)
+  * [add](#add)
+  * [div](#div)
+  * [gcd](#gcd)
+  * [lcm](#lcm)
+  * [mod](#mod)
+  * [mul](#mul)
+  * [neg](#neg)
+  * [sub](#sub)
 - [Numeric Opcodes](#-numeric-opcodes)
-    - [base](#base)
-    - [ceil](#ceil)
-    - [exp](#exp)
-    - [floor](#floor)
-    - [inf](#inf)
-    - [log](#log)
-    - [ln](#ln)
-    - [expmod](#expmod)
-    - [nan](#nan)
-    - [neginf](#neginf)
-    - [pow](#pow)
-    - [rand](#rand)
-    - [sqrt](#sqrt)
+  * [base](#base)
+  * [ceil](#ceil)
+  * [exp](#exp)
+  * [floor](#floor)
+  * [inf](#inf)
+  * [log_n](#log_n)
+  * [expmod](#expmod)
+  * [nan](#nan)
+  * [neginf](#neginf)
+  * [pow](#pow)
+  * [rand](#rand)
+  * [srand](#srand)
+  * [sqrt](#sqrt)
 - [Trigonometric Opcodes](#-trigonometric-opcodes)
-    - [asec](#asec)
-    - [asin](#asin)
-    - [acos](#acos)
-    - [atan](#atan)
-    - [atan2](#atan2)
-    - [cos](#cos)
-    - [cosh](#cosh)
-    - [sin](#sin)
-    - [sinh](#sinh)
-    - [sec](#sec)
-    - [sech](#sech)
-    - [tan](#tan)
-    - [tanh](#tanh)
+  * [asec](#asec)
+  * [asin](#asin)
+  * [acos](#acos)
+  * [atan](#atan)
+  * [atan2](#atan2)
+  * [cos](#cos)
+  * [cosh](#cosh)
+  * [sin](#sin)
+  * [sinh](#sinh)
+  * [sec](#sec)
+  * [sech](#sech)
+  * [tan](#tan)
+  * [tanh](#tanh)
 - [Relational / Logic Opcodes](#-relational--logic-opcodes)
-    - [cmp](#cmp)
-    - [eqat](#eqat)
-    - [iseq](#iseq)
-    - [isgt](#isgt)
-    - [isge](#isge)
-    - [islt](#islt)
-    - [isle](#isle)
-    - [isne](#isne)
-    - [not](#not)
+  * [cmp](#cmp)
+  * [eqat](#eqat)
+  * [eqatic `moar`](#eqatic-moar)
+  * [eqatim `moar`](#eqatim-moar)
+  * [eqaticim `moar`](#eqaticim-moar)
+  * [iseq](#iseq)
+  * [isgt](#isgt)
+  * [isge](#isge)
+  * [islt](#islt)
+  * [isle](#isle)
+  * [isne](#isne)
+  * [not_i](#not_i)
 - [Array Opcodes](#-array-opcodes)
-    - [atpos](#atpos)
-    - [bindpos](#bindpos)
-    - [elems](#elems)
-    - [existspos](#existspos)
-    - [list](#list)
-    - [push](#push)
-    - [pop](#pop)
-    - [setelems](#setelems)
-    - [shift](#shift)
-    - [splice](#splice)
-    - [unshift](#unshift)
-    - [iterator](#iterator)
+  * [atpos](#atpos)
+  * [bindpos](#bindpos)
+  * [atposref](#atposref)
+  * [elems](#elems)
+  * [existspos](#existspos)
+  * [list](#list)
+  * [push](#push)
+  * [pop](#pop)
+  * [setelems](#setelems)
+  * [shift](#shift)
+  * [splice](#splice)
+  * [unshift](#unshift)
+  * [iterator](#iterator)
 - [Hash Opcodes](#-hash-opcodes)
-    - [atkey](#atkey)
-    - [bindkey](#bindkey)
-    - [existskey](#existskey)
-    - [deletekey](#deletekey)
-    - [iterkey](#iterkey)
-    - [iterval](#iterval)
+  * [atkey](#atkey)
+  * [bindkey](#bindkey)
+  * [existskey](#existskey)
+  * [deletekey](#deletekey)
+  * [iterkey](#iterkey)
+  * [iterval](#iterval)
 - [String Opcodes](#-string-opcodes)
-    - [chars](#chars)
-    - [chr](#chr)
-    - [codepointfromname](#codepointfromname)
-    - [concat](#concat)
-    - [decode](#decode)
-    - [decodetocodes](#decodetocodes)
-    - [encode](#encode)
-    - [encodefromcodes](#encodefromcodes)
-    - [encodenorm](#encodenorm)
-    - [escape](#escape)
-    - [findcclass](#findcclass)
-    - [findnotcclass](#findnotcclass)
-    - [flip](#flip)
-    - [hash](#hash)
-    - [index](#index)
-    - [iscclass](#iscclass)
-    - [join](#join)
-    - [lc](#lc)
-    - [normalizecodes](#normalizecodes)
-    - [ord](#ord)
-    - [radix](#radix)
-    - [replace](#replace)
-    - [rindex](#rindex)
-    - [uc](#uc)
-    - [split](#split)
-    - [strfromcodes](#strfromcodes)
-    - [strtocodes](#strtocodes)
-    - [substr](#substr)
-    - [tc](#tc)
-    - [x](#x)
-    - [sprintf](#sprintf)
-    - [sprintfdirectives](#sprintfdirectives)
-    - [sprintfaddargumenthandler](#sprintfaddargumenthandler)
+  * [chars](#chars)
+  * [chr](#chr)
+  * [codepointfromname](#codepointfromname)
+  * [getstrfromname](#getstrfromname)
+  * [concat](#concat)
+  * [decode](#decode)
+  * [decodetocodes `moar`](#decodetocodes-moar)
+  * [encode](#encode)
+  * [encodefromcodes `moar`](#encodefromcodes-moar)
+  * [encodenorm](#encodenorm)
+  * [escape](#escape)
+  * [fc](#fc)
+  * [findcclass](#findcclass)
+  * [findnotcclass](#findnotcclass)
+  * [flip](#flip)
+  * [hash](#hash)
+  * [index](#index)
+  * [indexic](#indexic)
+  * [indexim `moar`](#indexim-moar)
+  * [indexicim `moar`](#indexicim-moar)
+  * [iscclass](#iscclass)
+  * [join](#join)
+  * [lc](#lc)
+  * [normalizecodes](#normalizecodes)
+  * [ord](#ord)
+  * [ordbaseat](#ordbaseat)
+  * [radix](#radix)
+  * [replace](#replace)
+  * [rindex](#rindex)
+  * [rindexfromend `jvm`](#rindexfromend-jvm)
+  * [split](#split)
+  * [sprintf](#sprintf)
+  * [sprintfdirectives](#sprintfdirectives)
+  * [sprintfaddargumenthandler](#sprintfaddargumenthandler)
+  * [strfromcodes](#strfromcodes)
+  * [strtocodes](#strtocodes)
+  * [substr](#substr)
+  * [substr2 `jvm`](#substr2-jvm)
+  * [substr3 `jvm`](#substr3-jvm)
+  * [tc](#tc)
+  * [uc](#uc)
+  * [unicmp_s](#unicmp_s)
+      - [Parameters:](#parameters)
+  * [x](#x)
 - [Unicode Property Opcodes](#-unicode-property-opcodes)
-    - [getuniname](#getuniname)
-    - [unipropcode](#unipropcode)
-    - [unipvalcode](#unipvalcode)
-    - [getuniprop_int](#getuniprop_int)
-    - [getuniprop_str](#getuniprop_str)
-    - [getuniprop_bool](#getuniprop_bool)
-    - [matchuniprop](#matchuniprop)
+  * [getuniname](#getuniname)
+  * [getuniprop_int `moar`](#getuniprop_int-moar)
+  * [getuniprop_str](#getuniprop_str)
+  * [getuniprop_bool `moar`](#getuniprop_bool-moar)
+  * [matchuniprop `moar`](#matchuniprop-moar)
+  * [unipropcode](#unipropcode)
+  * [unipvalcode `moar`](#unipvalcode-moar)
+  * [hasuniprop `moar`](#hasuniprop-moar)
+- [VM-Provided Streaming Decoder Opcodes](#-vm-provided-streaming-decoder-opcodes)
+  * [decoderconfigure](#decoderconfigure)
+  * [decodersetlineseps](#decodersetlineseps)
+  * [decoderaddbytes](#decoderaddbytes)
+  * [decodertakechars](#decodertakechars)
+  * [decodertakeallchars](#decodertakeallchars)
+  * [decodertakeavailablechars](#decodertakeavailablechars)
+  * [decodertakeline](#decodertakeline)
+  * [decoderbytesavailable](#decoderbytesavailable)
+  * [decodertakebytes](#decodertakebytes)
+  * [decoderempty](#decoderempty)
 - [Conditional Opcodes](#-conditional-opcodes)
-    - [if](#if)
-    - [unless](#unless)
+  * [if](#if)
+  * [unless](#unless)
 - [Loop/Control Opcodes](#-loopcontrol-opcodes)
-    - [for](#for)
-    - [ifnull](#ifnull)
-    - [defor](#defor)
-    - [repeat_until](#repeat_until)
-    - [repeat_while](#repeat_while)
-    - [until](#until)
-    - [while](#while)
-    - [control](#control)
+  * [control](#control)
+  * [defor](#defor)
+  * [for](#for)
+  * [ifnull](#ifnull)
+  * [repeat_until](#repeat_until)
+  * [repeat_while](#repeat_while)
+  * [stmts](#stmts)
+  * [until](#until)
+  * [while](#while)
 - [Exceptional Opcodes](#-exceptional-opcodes)
-    - [backtrace](#backtrace)
-    - [backtracestrings](#backtracestrings)
-    - [die](#die)
-    - [exception](#exception)
-    - [getextype](#getextype)
-    - [getmessage](#getmessage)
-    - [getpayload](#getpayload)
-    - [newexception](#newexception)
-    - [resume](#resume)
-    - [rethrow](#rethrow)
-    - [setextype](#setextype)
-    - [setmessage](#setmessage)
-    - [setpayload](#setpayload)
-    - [throw](#throw)
+  * [backtrace](#backtrace)
+  * [backtracestrings](#backtracestrings)
+  * [die](#die)
+  * [exception](#exception)
+  * [getextype](#getextype)
+  * [getmessage](#getmessage)
+  * [getpayload](#getpayload)
+  * [newexception](#newexception)
+  * [resume](#resume)
+  * [rethrow](#rethrow)
+  * [setextype](#setextype)
+  * [setmessage](#setmessage)
+  * [setpayload](#setpayload)
+  * [throw](#throw)
 - [Input/Output Opcodes](#-inputoutput-opcodes)
-    - [closefh](#closefh)
-    - [eoffh](#eoffh)
-    - [flushfh](#flushfh)
-    - [getcfh](#getcfh)
-    - [getstderr](#getstderr)
-    - [getstdin](#getstdin)
-    - [getstdout](#getstdout)
-    - [open](#open)
-    - [openasync `jvm`](#openasync-jvm)
-    - [print](#print)
-    - [printfh](#printfh)
-    - [readallfh](#readallfh)
-    - [readfh](#readfh)
-    - [readlinefh](#readlinefh)
-    - [readcharsfh](#readcharsfh)
-    - [say](#say)
-    - [sayfh](#sayfh)
-    - [setencoding](#setencoding)
-    - [setinputlinesep](#setinputlinesep)
-    - [tellfh](#tellfh)
-    - [writefh](#writefh)
+  * [closefh](#closefh)
+  * [eoffh](#eoffh)
+  * [filenofh](#filenofh)
+  * [flushfh](#flushfh)
+  * [getstderr](#getstderr)
+  * [getstdin](#getstdin)
+  * [getstdout](#getstdout)
+  * [open](#open)
+  * [openasync `jvm`](#openasync-jvm)
+  * [print](#print)
+  * [readfh](#readfh)
+  * [say](#say)
+  * [seekfh](#seekfh)
+  * [tellfh](#tellfh)
+  * [writefh](#writefh)
 - [External command Opcodes](#-external-command-opcodes)
-    - [shell](#shell)
-    - [spawn](#spawn)
+  * [shell](#shell)
+  * [spawn](#spawn)
 - [File / Directory / Network Opcodes](#-file--directory--network-opcodes)
-    - [chdir](#chdir)
-    - [chmod](#chmod)
-    - [closedir](#closedir)
-    - [copy](#copy)
-    - [cwd](#cwd)
-    - [fileexecutable](#fileexecutable)
-    - [fileislink](#fileislink)
-    - [filereadable](#filereadable)
-    - [filewritable](#filewritable)
-    - [link](#link)
-    - [mkdir](#mkdir)
-    - [nextfiledir](#nextfiledir)
-    - [opendir](#opendir)
-    - [rename](#rename)
-    - [rmdir](#rmdir)
-    - [stat](#stat)
-    - [stat_time](#stat_time)
-    - [lstat](#lstat)
-    - [stat_time](#stat_time)
-    - [symlink](#symlink)
-    - [unlink](#unlink)
+  * [chdir](#chdir)
+  * [chmod](#chmod)
+  * [closedir](#closedir)
+  * [copy](#copy)
+  * [cwd](#cwd)
+  * [fileexecutable](#fileexecutable)
+  * [fileislink](#fileislink)
+  * [filereadable](#filereadable)
+  * [filewritable](#filewritable)
+  * [link](#link)
+  * [mkdir](#mkdir)
+  * [nextfiledir](#nextfiledir)
+  * [opendir](#opendir)
+  * [rename](#rename)
+  * [rmdir](#rmdir)
+  * [stat](#stat)
+  * [stat_time](#stat_time)
+  * [lstat](#lstat)
+  * [lstat_time](#lstat_time)
+  * [symlink](#symlink)
+  * [unlink](#unlink)
 - [Type/Conversion Opcodes](#-typeconversion-opcodes)
-    - [bool](#bool)
-    - [bootarray `jvm` `moar`](#bootarray-jvm-moar)
-    - [boothash `jvm` `moar`](#boothash-jvm-moar)
-    - [bootint `jvm` `moar`](#bootint-jvm-moar)
-    - [bootintarray `jvm` `moar`](#bootintarray-jvm-moar)
-    - [bootnum `jvm` `moar`](#bootnum-jvm-moar)
-    - [bootnumarray `jvm` `moar`](#bootnumarray-jvm-moar)
-    - [bootstr `jvm` `moar`](#bootstr-jvm-moar)
-    - [bootstrarray `jvm` `moar`](#bootstrarray-jvm-moar)
-    - [box](#box)
-    - [defined](#defined)
-    - [fromnum](#fromnum)
-    - [fromstr](#fromstr)
-    - [isbig](#isbig)
-    - [isconcrete](#isconcrete)
-    - [iscont](#iscont)
-    - [isfalse](#isfalse)
-    - [ishash](#ishash)
-    - [isint](#isint)
-    - [isinvokable](#isinvokable)
-    - [islist](#islist)
-    - [isnanorinf](#isnanorinf)
-    - [isnull](#isnull)
-    - [isnum](#isnum)
-    - [isprime](#isprime)
-    - [isstr](#isstr)
-    - [istrue](#istrue)
-    - [istype](#istype)
-    - [null](#null)
-    - [jvmisnull `jvm`](#jvmisnull-jvm)
-    - [tostr](#tostr)
-    - [tonum](#tonum)
-    - [unbox](#unbox)
+  * [bool](#bool)
+  * [bootarray `jvm` `moar`](#bootarray-jvm-moar)
+  * [boothash `jvm` `moar`](#boothash-jvm-moar)
+  * [bootint `jvm` `moar`](#bootint-jvm-moar)
+  * [bootintarray `jvm` `moar`](#bootintarray-jvm-moar)
+  * [bootnum `jvm` `moar`](#bootnum-jvm-moar)
+  * [bootnumarray `jvm` `moar`](#bootnumarray-jvm-moar)
+  * [bootstr `jvm` `moar`](#bootstr-jvm-moar)
+  * [bootstrarray `jvm` `moar`](#bootstrarray-jvm-moar)
+  * [box](#box)
+  * [defined](#defined)
+  * [fromnum](#fromnum)
+  * [fromstr](#fromstr)
+  * [isbig](#isbig)
+  * [isconcrete](#isconcrete)
+  * [iscont](#iscont)
+  * [isfalse](#isfalse)
+  * [ishash](#ishash)
+  * [isint](#isint)
+  * [isinvokable](#isinvokable)
+  * [islist](#islist)
+  * [isnanorinf](#isnanorinf)
+  * [isnull](#isnull)
+  * [isnum](#isnum)
+  * [isprime](#isprime)
+  * [isstr](#isstr)
+  * [istrue](#istrue)
+  * [istype](#istype)
+  * [null](#null)
+  * [jvmisnull `jvm`](#jvmisnull-jvm)
+  * [tostr](#tostr)
+  * [tonum](#tonum)
+  * [unbox](#unbox)
 - [OO/SixModel Opcodes](#-oosixmodel-opcodes)
-    - [bindattr](#bindattr)
-    - [bindcomp](#bindcomp)
-    - [callmethod](#callmethod)
-    - [can](#can)
-    - [clone](#clone)
-    - [create](#create)
-    - [eqaddr](#eqaddr)
-    - [findmethod](#findmethod)
-    - [getattr](#getattr)
-    - [getcomp](#getcomp)
-    - [how](#how)
-    - [rebless](#rebless)
-    - [reprname](#reprname)
-    - [setwho](#setwho)
-    - [who](#who)
-    - [what](#what)
-    - [where](#where)
+  * [attrinited](#attrinited)
+  * [bindattr](#bindattr)
+  * [bindcomp](#bindcomp)
+  * [callmethod](#callmethod)
+  * [can](#can)
+  * [clone](#clone)
+  * [create](#create)
+  * [eqaddr](#eqaddr)
+  * [findmethod](#findmethod)
+  * [getattr](#getattr)
+  * [getcomp](#getcomp)
+  * [how](#how)
+  * [rebless](#rebless)
+  * [reprname](#reprname)
+  * [setwho](#setwho)
+  * [who](#who)
+  * [what](#what)
+  * [where](#where)
 - [Bit Opcodes](#-bit-opcodes)
-    - [bitand](#bitand)
-    - [bitneg](#bitneg)
-    - [bitor](#bitor)
-    - [bitshiftl](#bitshiftl)
-    - [bitshiftr](#bitshiftr)
-    - [bitxor](#bitxor)
+  * [bitand](#bitand)
+  * [bitneg](#bitneg)
+  * [bitor](#bitor)
+  * [bitshiftl](#bitshiftl)
+  * [bitshiftr](#bitshiftr)
+  * [bitxor](#bitxor)
 - [Context Introspection Opcodes](#-context-introspection-opcodes)
-    - [ctx](#ctx)
-    - [ctxcaller](#ctxcaller)
-    - [ctxlexpad](#ctxlexpad)
-    - [curlexpad](#curlexpad)
-    - [ctxouter](#ctxouter)
-    - [lexprimspec](#lexprimspec)
-    - [savecapture](#savecapture)
-    - [usecapture](#usecapture)
-    - [getlex](#getlex)
-    - [bindlex](#bindlex)
-    - [getlexdyn](#getlexdyn)
-    - [bindlexdyn](#bindlexdyn)
-    - [getlexouter](#getlexouter)
-    - [getlexcaller](#getlexcaller)
-    - [getlexrel](#getlexrel)
-    - [getlexreldyn](#getlexreldyn)
-    - [getlexrelcaller](#getlexrelcaller)
+  * [ctx](#ctx)
+  * [ctxcaller](#ctxcaller)
+  * [ctxlexpad](#ctxlexpad)
+  * [curlexpad](#curlexpad)
+  * [ctxouter](#ctxouter)
+  * [lexprimspec](#lexprimspec)
+  * [savecapture](#savecapture)
+  * [usecapture](#usecapture)
+  * [getlex](#getlex)
+  * [bindlex](#bindlex)
+  * [getlexdyn](#getlexdyn)
+  * [bindlexdyn](#bindlexdyn)
+  * [getlexouter](#getlexouter)
+  * [getlexcaller](#getlexcaller)
+  * [getlexrel](#getlexrel)
+  * [getlexreldyn](#getlexreldyn)
+  * [getlexrelcaller](#getlexrelcaller)
 - [Variable Opcodes](#-variable-opcodes)
-    - [bind](#bind)
+  * [bind](#bind)
 - [Miscellaneous Opcodes](#-miscellaneous-opcodes)
-    - [const](#const)
-    - [debugnoop](#debugnoop)
-    - [exit](#exit)
-    - [getenvhash](#getenvhash)
-    - [backendconfig](#backendconfig)
-    - [getpid](#getpid)
-    - [jvmclasspaths `jvm`](#jvmclasspaths-jvm)
-    - [sha1](#sha1)
-    - [sleep](#sleep)
-    - [takeclosure](#takeclosure)
-    - [time](#time)
+  * [locallifetime](#locallifetime)
+  * [const](#const)
+  * [debugnoop `jvm`](#debugnoop-jvm)
+  * [exit](#exit)
+  * [getenvhash](#getenvhash)
+  * [backendconfig](#backendconfig)
+  * [getpid](#getpid)
+  * [jvmclasspaths `jvm`](#jvmclasspaths-jvm)
+  * [sha1](#sha1)
+  * [sleep](#sleep)
+  * [takeclosure](#takeclosure)
+  * [time](#time)
 - [Native Call / Interoperability Opcodes](#-native-call--interoperability-opcodes)
-    - [x_posixerrno](#x_posixerrno)
+  * [nativecallrefresh](#nativecallrefresh)
 - [Asynchronous Operations](#-asynchronous-operations)
-    - [cancel](#cancel)
-    - [timer](#timer)
-    - [signal](#signal)
-    - [watchfile](#watchfile)
-    - [asyncconnect](#asyncconnect)
-    - [asynclisten](#asynclisten)
-    - [asyncwritestr](#asyncwritestr)
-    - [asyncwritebytes](#asyncwritebytes)
-    - [asyncreadchars](#asyncreadchars)
-    - [asyncreadbytes](#asyncreadbytes)
-    - [spawnprocasync](#spawnprocasync)
-    - [killprocasync](#killprocasync)
+  * [permit](#permit)
+  * [cancel](#cancel)
+  * [timer](#timer)
+  * [signal](#signal)
+  * [watchfile](#watchfile)
+  * [asyncconnect](#asyncconnect)
+  * [asynclisten](#asynclisten)
+  * [asyncwritestr](#asyncwritestr)
+  * [asyncwritebytes](#asyncwritebytes)
+  * [asyncreadchars](#asyncreadchars)
+  * [asyncreadbytes](#asyncreadbytes)
+  * [spawnprocasync `moar`](#spawnprocasync-moar)
+  * [killprocasync `moar`](#killprocasync-moar)
+- [Atomic Operations](#-atomic-operations)
+  * [cas `moar`](#cas-moar)
+  * [cas_i `moar`](#cas_i-moar)
+  * [atomicinc_i `moar`](#atomicinc_i-moar)
+  * [atomicdec_i `moar`](#atomicdec_i-moar)
+  * [atomicadd_i `moar`](#atomicadd_i-moar)
+  * [atomicload `moar`](#atomicload-moar)
+  * [atomicload_i `moar`](#atomicload_i-moar)
+  * [atomicstore `moar`](#atomicstore-moar)
+  * [atomicstore_i `moar`](#atomicstore_i-moar)
+  * [barrierfull `moar`](#barrierfull-moar)
 
 # NQP Opcodes
 
@@ -298,7 +337,7 @@ generation in QAST nodes.
 
 When invoking them directly, you'll need to prefix them with nqp::, e.g.
 
-    nqp::mul_n(6,9);
+    nqp::mul_i(6,9);
 
 The ops are listed below by type. Each entry shows the name of the op,
 its variants, and their arguments and types, and may provide a short
@@ -308,11 +347,12 @@ variants (e.g. `mul_i`, `mul_n`) together with a single description.
 
 Opcode variants may contain a type suffix, which usually indicates:
 
-* `_i` argument is native int
-* `_n` argument is native float
-* `_s` argument is native string
-* `_b` argument is code blocks
-* `_I` argument is Big Integer
+* `_i` argument is a native int
+* `_u` argument is an unsigned int
+* `_n` argument is a native float
+* `_s` argument is a native string
+* `_b` argument is a code block
+* `_I` argument is a Big Integer
 
 They may also have a numeric suffix, which typically indicates the number
 of arguments required.
@@ -369,6 +409,7 @@ The opcodes are grouped into the following categories:
 * [Miscellaneous Opcodes](#misc)
 * [Native Call / Interoperability Opcodes](#nativecall)
 * [Asynchronous operations](#async)
+* [Atomic operations](#atomic)
 
 # <a id="arithmetic"></a> Arithmetic Opcodes
 
@@ -472,15 +513,10 @@ Return the floor of a number.
 
 Return infinity.
 
-## log
+## log_n
 * `log_n(num $n)`
 
-Return the log base 10 of a number.
-
-## ln
-* `ln_n(num $n)`
-
-Return the natural logarithm of a number.
+Return the natural logarithm (base 𝑒) of a number.
 
 ## expmod
 * `expmod_I(Int $base, Int $exponent, Int $modulus, Mu:T $type)`
@@ -513,6 +549,13 @@ and of type `$type_bigint` for positive exponents.
 Returns a psuedo-random bigint up to the value of the
 given number.
 `_I` variant returns an object of the given type.
+
+## srand
+* `srand(num $n)`
+
+Sets and returns seed number for `nqp::rand_*` variants. Decimal numbers will be silently
+truncated, `nqp::srand(1)` and `nqp::srand(1.1)` are the same so always pass `nqp::srand`
+an integer.
 
 ## sqrt
 * `sqrt_n(num $l, num $r)`
@@ -576,7 +619,21 @@ and 1 if $r is greater than $l.
 * `eqat(str $haystack, str $needle, int $pos)`
 
 Return 1 if the string `$haystack` has the string `$needle` at position `$pos`,
-or 0 otherwise.
+otherwise return 0.
+
+## eqatic `moar`
+* `eqatic(str haystack, str $needle, int $pos)`
+Case-insensitive `eqat`
+
+## eqatim `moar`
+* `eqatim(str haystack, str $needle, int $pos)`
+Ignore-mark `eqat`, NFD decomposes and matches the base codepoint
+
+Example: `eqat("á", "a", 0) → 1`
+
+## eqaticim `moar`
+* `eqaticim(str haystack, str $needle, int $pos)`
+Case-insensitive and ignore-mark `eqat`
 
 ## iseq
 * `iseq_i(int $l, int $r)`
@@ -626,7 +683,7 @@ Return non-zero if $l is less than or equal to $r.
 
 Return non-zero if the two parameters are not equal.
 
-## not
+## not_i
 * `not_i(int $val)`
 
 Return 1 if `$val` is 0, 0 otherwise.
@@ -648,6 +705,13 @@ Return whatever is bound to @arr at position $i.
 * `bindpos_s(@arr, int $i, str $v)`
 
 Bind $v to @arr at position $i and return $v.
+
+## atposref
+* atposref_i(@arr, int $idx)
+* atposref_n(@arr, int $idx)
+* atposref_s(@arr, int $idx)
+
+Returns a container (of type `IntPosRef`, `NumPosRef`, or `StrPosRef`) that you can assign to or read from which will directly access `@arr` at index `$idx`.
 
 ## elems
 * `elems(@arr)`
@@ -727,7 +791,7 @@ Replace them with all the elements from `@from`.
 "Shift $v into the beginning of @arr."
 Bind $v to @arr at index 0, move all other bindings of @arr to the index one
 above what they were previously bound to.
-Return the number of elements of @arr on Parrot, $v on JVM.
+Return the $v on JVM.
 
 ## iterator
 * `iterator()`
@@ -813,6 +877,25 @@ throw an exception on invalid codepoints.
 Returns the codepoint for the given unicode character name, or -1 if no
 match was found.
 
+## getstrfromname
+* `getstrfromname(str $name)` (Currently only on MoarVM)
+
+Like `codepointfromname` except it returns a string instead of a codepoint.
+This function is able to return not just Unicode codepoints by name, but also
+Unicode Named Sequences, including Emoji Sequences and Emoji ZWJ Sequences
+and Name Aliases.
+
+In addition it is also case-insensitive, unlike codepointfromname
+
+See these links for a full list of [Named Sequences][Named-Sequences],
+[Emoji Sequences][Emoji-Sequences], [Emoji ZWJ Sequences][Emoji-ZWJ-Sequences]
+and [Name Aliases][Name-Aliases].
+
+[Named-Sequences]: http://www.unicode.org/Public/UCD/latest/ucd/NamedSequences.txt
+[Emoji-Sequences]: http://www.unicode.org/Public/emoji/4.0/emoji-sequences.txt
+[Emoji-ZWJ-Sequences]: http://www.unicode.org/Public/emoji/4.0/emoji-zwj-sequences.txt
+[Name-Aliases]: http://www.unicode.org/Public/UCD/latest/ucd/NameAliases.txt
+
 ## concat
 * `concat(str $l, str $r)`
 
@@ -824,8 +907,8 @@ Return a string that is the concatenation of the two passed in strings.
 Returns an (NFG) string resulting from decoding the specified buffer assuming
 the specified encoding.
 
-## decodetocodes
-* `decodetocodes`($buffer, str $encoding, int $normalization, $codes)
+## decodetocodes `moar`
+* `decodetocodes($buffer, str $encoding, int $normalization, $codes)`
 
 Decodes the bytes in the specified buffer using the provided encoding. Applies
 normalization as requested (must be one of the nqp::const::NORMALIZE_* values;
@@ -838,14 +921,14 @@ points into $codes, which should be some VMArray holding 32-bit integers.
 Encodes an (NFG) string into the specified encoding, writing into the buffer
 provided. The data written is normalized according to NFC.
 
-## encodefromcodes
-* `encodefromcodes($codes, str $encoding, $buffer)
+## encodefromcodes `moar`
+* `encodefromcodes($codes, str $encoding, $buffer)`
 
 Takes a 32-bit integer array of Unicode codepoints, encodes them using the
 chosen encoding, and writes them into the buffer. No normalization is applied.
 
 ## encodenorm
-* `encode(str $string, str $encoding, int $normalization, $buffer)
+* `encode(str $string, str $encoding, int $normalization, $buffer)`
 
 Encodes an (NFG) string into the specified encoding, writing into the buffer
 provided. The data written is normalized according to the normalization value
@@ -858,6 +941,12 @@ NORMALIZE_NONE is equivalent to NFC.
 Given a string, return an escaped version that replaces the following
 characters with their escaped equivalents: "\\", "\b", "\n", "\r",
 "\t", "\f", "\"", "\a", and "\e".
+
+## fc
+* `fc(str $str)`
+
+Returns a Unicode "fold case" operation copy of string, suitable for doing
+caseless string comparisons.
 
 ## findcclass
 * `findcclass(int $class, str $str, int $i, int $count)`
@@ -901,6 +990,27 @@ or at 0, otherwise.
 
 `index` is converted to this internal opcode by the compiler.
 
+## indexic
+* `indexic(str $haystack, str $needle, int $pos)`
+
+This op has the same arguments and functionality as nqp::index,
+except it is case-insensitive. For now we only have it under MoarVM,
+but the plan is to support it on other platforms as well.
+
+On MoarVM uses proper Unicode foldcase type comparison.
+
+## indexim `moar`
+* `indexim(str $haystack, str $needle, int $pos)`
+
+Like index but decomposes and matches against the base character.
+
+Example: `indexim("bcá", "a", 0) → 2`
+
+## indexicim `moar`
+* `indexicim(str $haystack, str $needle, int $pos)`
+
+Ignorecase and ignoremark `index`
+
 ## iscclass
 * `iscclass(int $class, str $str, int $i)`
 
@@ -919,7 +1029,7 @@ fields separated by the value of EXPR, and returns that new string.
 Return lowercase copy of string.
 
 ## normalizecodes
-* `normalizecodes($codes-in, int $normalization, $codes-out)
+* `normalizecodes($codes-in, int $normalization, $codes-out)`
 
 Takes the codepoints in $codes-in, applies the specified normalization, and
 places the result into the $codes-out array. Both arrays of codepoints must
@@ -937,6 +1047,13 @@ at the `$i`th character, if it's specified.
 
 `ord` is converted to these internal opcodes by the compiler.
 
+## ordbaseat
+`ordbaseat(str $str, int $pos)`
+
+Returns the Unicode codepoint which is the base (non extend/prepend character
+at that position). If it is a degenerate, and contains no base character,
+it then returns the first codepoint in that grapheme.
+
 ## radix
 * `radix(int $radix, String $str, int $pos, int $flags)`
 * `radix_I(int $radix, String $str, int $pos, int $flags, Mu:T $type)`
@@ -945,7 +1062,7 @@ Convert string $str into a number starting at offset $pos and using radix $radix
 The result of the conversion returns an array with
 
     out[0] = converted value
-    out[1] = radix ** (number of digits converted)
+    out[1] = $radix ** $number-of-digits-converted
     out[2] = offset after consuming digits, -1 if no digits consumed
 
 The opcode skips single underscores between pairs of digits, per the Perl 6
@@ -973,14 +1090,13 @@ Searching backwards through the `$haystack`, return the position at which
 specified, otherwise start from the last position.
 
 * `rindexfrom(str $haystack, str $needle, int $pos)` _Internal_
+
+`rindex` is converted to this internal opcode by the compiler.
+
+## rindexfromend `jvm`
 * `rindexfromend(str $haystack, str $needle)` _Internal_
 
-`rindex` is converted to these internal opcodes by the compiler.
-
-## uc
-* `uc(str $str)`
-
-Return uppercase copy of string.
+`rindex` is converted to this internal opcode by the compiler.
 
 ## split
 * `split(str $delimiter, str $string)`
@@ -990,44 +1106,6 @@ the substrings between delimiters in the original string.
 
 If the original string begins or ends with the delimiter, the resulting
 array will begin or end with an empty element.
-
-## strfromcodes
-* `strfromcodes($codes)`
-
-Returns an (NFG) string built from the specified codepoints, which must be
-provided as a 32-bit integer array.
-
-## strtocodes
-* `strtocodes(str $str, int $normalization, $codes)
-
-Takes an NFG string, and places the codepoints from it into the codes array,
-which must be a 32-bit integer array. Applies the specified normalization,
-specified as one of the nqp::const::NORMALIZE_* values; NORMALIZE_NONE is
-equivalent to NORMALIZE_NFC.
-
-## substr
-* `substr(str $str, int $position)`
-* `substr(str $str, int $position, int $length)`
-
-Return the portion of the string starting at the given position.
-If `$length` is specified, only return that many characters. The
-numbered variants required the args specified - the unnumbered
-version may use either signature.
-
-* `substr2(str $str, int $position)` _Internal_
-* `substr3(str $str, int $position, int $length)` _Internal_
-
-`substr` is converted to these internal opcodes by the compiler.
-
-## tc
-* `tc(str $str)`
-
-Return titlecase copy of string.
-
-## x
-* `x(str $str, int $count)`
-
-Return a new string containing `$count` copies of `$str`.
 
 ## sprintf
 * `sprintf(str $pattern, @values)`
@@ -1058,6 +1136,111 @@ my class MyHandler {
 }
 ```
 
+## strfromcodes
+* `strfromcodes($codes)`
+
+Returns an (NFG) string built from the specified codepoints, which must be
+provided as a 32-bit integer array.
+
+## strtocodes
+* `strtocodes(str $str, int $normalization, $codes)`
+
+Takes an NFG string, and places the codepoints from it into the codes array,
+which must be a 32-bit integer array. Applies the specified normalization,
+specified as one of the nqp::const::NORMALIZE_* values; NORMALIZE_NONE is
+not allowed.
+
+## substr
+* `substr(str $str, int $position)`
+* `substr(str $str, int $position, int $length)`
+
+Return the portion of the string starting at the given position.
+If `$length` is specified, only return that many characters. The
+numbered variants required the args specified - the unnumbered
+version may use either signature.
+
+## substr2 `jvm`
+* `substr2(str $str, int $position)` _Internal_
+
+A JVM specific internal opcode for `substr`.
+
+## substr3 `jvm`
+* `substr3(str $str, int $position, int $length)` _Internal_
+
+A JVM specific internal opcode for `substr`.
+
+## tc
+* `tc(str $str)`
+
+Return titlecase copy of string.
+
+## uc
+* `uc(str $str)`
+
+Return uppercase copy of string.
+
+## unicmp_s
+* `unicmp_s(str, str, int, int, int)`
+(Currently only on MoarVM)
+
+Compares strings using the [Unicode Collation Algorithm][UCA] (UCA).
+#### Parameters:
+```
+str, str, # strings to compare
+int,      # collation mode (bitmask)
+int,      # ISO 639 Language code
+int       # ISO 3166 Country code
+```
+
+The collation mode defines whether we use Primary, Secondary, Tertiary and/or
+Quaternary sorting.
+
+Compares two strings, using the Unicode Collation Algorithm
+Return values:
+    0   The strings are identical for the collation levels requested
+ -1/1   String a is less than string b/String a is greater than string b
+
+`collation_mode` acts like a bitfield. Each of primary, secondary and tertiary
+collation levels can be either: disabled, enabled, reversed.
+In the table below, where + designates sorting normal direction and
+- indicates reversed sorting for that collation level.
+```
+ Collation level | bitfield value
+        Primary+ |   1
+        Primary- |   2
+      Secondary+ |   4
+      Secondary- |   8
+       Tertiary+ |  16
+       Tertiary- |  32
+     Quaternary+ |  64
+     Quaternary- | 128
+```
+
+While the Primary, Secondary and Tertiary mean different things for
+different scripts, for the Latin script used in English they mostly
+correspond with Primary being Alphabetic, Secondary being Diacritics
+and Tertiary being Case.
+
+Setting 0 for language and country will collate all scripts according to
+their own distinctions for Primary, Secondary, and Tertiary, although it
+will not take into account certain languages.
+
+For example, some language based differences in collation:
+* “…include ch as in traditional Spanish, ä as in traditional German,
+  and å as in Danish” ― [Unicode Technical Report 10][UCA].
+
+For more information see [Unicode TR10][UCA].
+
+*** Note ***
+ - Currently only language and country insensitive sorting methods are implemented.
+
+[UCA]: http://unicode.org/reports/tr10/
+
+## x
+* `x(str $str, int $count)`
+
+Return a new string containing `$count` copies of `$str`.
+
 # <a id="unicode"></a> Unicode Property Opcodes
 
 ## getuniname
@@ -1065,18 +1248,7 @@ my class MyHandler {
 
 Translate a codepoint to its Unicode name.
 
-## unipropcode
-* `unipropcode(str $propname)`
-
-Translates a property name to the property category it's in.
-
-## unipvalcode
-* `unipvalcode(int $propcode, str $propname)`
-
-Looks up a property name in its property category, and returns which
-table within that category to use.
-
-## getuniprop_int
+## getuniprop_int `moar`
 * `getuniprop_int(int $codepoint, int $propcode)`
 
 Uses the table found by unipropcode to look up an integer property value
@@ -1090,18 +1262,122 @@ instead of the value you want.
 
 Same thing, but fetches a string property value.
 
-## getuniprop_bool
+## getuniprop_bool `moar`
 * `getuniprop_bool(int $codepoint, int $propcode)`
 
 Same thing, but fetches a boolean property value.
 
-## matchuniprop
+## matchuniprop `moar`
 * `matchuniprop(int $codepoint, int $propcode, int $pvalcode)`
 
 Looks up a codepoint property and return 1 if it matches the pval, 0
 otherwise.  The propcode and pvalcode may be looked up with the opcodes
 above.  (Note that you can use the property value name (e.g. Nd) for both
 lookups.)
+
+## unipropcode
+* `unipropcode(str $propname)`
+
+Translates a property name to the backend's property code. This is not distinct
+across backends and is expected to change over time. For the most part only
+useful for calling getuniprop_int, get_uniprop_str or get_uniprop_bool or
+comparing whether two unicode property names resolve to the same propcode, for
+example 'Alpha', 'alpha', 'alphabetic' and 'Alphabetic' should return the same
+property code.
+
+## unipvalcode `moar`
+* `unipvalcode(int $propcode, str $propname)`
+
+Looks up a property name in its property category, and returns which
+table within that category to use.
+
+## hasuniprop `moar`
+* `hasuniprop(str $string, int offset, int propcode, int pvalcode)`
+
+Checks if the string has a specific property value at a specific offset.
+Requires both the propcode and the pvalcode to work.
+
+# <a id="-vm-provided-streaming-decoder-opcodes"></a> VM-Provided Streaming Decoder Opcodes
+
+## decoderconfigure
+* `decoderconfigure(Decoder $dec, str $encoding, VMHash $config)`
+
+Configures the decoder with an encoding. The `$config` hash parameter is
+currently unused, and an empty hash or an `nqp::null` should be passed.
+
+## decodersetlineseps
+* `decodersetlineseps(Decoder $dec, VMArray $separators)`
+
+Sets the line separators to be used for line-based reading. It should be
+a string array (`nqp::list_s(...)`).
+
+## decoderaddbytes
+* `decoderaddbytes(Decoder $dec, VMArray $blob)`
+
+Adds bytes to the decoder's internal buffer. Must have VMArray REPR, and
+must have elements of type `int8` or `uint8`.
+
+## decodertakechars
+* `decodertakechars(Decoder $dec, int $num-chars)`
+
+Returns an NFG string consisting of `$num-chars` graphemes, provided that
+many are available after decoding. If less than `$num-chars` characters
+can be decoded, then `nqp::null_s` will be returned. Note that some a
+decoded codepoint at the end of a byte buffer may not be available as a
+character if the encoding allows the next character to be a combining
+character.
+
+## decodertakeallchars
+* `decodertakeallchars(Decoder $dec)`
+
+Decodes all remaining undecoded bytes, and flushes the normalization buffer.
+Returns an NFG string consisting of the decoded characters. This is suitable
+to use when the end of a stream of bytes to decode has been reached (for
+example, EOF when reading a file).
+
+## decodertakeavailablechars
+* `decodertakeavailablechars(Decoder $dec)`
+
+Decodes all remaining undecoded bytes. Returns an NFG string consisting of the
+decoded characters. Does not flush the normalization buffer. This is suitable
+when performing streaming decoding, and a later byte buffer may provide a
+combining character.
+
+## decodertakeline
+* `decodertakeline(Decoder $dec, int $chomp, int $incomplete-ok)`
+
+Decodes bytes until a line separator is reached, or all bytes have been
+decoded. If `$incomplete-ok` is zero and the separator was not found, then
+`nqp::null_s` will be returned. (Thus, `$incomplete-ok` is appropriate only
+when knowing that the end of the stream has been reached.) If `$chomp` is
+non-zero, then the separator - if present - will not be included in the
+resulting string.
+
+## decoderbytesavailable
+* `decoderbytesavailable(Decoder $dec)`
+
+Returns the number of undecoded bytes available inside of the decoder. This is
+useful in the case that chunks of the input should also be pulled out as bytes,
+and may be useful for doing tuning or pre-fetching in various other cases. Note
+that the result does not include bytes that were decoded but have not yet been
+taken as characters, or that were decoded to code points that are still in the
+normalization buffer. Thus the result is only accurate before reading any chars
+or after `decodertakechars` or after `decodertakeline` with `$incomplete-ok`
+passed a non-zero value.
+
+## decodertakebytes
+* `decodertakebytes(Decoder $dec, VMArray $blob_type, int $bytes)`
+
+Takes up to `$bytes` bytes from the decode stream's undecoded buffer, makes an
+instance of the `$blob_type`, and places the bytes in it. The same set of
+caveats about decoded-but-untaken bytes in `decoderbytesavailable` apply.
+
+## decoderempty
+* `decoderempty(Decoder $dec)`
+
+Returns zero if the decoder is empty (this means that there are no undecoded
+bytes, no decoded but untaken chars, and nothing in the normalization buffer).
+Otherwise returns non-zero.
 
 # <a id="conditional"></a> Conditional Opcodes
 
@@ -1121,6 +1397,21 @@ If not, and an `$else` block is present, run that instead.
 
 # <a id="control"></a> Loop/Control Opcodes
 
+## control
+* `QAST::Op.new(:op<control>, :name<next>);`
+* `QAST::Op.new(:op<control>, :name<last>);`
+* `QAST::Op.new(:op<control>, :name<redo>);`
+
+Not callable directly from NQP, but used in languages via QAST to perform loop
+control. The specific kind of loop control desired is specified via the
+`:name` attribute; either `next`, `last`, or `redo`.
+
+## defor
+* `defor(Block $cond, Block $body)`
+
+If the `$cond` evaluates to defined value, return it, otherwise, evaluate
+the `$body`.
+
 ## for
 * `for(Iterable $iter, Block $body)`
 
@@ -1131,12 +1422,6 @@ Invoke the `$body` for every item available in `$iter`.
 
 If the `$cond` evaluates to null, evaluate the `$body`, otherwise return
 the result of `$cond`.
-
-## defor
-* `defor(Block $cond, Block $body)`
-
-If the `$cond` evaluates to defined value, return it, otherwise, evaluate
-the `$body`.
 
 ## repeat_until
 * `repeat_until(Block $condition, Block $body)`
@@ -1156,6 +1441,21 @@ only if the condition returns a non-0 value.
 
 If a `$post` block is present, run that at the end, regardless of `$condition`.
 
+## stmts
+* `stmts(...)`
+
+Executes the given statements sequentially. For example:
+
+```perl
+
+nqp::stmts((my $a := nqp::chars("foo")), say($a), say("bar"));
+# 3
+# bar
+
+```
+
+Note that `:=` statements must be surrounded by parentheses.
+
 ## until
 * `until(Block $condition, Block $body)`
 * `until(Block $condition, Block $body, Block $post)`
@@ -1171,15 +1471,6 @@ If a `$post` block is present, run that at the end, regardless of `$condition`.
 Enter a loop, running the `$body` only if the condition returns a non-0 value.
 
 If a `$post` block is present, run that at the end, regardless of `$condition`.
-
-## control
-* `QAST::Op.new(:op<control>, :name<next>);`
-* `QAST::Op.new(:op<control>, :name<last>);`
-* `QAST::Op.new(:op<control>, :name<redo>);`
-
-Not callable directly from NQP, but used in languages via QAST to perform loop
-control. The specific kind of loop control desired is specified via the
-`:name` attribute; either `next`, `last`, or `redo`.
 
 # <a id="exceptions"></a> Exceptional Opcodes
 
@@ -1266,15 +1557,14 @@ Close the filehandle.
 
 Return 1 if this filehandle is at the end of the file, otherwise 0.
 
+## filenofh
+* `filenofh(Handle $fh)`
+Returns the filehandle number.
+
 ## flushfh
 * `flushfh(Handle $fh)`
 
-Flushes the file handle, forcing it to write any buffered output.
-
-## getcfh
-* `getcfh(Handle $in)`
-
-Reads a single character from the supplied filehandle.
+Flushes the filehandle, forcing it to write any buffered output.
 
 ## getstderr
 * `getstderr()`
@@ -1295,7 +1585,7 @@ Return the filehandle for standard output.
 * `open(str $filename, str $mode)`
 
 Open the specified file in the given mode. Valid modes include `r` for read,
-`w` for write, and `wa` for write with append.
+`w` for write, and `wa` for write with append. Returns a filehandle.
 
 ## openasync `jvm`
 _Experimental_
@@ -1309,60 +1599,31 @@ See `open` for valid modes.
 
 Output the given string to stdout.
 
-## printfh
-* `printfh(Handle $fh, str $str)`
-
-Output the given string to the filehandle.
-
-## readallfh
-* `readallfh(Handle $fh)`
-
-Return the contents of the open filehandle.
-
 ## readfh
 * `readfh(Handle $fh, @arr, long $count)`
 
 Given a readable `$fh`, and an array of `Buf[int8]` or a `Buf[uint8]`, read
 in the next `$count` bytes from the filehandle and store them in the array.
 
-## readlinefh
-* `readlinefh(Handle $fh)`
-
-Return the next line of the open filehandle.
-
-## readcharsfh
-* `nqp::readcharsfh(Handle $fh, $chars)`
-
 ## say
 * `say(str $str)`
 
 Output the given string to stdout, followed by a newline.
 
-## sayfh
-* `sayfh(Handle $fh, str $str)`
+## seekfh
+* `seekfh(Handle $fh, int $offset, int $whence)`
 
-Output the given string to the filehandle, followed by a newline.
-
-## setencoding
-* `setencoding(Handle $fh, str $encoding)`
-
-Set the encoding for the given handle. Valid encodings are: ascii,
-iso-8859-1, windows-1252, utf8, utf16, and binary.
-
-## setinputlinesep
-* `setinputlinesep(Handle $fh, str $sep)`
-
-Set the input line separator on the given file handle.
+Seek in the filehandle to the location specified by the offset and whence.
 
 ## tellfh
 * `tellfh(Handle $fh)`
 
-Return current access position for an open handle.
+Return current access position for an open filehandle.
 
 ## writefh
 * `writefh(Handle $fh, Mu $str)`
 
-Output the given object to the filehandle.
+Output the given object to the filehandle. Returns the number of bytes written.
 
 # <a id="extern"></a> External command Opcodes
 
@@ -1373,16 +1634,6 @@ Using $path as the working directory, execute the given command using the
 specified environment variables. Returns a POSIX-style return value. Command
 is executed using an OS-appropriate shell (`sh -c` or `cmd /c`). Blocks
 until command is complete.
-
-* `shell(str $cmd)` _Deprecated: use the three argument version_
-
-Same as the three argument version of `shell`, using the current directory
-and an empty environment.
-
-* `shell1(str $cmd)` _Internal, Deprecated_
-* `shell3(str $cmd, str $path, %env)` _Internal_
-
-`shell` is converted to these internal opcodes by the compiler.
 
 ## spawn
 * `spawn(@cmd, str $path, %env)`
@@ -1666,7 +1917,7 @@ discarding any decimal portion.
 Convert string value to a Big Integer of the given type.
 
 ## isbig
-* `isbig_I(Mu $obj)`
+* `isbig_I(Int $obj)`
 
 Returns a 1 if the object's numerical representation requires a big int, 0 otherwise.
 
@@ -1723,9 +1974,10 @@ Returns a 1 if the object is a null, 0 otherwise.
 Returns a 1 if the object is a float type, 0 otherwise.
 
 ## isprime
-* `isprime_I(Int $obj)`
+* `isprime_I(Int $obj, Int $rounds)`
 
-Returns a 1 if the integer value of the object is prime, 0 otherwise.
+Returns a 1 if the integer value of the object is prime, 0 otherwise. Performs
+up to `$rounds` of Miller-Rabin tests if necessary.
 
 ## isstr
 * `isstr(Mu $obj)`
@@ -1781,7 +2033,7 @@ of the type indicated by the opcode suffix.
 
 ## attrinited
 * `attrinited(Mu $obj. Mu:T $type, str $attributename)`
- 
+
 Test if the attribute of name `$attributename` of object `$obj`
 has been binded, see `bindattr`. Note that any access to the atribute
 that results in a `getattr` call causes it to be inited.
@@ -1827,6 +2079,8 @@ Example:
 * `can(Mu $obj, str $method)`
 
 If the object has a method of the given name, return 1. Otherwise, return 0.
+
+Returns 1 if ``$obj`` object has FALLBACK method.
 
 ## clone
 * `clone(Mu $obj)`
@@ -2091,6 +2345,14 @@ variable. Same as the `:=` operator in NQP.
 
 # <a id="misc"></a> Miscellaneous Opcodes
 
+## locallifetime
+```perl6
+QAST::Op.new( :op('locallifetime'), :node($/), QAST::Stmt.new(...))
+```
+
+Defines when local variables can be considered dead. E.g. the temporary setting
+of `$_` on the right side of `~~` uses that.
+
 ## const
 * `const()`
 
@@ -2153,7 +2415,48 @@ constants below can be used in nqp as (e.g.) `nqp::const::CCLASS_ANY`.
     * TYPE_CHECK_CACHE_THEN_METHOD
     * TYPE_CHECK_NEEDS_ACCEPTS
 
-## debugnoop
+The JVM only supports SIG_INT and SIG_KILL.
+
+On the MoarVM all of those signal constants below are defined.
+
+    * SIG_HUP
+    * SIG_INT
+    * SIG_QUIT
+    * SIG_ILL
+    * SIG_TRAP
+    * SIG_ABRT
+    * SIG_EMT
+    * SIG_FPE
+    * SIG_KILL
+    * SIG_BUS
+    * SIG_SEGV
+    * SIG_SYS
+    * SIG_PIPE
+    * SIG_ALRM
+    * SIG_TERM
+    * SIG_URG
+    * SIG_STOP
+    * SIG_TSTP
+    * SIG_CONT
+    * SIG_CHLD
+    * SIG_TTIN
+    * SIG_TTOU
+    * SIG_IO
+    * SIG_XCPU
+    * SIG_XFSZ
+    * SIG_VTALRM
+    * SIG_PROF
+    * SIG_WINCH
+    * SIG_INFO
+    * SIG_USR1
+    * SIG_USR2
+    * SIG_THR
+    * SIG_STKFLT
+    * SIG_PWR
+    * SIG_BREAK
+
+
+## debugnoop `jvm`
 * `debugnoop(Mu $a)`
 
 Returns `$a`. Does nothing, exists only to provide a breakpoint location
@@ -2189,7 +2492,9 @@ Converts the JVM property `java.class.path` into a list of paths, returns it.
 ## sha1
 * `sha1(str $str)`
 
-Given a UTF-8 string, return the SHA-1 digest for that string.
+Given a UTF-8 string, return the SHA-1 digest for that string. This op is built
+for the specific purpose of hashing source code for dependency management
+purposes, and isn't intended to be used more widely.
 
 ## sleep
 * `sleep(num $seconds)`
@@ -2211,10 +2516,8 @@ an integral number of seconds, `_n` returns a fractional amount.
 
 # <a id="nativecall"></a> Native Call / Interoperability Opcodes
 
-## x_posixerrno
-* `x_posixerrno()`
-
-Returns an int that corresponds to the value of POSIX's errno.
+## nativecallrefresh
+Refresh the C-based data backing the Perl 6 object. This op should only be used if changes have been made to the C-data, and these changes are not being reflected in the Perl 6 object.
 
 # <a id="async"></a> Asynchronous Operations
 
@@ -2226,6 +2529,26 @@ object with the AsyncTask REPR, the exact details of which are highly
 specific to a given backend. The type to use for that is given as $handle_type.
 
 [As of 2014.04, these are very new and subject to revision and additions.]
+
+## permit
+* `permit(AsyncTask $handle, int $channel, int $permits)`
+
+Takes something with the AsyncTask REPR and permits it to emit up to `$permits`
+more notifications. This is used as a back-pressure mechanism for asynchronous
+tasks that produce a stream of events, such as representing data arriving over
+a socket. Some kinds of tasks may emit on multiple channels, for example an
+asynchronous process may emit events for STDOUT and STDERR if both are of
+interest. The `$channel` argument is used to specify which channel is to get
+the permits if needed. If `$permits` is less than zero then it means there is
+no limit to the emits. If it is set to any value greater than or equal to
+zero, then:
+
+* In the case unlimited emits were permitted previously, the permits will be
+  set to the new value. If the new value is zero then the reader will be
+  stopped.
+* Otherwise the number of permits will be incremented by the specified value.
+  If the resulting number of permits allowed is greater than zero and the
+  reader is not running, it will be started.
 
 ## cancel
 * `cancel(AsyncTask $handle)`
@@ -2313,8 +2636,93 @@ at 0, the buffer or just its type object on error, and an error string (type
 object if no error). If EOF is reached, a sequence number of -1 is sent.
 Cancel to stop reading.
 
-## spawnprocasync
+## spawnprocasync `moar`
 * `spawnprocasync($queue, $args, $cwd, %env, $callbacks)`
 
-## killprocasync
-* `nqp::killprocasync($handle, $signal)`
+## killprocasync `moar`
+* `killprocasync($handle, $signal)`
+
+# <a id="atomic"></a> Atomic Operations
+
+## cas `moar`
+* `cas(ObjectContainer $cont, Mu $expected, Mu $new)`
+
+Takes an object which has a container spec set on it that knows how to do an
+atomic compare and swap, and performs an atomic compare and swap operation.
+The operation atomically compares the `$expected` object with what is currently
+held in the container. If they are the same object, then it replaces it with
+`$new`. If not, no change takes place. The original object stored in the
+container is returned, which can be used with `eqaddr` to check if it is the
+same as the `$expected` object. The container may perform type checks on the
+`$new` object before it attempts the operation.
+
+## cas_i `moar`
+* `cas_i(NativeIntRef $i, int64 $expected, int64 $new)`
+
+Takes an object with the `NativeRef` representation, which must point to an
+integer of the machine's atomic operation size. Casts the expected and new
+parameters to the machine's atomic operation size, and then uses them to
+perform an atomic compare and swap operation on the referenced integer. The
+operation atomically compares the `$expected` value with the value currently
+at the referenced location. If they are equal, it replaces the value with
+`$new`. If they are not equal, nothing happens. The operation evaluates to the
+value originally at the location (which can be compared with `$expected` to
+see if the operation was a success).
+
+## atomicinc_i `moar`
+* `atomicinc_i(NativeIntRef $i)`
+
+Takes an object with the `NativeRef` representation, which must point to an
+integer of the machine's atomic operation size. Performs an atomic increment
+of the referenced integer. Returns the value **before** it was incremented.
+
+## atomicdec_i `moar`
+* `atomicdec_i(NativeIntRef $i)`
+
+Takes an object with the `NativeRef` representation, which must point to an
+integer of the machine's atomic operation size. Performs an atomic decrement
+of the referenced integer. Returns the value **before** it was decremented.
+
+## atomicadd_i `moar`
+* `atomicadd_i(NativeIntRef $i, int $value)`
+
+Takes an object with the `NativeRef` representation, which must point to an
+integer of the machine's atomic operation size. Performs an atomic addition of
+the provided value, which will be cast to the machine's atomic operation size
+before the operation is performed. Returns the value at the memory location
+**before** the addition was performed.
+
+## atomicload `moar`
+* `atomicload(ObjectContainer $c)`
+
+Takes an object which has a container spec set on it that knows how to do an
+atomic load (that is, with appropriate barriering to ensure the latest value
+is read). Performs the atomic load, and returns the loaded object.
+
+## atomicload_i `moar`
+* `atomicload_i(NativeIntRef $i)`
+
+Takes an object with the `NativeRef` representation, which must point to an
+integer of the machine's atomic operation size. Performs an atomic load (that
+is, with appropriate barriering to ensure the latest value is read).
+
+## atomicstore `moar`
+* `atomicstore(ObjectContainer $c, Mu $value)`
+
+Takes an object which has a container spec set on it that knows how to do an
+atomic load. Performs the atomic store, which may fail if the value being
+stored does not, for example, meet type constraints. Evaluates to the stored
+value. The store performs appropriate barriering to ensure the changed value
+is "published".
+
+## atomicstore_i `moar`
+* `atomicstore_i(NativeIntRef $i, int64 $value)`
+
+Takes an object with the `NativeRef` representation, which must point to an
+integer of the machine's atomic operation size. Performs an atomic store (that
+is, with appropriate barriering to ensure the changed value is "published").
+
+## barrierfull `moar`
+* `barrierfull()`
+
+Performs a full memory barrier.

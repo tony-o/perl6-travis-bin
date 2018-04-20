@@ -4,18 +4,32 @@ my $T_INT  := 1; # We use a javascript number but always treat it as a 32bit int
 my $T_NUM  := 2; # We use a javascript number for that
 my $T_STR  := 3; # We use a javascript str for that
 my $T_BOOL := 4; # Something that can be used in boolean context in javascript. To the user it should be presented as a 0 or 1
+my $T_CALL_ARG := 5; # Something that will be passed to a sub/method call
+
+my $T_INT16 := 6; # We use a javascript number but always treat it as a 16bit integer
+my $T_INT8 := 7; # We use a javascript number but always treat it as a 8bit integer
+
+my $T_RETVAL := 8; # Something that will be returned from a sub/method call
+
+my $T_UINT16 := 9; # We use a javascript number but always treat it as a 16bit integer
+my $T_UINT8 := 10; # We use a javascript number but always treat it as a 8bit integer
+my $T_UINT32 := 11; # We use a javascript number but always treat it as a unsigned 32bit integer
+
 my $T_VOID := -1; # Value of this type shouldn't exist, we use a "" as the expr
 my $T_NONVAL := -2; # something that is not a nqp value
+
+my $T_ARGS := -3; # comma separated arguments to a js call
+my $T_ARGS_ARRAY := -4; # an array of arguments to a js call
 
 class Chunk {
     has int $!type; # the js type of $!expr
     has str $!expr; # a javascript expression without side effects
     has $!node; # a QAST::Node that contains info for source maps
-    has @!setup; # stuff that needs to be executed before the value of $!expr can be used, this contains strings and Chunks.
+    has $!setup; # stuff that needs to be executed before the value of $!expr can be used, this contains strings and Chunks.
 
-    method new($type, $expr, @setup, :$node) {
+    method new($type, $expr, $setup = nqp::null(), :$node) {
         my $obj := nqp::create(self);
-        $obj.BUILD($type, $expr, @setup, :$node);
+        $obj.BUILD($type, $expr, $setup, :$node);
         $obj
     }
 
@@ -26,64 +40,72 @@ class Chunk {
     method BUILD($type, $expr, @setup, :$node) {
         $!type := $type;
         $!expr := $expr;
-        @!setup := @setup;
+        $!setup := @setup;
         $!node := $node if nqp::defined($node);
     }
 
+    method collect(@strs) {
+        if nqp::isnull($!setup) {
+        }
+        elsif nqp::istype($!setup, Chunk) {
+            $!setup.collect(@strs);
+        }
+        else {
+            for $!setup -> $part {
+                if nqp::isstr($part) {
+                    nqp::push_s(@strs, $part);
+                }
+                else {
+                    $part.collect(@strs);
+                }
+            }
+        }
+    }
+
     method join() {
-        my $js := ''; 
-        for @!setup -> $part {
-           if nqp::isstr($part) {
-              $js := $js ~ $part;
-           }
-           else {
-              $js := $js ~ $part.join;
-           }
-        }
-        $js;
-    }
-    
-    method with_source_map_info() {
-        my @parts;
-        for @!setup -> $part {
-            if nqp::isstr($part) {
-                nqp::push(@parts,quote_string($part, :json));
-            }
-            else {
-                nqp::push(@parts,$part.with_source_map_info);
-            }
-        }
-        my $parts := '[' ~ nqp::join(',', @parts) ~ ']';
-        if nqp::defined($!node) && $!node.node {
-            my $node := $!node.node;
-            my $location := HLL::Compiler.line_and_column_of($node.orig(), $node.from(), :cache(1));
-            "\{\"line\": {nqp::atpos_i($location, 0)}, \"column\": {nqp::atpos_i($location, 1)}, \"parts\": $parts\}";
-        }
-        else {
-            $parts;
-        }
+        my @strs := nqp::list_s();
+        self.collect(@strs);
+        nqp::join('', @strs);
     }
 
-    method source_map_debug() {
-        my $js := ''; 
-        for @!setup -> $part {
-           if nqp::isstr($part) {
-              $js := $js ~ $part;
-           }
-           else {
-              $js := $js ~ $part.source_map_debug;
-           }
+    method collect_with_source_map_info($offset, @strs, @mapping) {
+        # HACK sometimes a QAST::Op sneaks into $!node.node, so call nqp::can
+        my int $sourcemap_info := nqp::defined($!node) && $!node.node && nqp::can($!node.node, 'from');
+        if $sourcemap_info {
+            nqp::push_i(@mapping, $!node.node.from());
+            nqp::push_i(@mapping, $offset);
         }
 
-        if nqp::defined($!node) && $!node.node {
-            my $node := $!node.node;
-            my $line_and_column := HLL::Compiler.line_and_column_of($node.orig(), $node.from(), :cache(1));
-            my $where := nqp::atpos_i($line_and_column, 0) ~ ":" ~ nqp::atpos_i($line_and_column, 1);
-            "/* LINE $where */\n" ~ $js ~ "/* END $where */"
+        #if nqp::defined($!node) && $!node.node && !nqp::can($!node.node, 'from') {
+        #    stderr().print("problem with node.node");
+        #}
+
+
+        my int $count := 0;
+
+        if nqp::isnull($!setup) {
+        }
+        elsif nqp::istype($!setup, Chunk) {
+            $count := $!setup.collect_with_source_map_info($offset, @strs, @mapping);
         }
         else {
-            $js;
+            for $!setup -> $part {
+                if nqp::isstr($part) {
+                    $count := $count + nqp::chars($part);
+                    nqp::push_s(@strs, $part);
+                }
+                else {
+                    $count := $count + $part.collect_with_source_map_info($offset + $count, @strs, @mapping);
+                }
+            }
         }
+
+        if $sourcemap_info {
+            nqp::push_i(@mapping, -1);
+            nqp::push_i(@mapping, $offset + $count);
+        }
+
+        $count;
     }
 
     method type() {
@@ -95,29 +117,14 @@ class Chunk {
     }
 
     method setup() {
-        @!setup;
+        $!setup;
     }
 
     method node() {
         $!node;
     }
-}
 
-class ChunkCPS is Chunk {
-    has $!cont;
-
-    method new($type, $expr, @setup, $cont, :$node) {
-        my $obj := nqp::create(self);
-        $obj.BUILD($type, $expr, @setup, $cont, :$node);
-        $obj
-    }
-
-    method BUILD($type, $expr, @setup, $cont, :$node) {
-        Chunk.HOW.method_table(Chunk)<BUILD>(self, $type, $expr, @setup, :$node);
-        $!cont := $cont;
-    }
-
-    method cont() {
-        $!cont;
+    method is_args_array() {
+        $!type == $T_ARGS_ARRAY;
     }
 }

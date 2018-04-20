@@ -3,7 +3,7 @@ class HLL::Actions {
 
     method string_to_int($src, $base) {
         my $res := nqp::radix($base, $src, 0, 2);
-        $src.CURSOR.panic("'$src' is not a valid number")
+        $src.panic("'$src' is not a valid number")
             unless nqp::atpos($res, 2) == nqp::chars($src);
         nqp::atpos($res, 0);
     }
@@ -76,13 +76,17 @@ class HLL::Actions {
         }
     }
 
+    method O($/) {
+        make %*SPEC;
+    }
+
     method EXPR($/, $key?) {
         unless $key { return 0; }
         my $ast := $/.ast // $<OPER>.ast;
         unless $ast {
             $ast := QAST::Op.new( :node($/) );
-            if $<OPER><O><op> {
-                $ast.op( ~$<OPER><O><op> );
+            if $<OPER><O>.made<op> {
+                $ast.op( ~$<OPER><O>.made<op> );
             }
             if $key eq 'LIST' { $key := 'infix'; }
             my $name := nqp::lc($key) ~ ':' ~ ($<OPER><sym> ~~ /<[ < > ]>/ ?? '«' ~ $<OPER><sym> ~ '»' !! '<' ~ $<OPER><sym> ~ '>');
@@ -129,7 +133,7 @@ class HLL::Actions {
                 }
             }
             else {            
-                $/.CURSOR.panic("Can't form :w list from non-constant strings (yet)");
+                $/.panic("Can't form :w list from non-constant strings (yet)");
             }
         }
         make $ast;
@@ -200,10 +204,10 @@ class HLL::Actions {
 
     method charname($/) {
         my $codepoint := $<integer>
-                         ?? $<integer>.made
-                         !! nqp::codepointfromname(~$/);
-        $/.CURSOR.panic("Unrecognized character name $/") if $codepoint < 0;
-        make nqp::chr($codepoint);
+                         ?? nqp::chr($<integer>.made)
+                         !! nqp::getstrfromname(~$/);
+        $/.panic("Unrecognized character name '$/'") if $codepoint eq '';
+        make $codepoint;
     }
 
     method charnames($/) {
@@ -219,5 +223,10 @@ class HLL::Actions {
                          ?? nqp::ord($<control>) +^ 64
                          !! self.string_to_int( $/, 10 )
                         );
+    }
+
+    method comment:sym<line_directive>($/) {
+        my $orig_line := HLL::Compiler.lineof($/.orig(), $/.from(), :cache(1), :directives(0));
+        $*W.add_comp_line_directive([$orig_line, nqp::radix(10, $<line>, 0, 0)[0], $<filename>]);
     }
 }

@@ -1,3 +1,4 @@
+#!/usr/bin/env perl6
 # This script processes the op list into a C header file that contains
 # info about the opcodes.
 
@@ -173,7 +174,7 @@ BEGIN {
         P6 => '
 unit module MAST::Ops;
 our %flags is export = ('~
-    join(",\n    ", $value_map.pairs.map({ $_.perl }) )~');
+    join(",\n    ", $value_map.pairs.sort(*.value).map({ $_.perl }) )~');
 our @offsets is export = '~
     join(",\n    ", @offsets)~';
 our @counts = '~
@@ -223,7 +224,9 @@ sub opcode_details(@ops) {
             take "        $(
                 ($op.adverbs<deoptonepoint> ?? 1 !! 0) +
                 ($op.adverbs<deoptallpoint> ?? 2 !! 0) +
-                ($op.adverbs<osrpoint> ?? 4 !! 0)),";
+                ($op.adverbs<osrpoint> ?? 4 !! 0) +
+                ($op.adverbs<predeoptonepoint> ?? 8 !! 0)),";
+            take "        $($op.adverbs<logged> ?? '1' !! '0'),";
             take "        $($op.adverbs<noinline> ?? '1' !! '0'),";
             take "        $(($op.adverbs<invokish> ?? 1 !! 0) +
                             ($op.adverbs<throwish> ?? 2 !! 0)),";

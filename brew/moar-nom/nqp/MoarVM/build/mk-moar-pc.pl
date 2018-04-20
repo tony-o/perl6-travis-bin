@@ -5,12 +5,11 @@
 ##  Copyright © 2014 Daniel Dehennin <daniel.dehennin@baby-gnu.org>
 ##
 ##
-use 5.010;
 use strict;
 use warnings;
 
 use File::Basename;
-use File::Path qw{make_path};
+use File::Path qw{mkpath};
 
 my @args = @ARGV;
 die "Missing target filename argument" if @args < 1;
@@ -21,10 +20,10 @@ my $libdir = '/home/travis/brew/moar-nom/install/lib';
 my $mastdir = '/home/travis/brew/moar-nom/install/share/nqp/lib/MAST';
 my $includedir = "${prefix}/include";
 my $package = 'moar';
-my $version = '2016.03';
+my $version = '2017.10';
 my $exeext = '';
 my $moar = "${bindir}/${package}${exeext}";
-my $ldopts = ' -O3 -DNDEBUG -Wl,-rpath,/home/travis/brew/moar-nom/install/lib -Wl,-rpath,/home/travis/brew/moar-nom/install/share/perl6/site/lib';
+my $ldopts = ' -O3 -DNDEBUG -Wl,-rpath,"//home/travis/brew/moar-nom/install/lib"';
 my $ldflags = "-L${libdir} -l${package}";
 my $libs = "${ldflags}";
 my $cflags = "-I${includedir}";
@@ -47,7 +46,7 @@ $cflags = '' if ${includedir} eq "/usr/include";
 
 my $dirname = dirname $args[0];
 if ( ! -d $dirname ) {
-    make_path($dirname);
+    mkpath($dirname);
 }
 
 open my $pcfile, '>', "$args[0]"

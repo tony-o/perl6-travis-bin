@@ -1,12 +1,12 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps ConcBlockingQueue_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st  = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st  = MVM_gc_allocate_stable(tc, &ConcBlockingQueue_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -107,10 +107,21 @@ static void at_pos(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *d
 
     if (MVM_load(&cbq->elems) > 0) {
         MVMConcBlockingQueueNode *peeked;
-        uv_mutex_lock(&cbq->locks->head_lock);
+        unsigned int interval_id;
+        interval_id = MVM_telemetry_interval_start(tc, "ConcBlockingQueue.at_pos");
+        MVMROOT(tc, root, {
+            MVM_gc_mark_thread_blocked(tc);
+            data = OBJECT_BODY(root);
+            cbq = (MVMConcBlockingQueueBody *)data;
+            uv_mutex_lock(&cbq->locks->head_lock);
+            MVM_gc_mark_thread_unblocked(tc);
+            data = OBJECT_BODY(root);
+            cbq = (MVMConcBlockingQueueBody *)data;
+        });
         peeked = cbq->head->next;
         value->o = peeked ? peeked->value : tc->instance->VMNull;
         uv_mutex_unlock(&cbq->locks->head_lock);
+        MVM_telemetry_interval_stop(tc, interval_id, "ConcBlockingQueue.at_pos");
     }
     else {
         value->o = tc->instance->VMNull;
@@ -119,13 +130,15 @@ static void at_pos(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *d
 
 static MVMuint64 elems(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data) {
     MVMConcBlockingQueueBody *cbq = (MVMConcBlockingQueueBody *)data;
-    return MVM_load(cbq->elems);
+    return MVM_load(&(cbq->elems));
 }
 
 static void push(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMRegister value, MVMuint16 kind) {
     MVMConcBlockingQueueBody *cbq = (MVMConcBlockingQueueBody *)data;
     MVMConcBlockingQueueNode *add;
     AO_t orig_elems;
+    MVMObject *to_add = value.o;
+    unsigned int interval_id;
 
     if (kind != MVM_reg_obj)
         MVM_exception_throw_adhoc(tc,
@@ -135,39 +148,67 @@ static void push(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *dat
             "Cannot store a null value in a concurrent blocking queue");
 
     add = MVM_calloc(1, sizeof(MVMConcBlockingQueueNode));
-    MVM_ASSIGN_REF(tc, &(root->header), add->value, value.o);
 
-    uv_mutex_lock(&cbq->locks->tail_lock);
+    interval_id = MVM_telemetry_interval_start(tc, "ConcBlockingQueue.push");
+    MVMROOT2(tc, root, to_add, {
+        MVM_gc_mark_thread_blocked(tc);
+        data = OBJECT_BODY(root);
+        cbq = (MVMConcBlockingQueueBody *)data;
+        uv_mutex_lock(&cbq->locks->tail_lock);
+        MVM_gc_mark_thread_unblocked(tc);
+        data = OBJECT_BODY(root);
+        cbq = (MVMConcBlockingQueueBody *)data;
+    });
+    MVM_ASSIGN_REF(tc, &(root->header), add->value, to_add);
     cbq->tail->next = add;
     cbq->tail = add;
     orig_elems = MVM_incr(&cbq->elems);
     uv_mutex_unlock(&cbq->locks->tail_lock);
 
     if (orig_elems == 0) {
-        uv_mutex_lock(&cbq->locks->head_lock);
+        MVMROOT(tc, root, {
+            MVM_gc_mark_thread_blocked(tc);
+            data = OBJECT_BODY(root);
+            cbq = (MVMConcBlockingQueueBody *)data;
+            uv_mutex_lock(&cbq->locks->head_lock);
+            MVM_gc_mark_thread_unblocked(tc);
+            data = OBJECT_BODY(root);
+            cbq = (MVMConcBlockingQueueBody *)data;
+        });
         uv_cond_signal(&cbq->locks->head_cond);
         uv_mutex_unlock(&cbq->locks->head_lock);
     }
+    MVM_telemetry_interval_stop(tc, interval_id, "ConcBlockingQueue.push");
 }
 
 static void shift(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMRegister *value, MVMuint16 kind) {
     MVMConcBlockingQueueBody *cbq = (MVMConcBlockingQueueBody *)data;
     MVMConcBlockingQueueNode *taken;
+    unsigned int interval_id;
 
     if (kind != MVM_reg_obj)
         MVM_exception_throw_adhoc(tc, "Can only shift objects from a ConcBlockingQueue");
 
-    uv_mutex_lock(&cbq->locks->head_lock);
+    interval_id = MVM_telemetry_interval_start(tc, "ConcBlockingQueue.shift");
+    MVMROOT(tc, root, {
+        MVM_gc_mark_thread_blocked(tc);
+        data = OBJECT_BODY(root);
+        cbq = (MVMConcBlockingQueueBody *)data;
+        uv_mutex_lock(&cbq->locks->head_lock);
+        MVM_gc_mark_thread_unblocked(tc);
+        data = OBJECT_BODY(root);
+        cbq  = (MVMConcBlockingQueueBody *)data;
 
-    while (MVM_load(&cbq->elems) == 0) {
-        MVMROOT(tc, root, {
-            MVM_gc_mark_thread_blocked(tc);
-            uv_cond_wait(&cbq->locks->head_cond, &cbq->locks->head_lock);
-            MVM_gc_mark_thread_unblocked(tc);
-            data = OBJECT_BODY(root);
-            cbq  = (MVMConcBlockingQueueBody *)data;
-        });
-    }
+        while (MVM_load(&cbq->elems) == 0) {
+                MVM_gc_mark_thread_blocked(tc);
+                data = OBJECT_BODY(root);
+                cbq = (MVMConcBlockingQueueBody *)data;
+                uv_cond_wait(&cbq->locks->head_cond, &cbq->locks->head_lock);
+                MVM_gc_mark_thread_unblocked(tc);
+                data = OBJECT_BODY(root);
+                cbq  = (MVMConcBlockingQueueBody *)data;
+        }
+    });
 
     taken = cbq->head->next;
     MVM_free(cbq->head);
@@ -181,6 +222,7 @@ static void shift(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *da
         uv_cond_signal(&cbq->locks->head_cond);
 
     uv_mutex_unlock(&cbq->locks->head_lock);
+    MVM_telemetry_interval_stop(tc, interval_id, "ConcBlockingQueue.shift");
 }
 
 /* Set the size of the STable. */
@@ -190,10 +232,10 @@ static void deserialize_stable_size(MVMThreadContext *tc, MVMSTable *st, MVMSeri
 
 /* Initializes the representation. */
 const MVMREPROps * MVMConcBlockingQueue_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &ConcBlockingQueue_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps ConcBlockingQueue_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     initialize,
@@ -213,7 +255,9 @@ static const MVMREPROps this_repr = {
         MVM_REPR_DEFAULT_BIND_POS_MULTIDIM,
         MVM_REPR_DEFAULT_DIMENSIONS,
         MVM_REPR_DEFAULT_SET_DIMENSIONS,
-        MVM_REPR_DEFAULT_GET_ELEM_STORAGE_SPEC
+        MVM_REPR_DEFAULT_GET_ELEM_STORAGE_SPEC,
+        MVM_REPR_DEFAULT_POS_AS_ATOMIC,
+        MVM_REPR_DEFAULT_POS_AS_ATOMIC_MULTIDIM
     },    /* pos_funcs */
     MVM_REPR_DEFAULT_ASS_FUNCS,
     elems,
@@ -233,17 +277,31 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "ConcBlockingQueue", /* name */
     MVM_REPR_ID_ConcBlockingQueue,
-    0, /* refs_frames */
     NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };
+
+MVMObject * MVM_concblockingqueue_jit_poll(MVMThreadContext *tc, MVMObject *queue) {
+    if (REPR(queue)->ID == MVM_REPR_ID_ConcBlockingQueue && IS_CONCRETE(queue))
+        return MVM_concblockingqueue_poll(tc, (MVMConcBlockingQueue *)queue);
+    else
+        MVM_exception_throw_adhoc(tc,
+                "queuepoll requires a concrete object with REPR ConcBlockingQueue");
+}
 
 /* Polls a queue for a value, returning NULL if none is available. */
 MVMObject * MVM_concblockingqueue_poll(MVMThreadContext *tc, MVMConcBlockingQueue *queue) {
     MVMConcBlockingQueue *cbq = (MVMConcBlockingQueue *)queue;
     MVMConcBlockingQueueNode *taken;
     MVMObject *result = tc->instance->VMNull;
+    unsigned int interval_id;
 
-    uv_mutex_lock(&cbq->body.locks->head_lock);
+    interval_id = MVM_telemetry_interval_start(tc, "ConcBlockingQueue.poll");
+    MVMROOT(tc, cbq, {
+        MVM_gc_mark_thread_blocked(tc);
+        uv_mutex_lock(&cbq->body.locks->head_lock);
+        MVM_gc_mark_thread_unblocked(tc);
+    });
 
     if (MVM_load(&cbq->body.elems) > 0) {
         taken = cbq->body.head->next;
@@ -259,5 +317,6 @@ MVMObject * MVM_concblockingqueue_poll(MVMThreadContext *tc, MVMConcBlockingQueu
 
     uv_mutex_unlock(&cbq->body.locks->head_lock);
 
+    MVM_telemetry_interval_stop(tc, interval_id, "ConcBlockingQueue.poll");
     return result;
 }

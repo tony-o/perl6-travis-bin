@@ -6,10 +6,10 @@
 class Perl6::Metamodel::DefiniteHOW
     #~ does Perl6::Metamodel::Naming
     does Perl6::Metamodel::Documenting
-    
+
     #~ does Perl6::Metamodel::MethodDelegation
     #~ does Perl6::Metamodel::TypePretense
-    
+
     #~ does Perl6::Metamodel::Stashing
     #~ does Perl6::Metamodel::AttributeContainer
     #~ does Perl6::Metamodel::MethodContainer
@@ -30,9 +30,13 @@ class Perl6::Metamodel::DefiniteHOW
 
     #~ has @!mro;
 
+    my class Definite { }
+    my class NotDefinite { }
+
     method new_type(:$base_type!, :$definite!) {
         my $root := nqp::parameterizetype((Perl6::Metamodel::DefiniteHOW.WHO)<root>,
-            [$base_type, $definite]);
+            [$base_type, $definite ?? Definite !! NotDefinite]);
+        nqp::setdebugtypename($root, self.name($root));
     }
 
     method name($definite_type) {
@@ -42,7 +46,18 @@ class Perl6::Metamodel::DefiniteHOW
         else {
             my $base_type := nqp::typeparameterat($definite_type, 0);
             my $definite  := nqp::typeparameterat($definite_type, 1);
-            $base_type.HOW.name($base_type) ~ ':' ~ ($definite ?? 'D' !! 'U')
+            $base_type.HOW.name($base_type) ~ ':' ~ (nqp::eqaddr($definite, Definite) ?? 'D' !! 'U')
+        }
+    }
+
+    method shortname($definite_type) {
+        if nqp::isnull(nqp::typeparameterized($definite_type)) {
+            '?:?'
+        }
+        else {
+            my $base_type := nqp::typeparameterat($definite_type, 0);
+            my $definite  := nqp::typeparameterat($definite_type, 1);
+            $base_type.HOW.shortname($base_type) ~ ':' ~ (nqp::eqaddr($definite, Definite) ?? 'D' !! 'U')
         }
     }
 
@@ -58,7 +73,7 @@ class Perl6::Metamodel::DefiniteHOW
 
     method definite($definite_type) {
         check_instantiated($definite_type);
-        nqp::typeparameterat($definite_type, 1)
+        nqp::eqaddr(nqp::typeparameterat($definite_type, 1), Definite) ?? 1 !! 0
     }
 
     #~ # Our MRO is just that of base type.
@@ -71,7 +86,7 @@ class Perl6::Metamodel::DefiniteHOW
         #~ }
         #~ @!mro
     #~ }
-    
+
     #~ method parents($obj, :$local, :$excl, :$all) {
         #~ my @parents := [$!base_type];
         #~ unless $local {
@@ -116,7 +131,7 @@ class Perl6::Metamodel::DefiniteHOW
 BEGIN {
     my $root := nqp::newtype(Perl6::Metamodel::DefiniteHOW, 'Uninstantiable');
     nqp::settypehll($root, 'perl6');
-    
+
     nqp::setparameterizer($root, sub ($type, $params) {
         # Re-use same HOW.
         my $thing := nqp::settypehll(nqp::newtype($type.HOW, 'Uninstantiable'), 'perl6');

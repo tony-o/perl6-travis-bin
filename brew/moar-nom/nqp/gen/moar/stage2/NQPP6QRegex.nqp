@@ -100,10 +100,10 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
     }
 
     method worry(*@args) {
-        nqp::printfh(nqp::getstderr(), nqp::join('', @args) ~ "\n");
+        note(nqp::join('', @args) ~ "\n");
     }
 
-    token ws { [ \s+ | '#' \N* ]* }
+    token ws { [ \s | '#' \N* ]* }
 
     token normspace { <?[\s#]> <.ws> }
 
@@ -157,8 +157,8 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
     regex infixstopper {
         :dba('infix stopper')
         [
-        | <?before <[\) \} \]]> >
-        | <?before '>' <-[>]> >
+        | <?before <.[\) \} \]]> >
+        | <?before '>' <.-[>]> >
         | <?rxstopper>
         ]
     }
@@ -196,8 +196,8 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
         :my $*VARDEF := 0;
         [
         || <noun=.quantified_atom>+
-        || <?before <rxstopper> | <[&|~]> > <.throw_null_pattern>
-        || <?before <infixstopper> > <.throw_null_pattern> # XXX Check if unmatched bracket
+        || <?before <.rxstopper> | <.[&|~]> > <.throw_null_pattern>
+        || <?before <.infixstopper> > <.throw_null_pattern> # XXX Check if unmatched bracket
         || $$ <.throw_regex_not_terminated>
         || (\W) { self.throw_unrecognized_metachar: ~$/[0] }
         || <.throw_regex_not_terminated>
@@ -233,7 +233,7 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
         # :dba('regex atom')
         [
         | \w
-          [ <?before ' ' \w> <!{ %*RX<s> || $*HAS_GOAL }> <.worry("Space is not significant here; please use quotes or :s (:sigspace) modifier (or, to suppress this warning, omit the space, or otherwise change the spacing)")> ]?
+          [ <?before ' ' \w <!before <.quantifier>>  > <!{ %*RX<s> || $*HAS_GOAL }> <.worry("Space is not significant here; please use quotes or :s (:sigspace) modifier (or, to suppress this warning, omit the space, or otherwise change the spacing)")> ]?
           <.SIGOK>
         | <metachar>
         ]
@@ -252,7 +252,7 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
     proto token quantifier { <...> }
     token quantifier:sym<%> {
 	('%''%'?) {
-	    $/.CURSOR.panic("Missing quantifier on the left argument of " ~ $/[0]);
+	    $/.panic("Missing quantifier on the left argument of " ~ $/[0]);
 	}
     }
     token quantifier:sym<*> { <sym> <backmod> }
@@ -277,14 +277,14 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
               ]
               [
               | $<upto>='^'? <max=.integer> {
-                  $/.CURSOR.panic("Negative numbers are not allowed as quantifiers") if $<max>.Str < 0;
+                  $/.panic("Negative numbers are not allowed as quantifiers") if nqp::radix(10, $<max>, 0, 0)[0] < 0;
                 }
               | $<max>=['*']
               | <.throw_malformed_range>
               ]
             ]?
           ]
-          { $/.CURSOR.panic("Negative numbers are not allowed as quantifiers") if $<min>.Str < 0 }
+          { $/.panic("Negative numbers are not allowed as quantifiers") if nqp::radix(10, $<min>, 0, 0)[0] < 0 }
         | <?[{]> <codeblock>
         ]
     }
@@ -357,7 +357,6 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
 
     proto token backslash { <...> }
     token backslash:sym<s> { $<sym>=[<[dDnNsSwW]>] }
-    token backslash:sym<b> { $<sym>=[<[bB]>] }
     token backslash:sym<e> { $<sym>=[<[eE]>] }
     token backslash:sym<f> { $<sym>=[<[fF]>] }
     token backslash:sym<h> { $<sym>=[<[hH]>] }
@@ -368,6 +367,18 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
     token backslash:sym<x> { $<sym>=[<[xX]>] [ <hexint> | '[' <hexints> ']' ] }
     token backslash:sym<c> { $<sym>=[<[cC]>] <charspec> }
     token backslash:sym<0> { $<sym>=['0'] }
+    token backslash:sym<B> { 'B' <.obs:
+        '\\B', '<!|w> for negated word boundary. If you meant a negated'
+        ~ ' backspace character, use it in a negated character class (<-[\b]>).'
+    >}
+    token backslash:sym<b> { 'b' <.obs:
+        '\\b', '<|w> for word boundary (or « and » for left/right boundaries).'
+        ~ ' If you meant the backspace character, quote it ("\b") or use it as'
+        ~ ' inside a character class (<[\b]>)'
+    >}
+    token backslash:sym<K> { 'K' <.obs:
+        '\\K', '<( for discarding text before the capture marker or )> for discarding text after.'
+    >}
     token backslash:sym<A> { 'A' <.obs: '\\A as beginning-of-string matcher', '^'> }
     token backslash:sym<z> { 'z' <.obs: '\\z as end-of-string matcher', '$'> }
     token backslash:sym<Z> { 'Z' <.obs: '\\Z as end-of-string matcher', '\\n?$'> }
@@ -472,7 +483,7 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
         ]
         {
             if !$<quote_EXPR> {
-                my $n := $<n>[0] gt '' ?? +$<n>[0] !! 1;
+                my $n := $<n>[0] gt '' ?? ($<n>[0] eq '!' ?? 0 !! +$<n>[0]) !! 1;
                 %*RX{ ~$<mod_ident><sym> } := $n;
             }
         }
@@ -570,7 +581,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                 }
                 else {
                     $qast.push($_.ast);
-                    $lastlit := $ast.rxtype eq 'literal' 
+                    $lastlit := $ast.rxtype eq 'literal'
                                 && !QAST::Node.ACCEPTS($ast[0])
                                   ?? $ast !! 0;
                 }
@@ -587,10 +598,10 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         $qast := QAST::Regex.new(:rxtype<concat>, $qast, $sigmaybe) if $sigmaybe;
 
         if $<quantifier> {
-            $/.CURSOR.panic('Quantifier quantifies nothing')
+            $/.panic('Quantifier quantifies nothing')
                 unless $qast;
             my str $rxtype := $qast.rxtype;
-            $/.CURSOR.throw_non_quantifiable()
+            $/.throw_non_quantifiable()
                 if $rxtype eq 'qastnode' || $rxtype eq 'anchor';
             my $ast := $<quantifier>.ast;
             $ast.unshift($qast);
@@ -598,7 +609,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         }
         if $<separator> {
             if $qast.rxtype ne 'quant' && $qast.rxtype ne 'dynquant' {
-                $/.CURSOR.panic("'" ~ $<separator><septype> ~
+                $/.panic("'" ~ $<separator><septype> ~
                     "' may only be used immediately following a quantifier")
             }
             $qast.push($<separator>.ast);
@@ -612,12 +623,12 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         $qast := QAST::Regex.new(:rxtype<concat>, $qast, $sigfinal) if $sigfinal;
 
         if $qast {
-            $qast.backtrack('r') if !$qast.backtrack && (%*RX<r> || $<backmod> && ~$<backmod> eq ':');
+            $qast.backtrack('r') if !$qast.backtrack && nqp::if($<backmod>, (~$<backmod> eq ':'), %*RX<r>);
             $qast.node($/);
         }
         make $qast;
     }
-    
+
     method separator($/) {
         make $<quantified_atom>.ast;
     }
@@ -668,7 +679,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         }
         else {
             my $min := 0;
-            if $<min> { $min := $<min>.ast; }
+            if $<min> { $min := nqp::radix(10, $<min>, 0, 0)[0]; }
 
             my $max := -1;
             my $upto := $<upto>;
@@ -679,11 +690,11 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                 $max := $min
             }
             elsif $<max> ne '*' {
-                $max := $<max>.ast;
+                $max := nqp::radix(10, $<max>, 0, 0)[0];
                 if $<upto> eq '^' {
                     $max--;
                 }
-                $/.CURSOR.panic("Empty range") if $min > $max;
+                $/.panic("Empty range") if $min > $max;
             }
             $qast := QAST::Regex.new( :rxtype<quant>, :min($min), :max($max), :node($/) );
         }
@@ -788,7 +799,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
 
     method metachar:sym<var>($/) {
         my $qast;
-        my $name := $<pos> ?? +$<pos> !! ~$<name>;
+        my $name := $<pos> ?? nqp::radix(10, $<pos>, 0, 0)[0] !! ~$<name>;
         if $<quantified_atom> {
             $qast := $<quantified_atom>[0].ast;
             if ($qast.rxtype eq 'quant' || $qast.rxtype eq 'dynquant') && $qast[0].rxtype eq 'subrule' {
@@ -799,7 +810,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                 $qast := QAST::Regex.new( :rxtype<quant>, :min(1), :max(1), $qast) if $<wantarray>;
             }
             else {
-                $qast := QAST::Regex.new( $qast, :name($name), 
+                $qast := QAST::Regex.new( $qast, :name($name),
                                           :rxtype<subcapture>, :node($/) );
             }
         }
@@ -825,18 +836,12 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                     QAST::SVal.new( :value(~$<GOAL>) ),
                     |@dba) ) );
     }
-    
+
     method metachar:sym<mod>($/) { make $<mod_internal>.ast; }
 
     method backslash:sym<s>($/) {
         make QAST::Regex.new(:rxtype<cclass>, :name( nqp::lc(~$<sym>) ),
                              :negate($<sym> le 'Z'), :node($/));
-    }
-
-    method backslash:sym<b>($/) {
-        my $qast := QAST::Regex.new( "\b", :rxtype('enumcharlist'),
-                        :negate($<sym> eq 'B'), :node($/) );
-        make $qast;
     }
 
     method backslash:sym<e>($/) {
@@ -852,8 +857,13 @@ class QRegex::P6Regex::Actions is HLL::Actions {
     }
 
     method backslash:sym<h>($/) {
-        my $qast := QAST::Regex.new( "\x[09,20,a0,1680,180e,2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,200a,202f,205f,3000]", :rxtype('enumcharlist'),
-                        :negate($<sym> eq 'H'), :node($/) );
+
+        my $qast := QAST::Regex.new(
+            "\x[09,20,a0,1680,180e,2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,200a,202f,205f,3000]",
+            :rxtype('enumcharlist'),
+            :negate($<sym> eq 'H'),
+            :node($/)
+        );
         make $qast;
     }
 
@@ -905,8 +915,8 @@ class QRegex::P6Regex::Actions is HLL::Actions {
     }
 
     method backslash:sym<misc>($/) {
-        my $qast := QAST::Regex.new( ~$/ , :rxtype('enumcharlist'), :node($/) );
-        make $qast;
+        my $qast := QAST::Regex.new( ~$/ , :rxtype('literal'), :node($/) );
+        make self.apply_literal_modifiers($qast);
     }
 
     method cclass_backslash:sym<s>($/) {
@@ -933,8 +943,11 @@ class QRegex::P6Regex::Actions is HLL::Actions {
     }
 
     method cclass_backslash:sym<h>($/) {
-        my $qast := QAST::Regex.new( "\x[09,20,a0,1680,180e,2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,200a,202f,205f,3000]", :rxtype('enumcharlist'),
-                        :negate($<sym> eq 'H'), :node($/) );
+        my $qast := QAST::Regex.new(
+            "\x[09,20,a0,1680,180e,2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,200a,202f,205f,3000]",
+            :rxtype('enumcharlist'),
+            :negate($<sym> eq 'H'),
+            :node($/) );
         make $qast;
     }
 
@@ -1029,7 +1042,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         my $qast;
         my $name := ~$<identifier>;
         if $name eq 'c' {
-            # codepoint boundaries alway match in
+            # codepoint boundaries always match in
             # our current Unicode abstraction level
             $qast := 0;
         }
@@ -1057,7 +1070,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                 self.subrule_alias($qast, $name);
             }
             else {
-                $qast := QAST::Regex.new( $qast, :name($name), 
+                $qast := QAST::Regex.new( $qast, :name($name),
                                           :rxtype<subcapture>, :node($/) );
             }
         }
@@ -1115,15 +1128,15 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         if $qast.negate && $qast.rxtype eq 'subrule' {
             $qast.subtype('zerowidth');
             $qast := QAST::Regex.new(:rxtype<concat>, :node($/),
-                                     $qast, 
+                                     $qast,
                                      QAST::Regex.new( :rxtype<cclass>, :name<.> ));
         }
-        
+
         my int $i := 1;
         my int $n := nqp::elems($clist);
         while $i < $n {
 	    unless ~$clist[$i]<sign> {
-		my $curse := $clist[$i]<sign>.CURSOR;
+		my $curse := $clist[$i]<sign>;
 		$curse."!clear_highwater"();
 		$curse.panic('Missing + or - between character class elements')
 	    }
@@ -1131,7 +1144,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
             if $ast.negate || $ast.rxtype eq 'cclass' && ~$ast.node le 'Z' {
                 $ast.subtype('zerowidth');
                 $qast := QAST::Regex.new( :rxtype<concat>, :node($/), :subtype<zerowidth>, :negate(1),
-                        QAST::Regex.new( :rxtype<conj>, :subtype<zerowidth>, $ast ), 
+                        QAST::Regex.new( :rxtype<conj>, :subtype<zerowidth>, $ast ),
                         $qast );
             }
             else {
@@ -1141,7 +1154,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         }
         make $qast;
     }
-    
+
     method arg($/) {
         make $<quote_EXPR>
             ?? $<quote_EXPR>.ast
@@ -1185,13 +1198,13 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                     sub non_synth_ord($chr) {
                         my int $ord := nqp::ord($chr);
                         if nqp::chr($ord) ne $chr {
-                            $/.CURSOR.panic("Cannot use $chr as a range endpoint, as it is not a single codepoint");
+                            $/.panic("Cannot use $chr as a range endpoint, as it is not a single codepoint");
                         }
                         $ord
                     }
                     if $_[0]<cclass_backslash> {
                         $node := $_[0]<cclass_backslash>.ast;
-                        $/.CURSOR.panic("Illegal range endpoint in regex: " ~ ~$_)
+                        $/.panic("Illegal range endpoint in regex: " ~ ~$_)
                             if $node.rxtype ne 'literal' && $node.rxtype ne 'enumcharlist'
                                 || $node.negate || nqp::chars($node[0]) != 1;
                         $ord0 := $node.ann('codepoint') // ($RXm
@@ -1205,7 +1218,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                     }
                     if $_[1][0]<cclass_backslash> {
                         $node := $_[1][0]<cclass_backslash>.ast;
-                        $/.CURSOR.panic("Illegal range endpoint in regex: " ~ ~$_)
+                        $/.panic("Illegal range endpoint in regex: " ~ ~$_)
                             if $node.rxtype ne 'literal' && $node.rxtype ne 'enumcharlist'
                                 || $node.negate || nqp::chars($node[0]) != 1;
                         $ord1 := $node.ann('codepoint') // ($RXm
@@ -1217,7 +1230,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                             ?? nqp::ordbaseat(~$_[1][0][0], 0)
                             !! non_synth_ord(~$_[1][0][0]);
                     }
-                    $/.CURSOR.panic("Illegal reversed character range in regex: " ~ ~$_)
+                    $/.panic("Illegal reversed character range in regex: " ~ ~$_)
                         if $ord0 > $ord1;
                     @alts.push(QAST::Regex.new(
                         $RXim ?? 'ignorecase+ignoremark' !!
@@ -1240,11 +1253,11 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                 }
                 elsif $RXim {
                     my $c := nqp::chr(nqp::ordbaseat(~$_[0], 0));
-                    $str := $str ~ nqp::lc($c) ~ nqp::uc($c);
+                    $str := $str ~ nqp::fc($c) ~ nqp::uc($c);
                 }
                 elsif $RXi {
                     my $c := ~$_[0];
-                    $str := $str ~ nqp::lc($c) ~ nqp::uc($c);
+                    $str := $str ~ nqp::fc($c) ~ nqp::uc($c);
                 }
                 elsif $RXm {
                     $str := $str ~ nqp::chr(nqp::ordbaseat(~$_[0], 0));
@@ -1277,7 +1290,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                     !! 0;
             }
             else {
-                $/.CURSOR.panic("Internal modifier strings must be literals");
+                $/.panic("Internal modifier strings must be literals");
             }
         }
     }
@@ -1303,6 +1316,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
     }
 
     method qbuildsub($qast, $block = QAST::Block.new(), :$anon, :$addself, *%rest) {
+	my $*LANG := $qast.node;
         my $code_obj := nqp::existskey(%rest, 'code_obj')
             ?? %rest<code_obj>
             !! self.create_regex_code_object($block);
@@ -1343,7 +1357,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                                        QAST::Var.new(
                                            :name(nqp::substr(%*RX<name>, 12)),
                                            :scope('lexical')
-                                       ) 
+                                       )
                                    )
                               )));
         if %*RX<r> {
@@ -1351,11 +1365,13 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         }
         $block.push($qast);
 
-        if nqp::existskey(%rest, 'cursor_type') {
-            $qast.cursor_type(%rest<cursor_type>);
-        }
-        
+        self.set_cursor_type($qast);
+
         $block;
+    }
+
+    # A hook point that subclasses can set to the cursor type
+    method set_cursor_type($qast) {
     }
 
     sub capnames($ast, int $count) {
@@ -1366,7 +1382,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
                 my %x := capnames($_, $count);
                 for %x { %capnames{$_.key} := +%capnames{$_.key} + $_.value; }
                 $count := %x{''};
-            } 
+            }
         }
         elsif $rxtype eq 'altseq' || $rxtype eq 'alt' {
             my $max := $count;
@@ -1384,14 +1400,26 @@ class QRegex::P6Regex::Actions is HLL::Actions {
             if $name eq '' { $name := $count; $ast.name($name); }
             my @names := nqp::split('=', $name);
             for @names {
-                if $_ eq '0' || $_ > 0 { $count := $_ + 1; }
-                %capnames{$_} := 1;
+                my $n := nqp::radix(10, $_, 0, 0)[0];
+                if $_ eq '0' || $n > 0 {
+                    $count := $n + 1;
+                    %capnames{$n} := 1
+                }
+                else {
+                    %capnames{$_} := 1;
+                }
             }
         }
         elsif $rxtype eq 'subcapture' {
             for nqp::split(' ', $ast.name) {
-                if $_ eq '0' || $_ > 0 { $count := $_ + 1; }
-                %capnames{$_} := 1;
+                my $n := nqp::radix(10, $_, 0, 0)[0];
+                if $_ eq '0' || $n > 0 {
+                    $count := $n + 1;
+                    %capnames{$n} := 1
+                }
+                else {
+                    %capnames{$_} := 1;
+                }
             }
             my %x := capnames($ast[0], $count);
             for %x { %capnames{$_.key} := +%capnames{$_.key} + %x{$_.key} }
@@ -1413,7 +1441,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         %capnames{''} := $count;  # will be deleted in SET_CAPS
         %capnames;
     }
-    
+
     method alt_nfas($code_obj, $block, $ast) {
         my $rxtype := $ast.rxtype;
         if $rxtype eq 'alt' {
@@ -1461,7 +1489,7 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         }
         return -1;
     }
- 
+
     method flip_ast($qast) {
         return $qast unless nqp::istype($qast, QAST::Regex);
         if $qast.rxtype eq 'literal' {
@@ -1477,23 +1505,23 @@ class QRegex::P6Regex::Actions is HLL::Actions {
         }
         $qast
     }
-    
+
     # This is overridden by a compiler that wants to create code objects
     # for regexes. We just use the standard NQP one in standalone mode.
     method create_regex_code_object($block) {
         $*W.create_code($block, $block.name);
     }
-    
+
     # Stores the captures info for a regex.
     method store_regex_caps($code_obj, $block, %caps) {
         $code_obj.SET_CAPS(%caps);
     }
-    
+
     # Stores the NFA for the regex overall.
     method store_regex_nfa($code_obj, $block, $nfa) {
         $code_obj.SET_NFA($nfa.save);
     }
-    
+
     # Stores the NFA for a regex alternation.
     method store_regex_alt_nfa($code_obj, $block, $key, @alternatives) {
         my @saved;

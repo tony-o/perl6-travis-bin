@@ -1,6 +1,5 @@
-#!perl
+#!/usr/bin/env perl
 
-use 5.010;
 use strict;
 use warnings;
 
@@ -9,9 +8,15 @@ use Getopt::Long;
 use Pod::Usage;
 use File::Spec;
 
+use lib '.';
 use build::setup;
 use build::auto;
 use build::probe;
+
+# This allows us to run on ancient perls.
+sub defined_or($$) {
+    defined $_[0] ? $_[0] : $_[1]
+}
 
 my $NAME    = 'moar';
 my $GENLIST = 'build/gen.list';
@@ -23,20 +28,24 @@ my $failed = 0;
 my %args;
 my %defaults;
 my %config;
-
+# In case a submodule folder needs to be deleted. We set this and print it
+# out at the very end.
+my $folder_to_delete = '';
 my @args = @ARGV;
 
 GetOptions(\%args, qw(
     help|?
-    debug:s optimize:s instrument!
+    debug:s optimize:s instrument! coverage
     os=s shell=s toolchain=s compiler=s
     ar=s cc=s ld=s make=s has-sha has-libuv
     static has-libtommath has-libatomic_ops
-    has-dyncall has-libffi
-    build=s host=s big-endian jit! enable-jit lua=s has-dynasm
-    prefix=s bindir=s libdir=s mastdir=s make-install asan ubsan),
+    has-dyncall has-libffi pkgconfig=s
+    build=s host=s big-endian jit! enable-jit
+    prefix=s bindir=s libdir=s mastdir=s make-install asan ubsan valgrind telemeh show-autovect show-autovect-failed:s),
+
     'no-optimize|nooptimize' => sub { $args{optimize} = 0 },
-    'no-debug|nodebug' => sub { $args{debug} = 0 }
+    'no-debug|nodebug' => sub { $args{debug} = 0 },
+    'no-telemeh|notelemeh' => sub { $args{telemeh} = 0 }
 ) or die "See --help for further information\n";
 
 
@@ -44,7 +53,7 @@ pod2usage(1) if $args{help};
 
 print "Welcome to MoarVM!\n\n";
 
-$config{prefix} = File::Spec->rel2abs($args{prefix} // 'install');
+$config{prefix} = File::Spec->rel2abs(defined_or $args{prefix}, 'install');
 # don't install to cwd, as this would clash with lib/MAST/*.nqp
 if (-e 'README.markdown' && -e "$config{prefix}/README.markdown"
  && -s 'README.markdown' == -s "$config{prefix}/README.markdown") {
@@ -64,33 +73,35 @@ if (-d '.git') {
     print dots("Updating submodules");
     my $msg = qx{git submodule sync --quiet && git submodule --quiet update --init 2>&1};
     if ($? >> 8 == 0) { print "OK\n" }
-    else { softfail("git error: $msg") }
+    else {
+        if ($msg =~ /[']([^']+)[']\s+already exists and is not an empty/) {
+            $folder_to_delete = "\n\nERROR: Cannot update submodule because directory exists and is not empty.\n" .
+            ">>> Please delete the following folder and try again:\n$1\n\n";
+        }
+        softfail("git error: $msg")
+    }
 }
 
 # fiddle with flags
 $args{optimize}     = 3 if not defined $args{optimize} or $args{optimize} eq "";
 $args{debug}        = 3 if defined $args{debug} and $args{debug} eq "";
-$args{instrument} //= 0;
-$args{static}     //= 0;
 
-$args{'big-endian'}        //= 0;
-$args{'has-libtommath'}    //= 0;
-$args{'has-sha'}           //= 0;
-$args{'has-libuv'}         //= 0;
-$args{'has-libatomic_ops'} //= 0;
-$args{'has-dynasm'}        //= 0;
-$args{'asan'}              //= 0;
-$args{'ubsan'}             //= 0;
+
+for (qw(coverage instrument static big-endian has-libtommath has-sha has-libuv
+        has-libatomic_ops asan ubsan valgrind show-vec)) {
+    $args{$_} = 0 unless defined $args{$_};
+}
+
 
 # jit is default
-$args{'jit'}               //= 1;
+$args{jit} = 1 unless defined $args{jit};
 
 # fill in C<%defaults>
 if (exists $args{build} || exists $args{host}) {
     setup_cross($args{build}, $args{host});
 }
 else {
-    setup_native($args{os} // $^O);
+    setup_native(defined_or $args{os}, $^O);
 }
 
 $config{name}   = $NAME;
@@ -98,7 +109,9 @@ $config{perl}   = $^X;
 $config{config} = join ' ', map { / / ? "\"$_\"" : $_ } @args;
 $config{osname} = $^O;
 $config{osvers} = $Config{osvers};
-$config{lua} = $args{lua} // './3rdparty/dynasm/minilua@exe@';
+$config{pkgconfig} = defined_or $args{pkgconfig}, '/usr/bin/pkg-config';
+
+
 
 # set options that take priority over all others
 my @keys = qw( ar cc ld make );
@@ -106,7 +119,7 @@ my @keys = qw( ar cc ld make );
 
 for (keys %defaults) {
     next if /^-/;
-    $config{$_} //= $defaults{$_};
+    $config{$_} = $defaults{$_} unless defined $config{$_};
 }
 
 my $VERSION = '0.0-0';
@@ -116,7 +129,7 @@ if (open(my $fh, '<', 'VERSION')) {
     close($fh);
 }
 # .git is a file and not a directory in submodule
-if (-e '.git' && open(my $GIT, '-|', "git describe --tags")) {
+if (-e '.git' && open(my $GIT, '-|', "git describe")) {
     $VERSION = <$GIT>;
     close($GIT);
 }
@@ -127,25 +140,40 @@ $config{versionminor} = $VERSION =~ /^\d+\.(\d+)/ ? $1 : 0;
 $config{versionpatch} = $VERSION =~ /^\d+\.\d+\-(\d+)/ ? $1 : 0;
 
 # misc defaults
-$config{exe}       //= '';
-$config{defs}      //= [];
-$config{syslibs}   //= [];
-$config{usrlibs}   //= [];
-$config{platform}  //= '';
-$config{crossconf} //= '';
-$config{dllimport} //= '';
-$config{dllexport} //= '';
-$config{dlllocal}  //= '';
-$config{translate_newline_output} //= 0;
+$config{exe}                      = '' unless defined $config{exe};
+$config{defs}                     = [] unless defined $config{defs};
+$config{syslibs}                  = [] unless defined $config{syslibs};
+$config{usrlibs}                  = [] unless defined $config{usrlibs};
+$config{platform}                 = '' unless defined $config{platform};
+$config{crossconf}                = '' unless defined $config{crossconf};
+$config{dllimport}                = '' unless defined $config{dllimport};
+$config{dllexport}                = '' unless defined $config{dllexport};
+$config{dlllocal}                 = '' unless defined $config{dlllocal};
+$config{translate_newline_output} = 0  unless defined $config{translate_newline_output};
+$config{vectorizerspecifier}      = '' unless defined $config{vectorizerspecifier};
 
 # assume the compiler can be used as linker frontend
-$config{ld}           //= $config{cc};
-$config{ldout}        //= $config{ccout};
-$config{ldsys}        //= $config{ldusr};
-$config{ldmiscflags}  //= $config{ccmiscflags};
-$config{ldoptiflags}  //= $config{ccoptiflags};
-$config{lddebugflags} //= $config{ccdebugflags};
-$config{ldinstflags}  //= $config{ccinstflags};
+$config{ld}           = $config{cc} unless defined $config{ld};
+$config{ldout}        = $config{ccout} unless defined $config{ldout};
+$config{ldsys}        = $config{ldusr} unless defined $config{ldsys};
+$config{ldoptiflags}  = $config{ccoptiflags} unless defined $config{ldoptiflags};
+$config{lddebugflags} = $config{ccdebugflags} unless defined $config{lddebugflags};
+$config{ldinstflags}  = $config{ccinstflags} unless defined $config{ldinstflags};
+
+# Probe the compiler.
+build::probe::compiler_usability(\%config, \%defaults);
+
+# Remove unsupported -Werror=* gcc flags if gcc doesn't support them.
+build::probe::specific_werror(\%config, \%defaults);
+if ($config{cc} eq 'gcc' && !$config{can_specific_werror}) {
+    $config{ccmiscflags} =~ s/-Werror=[^ ]+//g;
+    $config{ccmiscflags} =~ s/ +/ /g;
+    $config{ccmiscflags} =~ s/^ +$//;
+}
+
+# Set the remaining ldmiscflags. Do this after probing for gcc -Werror probe to not miss that change for the linker.
+$config{ldmiscflags}  = $config{ccmiscflags} unless defined $config{ldmiscflags};
+
 
 if ($args{'has-sha'}) {
     $config{shaincludedir} = '/usr/include/sha';
@@ -164,12 +192,33 @@ if (-e '3rdparty/libuv/src/unix/threadpool' . $defaults{obj}
     system($defaults{make}, 'realclean')
 }
 
+# test whether pkg-config works
+if (-e "$config{pkgconfig}") {
+    print dots("    Testing pkgconfig");
+    system("$config{pkgconfig}", "--version");
+    if ( $? == 0 ) {
+        $config{pkgconfig_works} = 1;
+    } else {
+        $config{pkgconfig_works} = 0;
+    }
+}
+
 # conditionally set include dirs and install rules
-$config{cincludes} //= '';
-$config{install}   //= '';
+$config{cincludes} = '' unless defined $config{cincludes};
+$config{install}   = '' unless defined $config{install};
 if ($args{'has-libuv'}) {
     $defaults{-thirdparty}->{uv} = undef;
     unshift @{$config{usrlibs}}, 'uv';
+    if ($config{pkgconfig_works}) {
+        my $result = `$config{pkgconfig} --cflags libuv`;
+        if ( $? == 0 ) {
+            $result =~ s/\n/ /g;
+            $config{cincludes} .= ' ' . "$result";
+            print("Adding extra include for libuv: $result\n");
+        } else {
+            print("Error occured when running $config{pkgconfig} --cflags libuv.\n");
+        }
+    }
 }
 else {
     $config{cincludes} .= ' ' . $defaults{ccinc} . '3rdparty/libuv/include'
@@ -181,9 +230,19 @@ else {
 if ($args{'has-libatomic_ops'}) {
     $defaults{-thirdparty}->{lao} = undef;
     unshift @{$config{usrlibs}}, 'atomic_ops';
+    if ($config{pkgconfig_works}) {
+        my $result = `$config{pkgconfig} --cflags atomic_ops`;
+        if ( $? == 0 ) {
+            $result =~ s/\n/ /g;
+            $config{cincludes} .= ' ' . "$result";
+            print("Adding extra include for atomic_ops: $result\n");
+        } else {
+            print("Error occured when running $config{pkgconfig} --cflags atomic_ops.\n");
+        }
+    }
 }
 else {
-    $config{cincludes} .= ' ' . $defaults{ccinc} . '3rdparty/libatomic_ops/src';
+    $config{cincludes} .= ' ' . $defaults{ccinc} . '3rdparty/libatomicops/src';
     my $lao             = '$(DESTDIR)$(PREFIX)/include/libatomic_ops';
     $config{install}   .= "\t\$(MKPATH) $lao/atomic_ops/sysdeps/armcc\n"
                         . "\t\$(MKPATH) $lao/atomic_ops/sysdeps/gcc\n"
@@ -193,45 +252,66 @@ else {
                         . "\t\$(MKPATH) $lao/atomic_ops/sysdeps/loadstore\n"
                         . "\t\$(MKPATH) $lao/atomic_ops/sysdeps/msftc\n"
                         . "\t\$(MKPATH) $lao/atomic_ops/sysdeps/sunc\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/*.h $lao\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/atomic_ops/*.h $lao/atomic_ops\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/atomic_ops/sysdeps/*.h $lao/atomic_ops/sysdeps\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/atomic_ops/sysdeps/armcc/*.h $lao/atomic_ops/sysdeps/armcc\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/atomic_ops/sysdeps/gcc/*.h $lao/atomic_ops/sysdeps/gcc\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/atomic_ops/sysdeps/hpc/*.h $lao/atomic_ops/sysdeps/hpc\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/atomic_ops/sysdeps/ibmc/*.h $lao/atomic_ops/sysdeps/ibmc\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/atomic_ops/sysdeps/icc/*.h $lao/atomic_ops/sysdeps/icc\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/atomic_ops/sysdeps/loadstore/*.h $lao/atomic_ops/sysdeps/loadstore\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/atomic_ops/sysdeps/msftc/*.h $lao/atomic_ops/sysdeps/msftc\n"
-                        . "\t\$(CP) 3rdparty/libatomic_ops/src/atomic_ops/sysdeps/sunc/*.h $lao/atomic_ops/sysdeps/sunc\n";
+                        . "\t\$(CP) 3rdparty/libatomicops/src/*.h $lao\n"
+                        . "\t\$(CP) 3rdparty/libatomicops/src/atomic_ops/*.h $lao/atomic_ops\n"
+                        . "\t\$(CP) 3rdparty/libatomicops/src/atomic_ops/sysdeps/*.h $lao/atomic_ops/sysdeps\n"
+                        . "\t\$(CP) 3rdparty/libatomicops/src/atomic_ops/sysdeps/armcc/*.h $lao/atomic_ops/sysdeps/armcc\n"
+                        . "\t\$(CP) 3rdparty/libatomicops/src/atomic_ops/sysdeps/gcc/*.h $lao/atomic_ops/sysdeps/gcc\n"
+                        . "\t\$(CP) 3rdparty/libatomicops/src/atomic_ops/sysdeps/hpc/*.h $lao/atomic_ops/sysdeps/hpc\n"
+                        . "\t\$(CP) 3rdparty/libatomicops/src/atomic_ops/sysdeps/ibmc/*.h $lao/atomic_ops/sysdeps/ibmc\n"
+                        . "\t\$(CP) 3rdparty/libatomicops/src/atomic_ops/sysdeps/icc/*.h $lao/atomic_ops/sysdeps/icc\n"
+                        . "\t\$(CP) 3rdparty/libatomicops/src/atomic_ops/sysdeps/loadstore/*.h $lao/atomic_ops/sysdeps/loadstore\n"
+                        . "\t\$(CP) 3rdparty/libatomicops/src/atomic_ops/sysdeps/msftc/*.h $lao/atomic_ops/sysdeps/msftc\n"
+                        . "\t\$(CP) 3rdparty/libatomicops/src/atomic_ops/sysdeps/sunc/*.h $lao/atomic_ops/sysdeps/sunc\n";
 }
 
 if ($args{'has-libtommath'}) {
+    $defaults{-thirdparty}->{tom} = undef;
     unshift @{$config{usrlibs}}, 'tommath';
-
-    # only this objects are needed to build, if moar is linked together with
-    #  the libtommath library from the system
-    $defaults{-thirdparty}->{tom}->{objects} =
-        '3rdparty/libtommath/bn_mp_get_long.o 3rdparty/libtommath/bn_mp_set_long.o';
 }
 else {
     $config{cincludes} .= ' ' . $defaults{ccinc} . '3rdparty/libtommath';
-    $config{install}   .= "\t\$(CP) 3rdparty/libtommath/*.h \$(DESTDIR)\$(PREFIX)/include/libtommath\n";
-}
-
-if ($args{'has-dynasm'}) {
-    $config{dynasmlua}  = '-l dynasm.lua';
-    $config{cincludes} .= ' ' . $defaults{ccinc} . '/usr/include/luajit-2.0';
-}
-else {
-    $config{dynasmlua}  = './3rdparty/dynasm/dynasm.lua';
-    $config{cincludes} .= ' ' . $defaults{ccinc} . '3rdparty/dynasm';
+    $config{install}   .= "\t\$(MKPATH) \$(DESTDIR)\$(PREFIX)/include/libtommath\n"
+                        . "\t\$(CP) 3rdparty/libtommath/*.h \$(DESTDIR)\$(PREFIX)/include/libtommath\n";
 }
 
 if ($args{'has-libffi'}) {
     $config{nativecall_backend} = 'libffi';
     unshift @{$config{usrlibs}}, 'ffi';
     push @{$config{defs}}, 'HAVE_LIBFFI';
+    $defaults{-thirdparty}->{dc}  = undef;
+    $defaults{-thirdparty}->{dcb} = undef;
+    $defaults{-thirdparty}->{dl}  = undef;
+    if ($config{pkgconfig_works}) {
+        my $result_cflags = `$config{pkgconfig} --cflags libffi`;
+        if ( $? == 0 ) {
+            $result_cflags =~ s/\n/ /g;
+            $config{cincludes} .= " $result_cflags";
+            print("Adding extra include for libffi: $result_cflags\n");
+        }
+        else {
+            print("Error occured when running $config{pkgconfig} --cflags libffi.\n");
+        }
+        my $result_libs = `$config{pkgconfig} --libs libffi`;
+        if ( $? == 0 ) {
+            $result_libs =~ s/\n/ /g;
+            $config{ldusr} .= " $result_libs";
+            print("Adding extra libs for libffi: $result_libs\n");
+        }
+        else {
+            print("Error occured when running $config{pkgconfig} --libs libffi.\n");
+        }
+    }
+    elsif ($^O eq 'solaris') {
+        my ($first) = map { m,(.+)/ffi\.h$, && "/$1"  } grep { m,/ffi\.h$, } `pkg contents libffi`;
+        if ($first) {
+            $config{cincludes} .= " -I$first";
+            print("Adding extra include for libffi: $first\n");
+        }
+        else {
+            print("Unable to find ffi.h. Please install libffi by doing: 'sudo pkg install libffi'\n");
+        }
+    }
 }
 elsif ($args{'has-dyncall'}) {
     unshift @{$config{usrlibs}}, 'dyncall_s', 'dyncallback_s', 'dynload_s';
@@ -251,32 +331,19 @@ else {
                         . "\t\$(CP) 3rdparty/dyncall/dyncallback/*.h \$(DESTDIR)\$(PREFIX)/include/dyncall\n";
 }
 
-if ($args{'jit'}) {
-    if ($Config{archname} =~ m/^x86_64|^amd64|^darwin(-thread)?(-multi)?-2level/) {
-        $config{jit} = '$(JIT_POSIX_X64)';
-    } elsif ($Config{archname} =~ /^MSWin32-x64/) {
-        $config{jit} = '$(JIT_WIN32_X64)';
-    } else {
-        say "JIT isn't supported on $Config{archname} yet.";
-    }
-}
-# fallback
-$config{jit} //= '$(JIT_STUB)';
-
-
 # mangle library names
 $config{ldlibs} = join ' ',
     (map { sprintf $config{ldusr}, $_; } @{$config{usrlibs}}),
     (map { sprintf $config{ldsys}, $_; } @{$config{syslibs}});
-$config{ldlibs} = ' -lasan ' . $config{ldlibs} if $args{asan};
-$config{ldlibs} = ' -lubsan ' . $config{ldlibs} if $args{ubsan};
+$config{ldlibs} = ' -lasan ' . $config{ldlibs} if $args{asan} && $^O ne 'darwin' && $config{cc} ne 'clang';
+$config{ldlibs} = ' -lubsan ' . $config{ldlibs} if $args{ubsan} and $^O ne 'darwin';
 # macro defs
 $config{ccdefflags} = join ' ', map { $config{ccdef} . $_ } @{$config{defs}};
 
-$config{ccoptiflags}  = sprintf $config{ccoptiflags},  $args{optimize} // 1 if $config{ccoptiflags}  =~ /%s/;
-$config{ccdebugflags} = sprintf $config{ccdebugflags}, $args{debug}    // 3 if $config{ccdebugflags} =~ /%s/;
-$config{ldoptiflags}  = sprintf $config{ldoptiflags},  $args{optimize} // 1 if $config{ldoptiflags}  =~ /%s/;
-$config{lddebugflags} = sprintf $config{lddebugflags}, $args{debug}    // 3 if $config{lddebugflags} =~ /%s/;
+$config{ccoptiflags}  = sprintf $config{ccoptiflags},  defined_or $args{optimize}, 1 if $config{ccoptiflags}  =~ /%s/;
+$config{ccdebugflags} = sprintf $config{ccdebugflags}, defined_or $args{debug},    3 if $config{ccdebugflags} =~ /%s/;
+$config{ldoptiflags}  = sprintf $config{ldoptiflags},  defined_or $args{optimize}, 1 if $config{ldoptiflags}  =~ /%s/;
+$config{lddebugflags} = sprintf $config{lddebugflags}, defined_or $args{debug},    3 if $config{lddebugflags} =~ /%s/;
 
 
 # generate CFLAGS
@@ -285,12 +352,33 @@ push @cflags, $config{ccmiscflags};
 push @cflags, $config{ccoptiflags}  if $args{optimize};
 push @cflags, $config{ccdebugflags} if $args{debug};
 push @cflags, $config{ccinstflags}  if $args{instrument};
+push @cflags, $config{ld_covflags}  if $args{coverage};
 push @cflags, $config{ccwarnflags};
 push @cflags, $config{ccdefflags};
 push @cflags, $config{ccshared}     unless $args{static};
+push @cflags,
+$config{cc} eq 'clang'
+    ? '-Rpass=loop-vectorize'
+: $config{cc} eq 'gcc'
+    ? '-fopt-info-vec-optimized'
+    : die if $args{'show-autovect'};
+if (exists $args{'show-autovect-failed'}) {
+    push @cflags, '-Rpass-missed=loop-vectorize' if $config{cc} eq 'clang';
+    push @cflags, ("-ftree-vectorizer-verbose=" . ($args{'show-autovect-failed'} || 1), "-fopt-info-vec-missed")
+        if $config{cc} eq 'gcc';
+}
+if ($args{'show-autovect-failed'}) {
+    push @cflags, '-Rpass-analysis=loop-vectorize' if 2 <= $args{'show-autovect-failed'} && $config{cc} eq 'clang';
+    push @cflags, '-fsave-optimization-record '    if 3 <= $args{'show-autovect-failed'} && $config{cc} eq 'clang';
+}
 push @cflags, '-fno-omit-frame-pointer' if $args{asan} or $args{ubsan};
 push @cflags, '-fsanitize=address' if $args{asan};
 push @cflags, '-fsanitize=undefined' if $args{ubsan};
+push @cflags, '-DWSL_BASH_ON_WIN' if wsl_bash_on_win();
+push @cflags, '-DDEBUG_HELPERS' if $args{debug};
+push @cflags, '-DMVM_VALGRIND_SUPPORT' if $args{valgrind};
+push @cflags, '-DHAVE_TELEMEH' if $args{telemeh};
+push @cflags, '-DWORDS_BIGENDIAN' if $config{be}; # 3rdparty/sha1 needs it and it isnt set on mips;
 push @cflags, $ENV{CFLAGS} if $ENV{CFLAGS};
 push @cflags, $ENV{CPPFLAGS} if $ENV{CPPFLAGS};
 $config{cflags} = join ' ', @cflags;
@@ -300,8 +388,9 @@ my @ldflags = ($config{ldmiscflags});
 push @ldflags, $config{ldoptiflags}  if $args{optimize};
 push @ldflags, $config{lddebugflags} if $args{debug};
 push @ldflags, $config{ldinstflags}       if $args{instrument};
-push @ldflags, $config{ldrpath}           unless $args{static};
-push @ldflags, $^O eq 'darwin' ? '-faddress-sanitizer' : '-fsanitize=address' if $args{asan};
+push @ldflags, $config{ld_covflags}  if $args{coverage};
+push @ldflags, $config{ldrpath}           if not $args{static} and $config{prefix} ne '/usr';
+push @ldflags, '-fsanitize=address' if $args{asan};
 push @ldflags, $ENV{LDFLAGS}  if $ENV{LDFLAGS};
 $config{ldflags} = join ' ', @ldflags;
 
@@ -316,7 +405,7 @@ unless ($args{static}) {
     $config{moar}      = '@moardll@';
     $config{impinst}   = $config{sharedlib},
     $config{mainlibs}  = '@lddir@. ' .
-        sprintf($config{ldimp} // $config{ldusr}, $NAME);
+        sprintf(defined_or($config{ldimp}, $config{ldusr}), $NAME);
 }
 else {
     $config{objflags}  = '';
@@ -334,7 +423,7 @@ $config{mainlibs} = '-lubsan ' . $config{mainlibs} if $args{ubsan};
 my @auxfiles = @{ $defaults{-auxfiles} };
 $config{auxclean} = @auxfiles ? '$(RM) ' . join ' ', @auxfiles : '@:';
 
-print "OK\n";
+print "OK\n\n";
 
 if ($config{crossconf}) {
     build::auto::detect_cross(\%config, \%defaults);
@@ -349,6 +438,33 @@ else {
     build::probe::ptr_size_native(\%config, \%defaults);
 }
 
+
+if ($args{'jit'}) {
+    if ($config{ptr_size} != 8) {
+        print "JIT isn't supported on platforms with $config{ptr_size} byte pointers.\n";
+    } elsif ($Config{archname} =~ m/^x86_64|^amd64|^darwin(-thread)?(-multi)?-2level/) {
+        $config{jit_obj}      = '$(JIT_OBJECTS) $(JIT_ARCH_X64)';
+        $config{dasm_flags}   = '-D POSIX=1';
+        $config{jit_arch}     = 'MVM_JIT_ARCH_X64';
+        $config{jit_platform} = 'MVM_JIT_PLATFORM_POSIX';
+    } elsif ($Config{archname} =~ /^MSWin32-x64/) {
+        $config{jit_obj}      = '$(JIT_OBJECTS) $(JIT_ARCH_X64)';
+        $config{dasm_flags}   = '-D WIN32=1';
+        $config{jit_arch}     = 'MVM_JIT_ARCH_X64';
+        $config{jit_platform} = 'MVM_JIT_PLATFORM_WIN32';
+    } else {
+        print "JIT isn't supported on $Config{archname} yet.\n";
+    }
+}
+# fallback
+unless (defined $config{jit_obj}) {
+    $config{jit_obj}      = '$(JIT_STUB)';
+    $config{jit_arch}     = 'MVM_JIT_ARCH_NONE';
+    $config{jit_platform} = 'MVM_JIT_PLATFORM_NONE';
+    $config{dasm_flags}   = '';
+}
+
+
 if ($config{cc} eq 'cl') {
     $config{install}   .= "\t\$(MKPATH) \$(DESTDIR)\$(PREFIX)/include/msinttypes\n"
                         . "\t\$(CP) 3rdparty/msinttypes/*.h \$(DESTDIR)\$(PREFIX)/include/msinttypes\n";
@@ -357,6 +473,7 @@ if ($config{cc} eq 'cl') {
 build::probe::C_type_bool(\%config, \%defaults);
 build::probe::computed_goto(\%config, \%defaults);
 build::probe::pthread_yield(\%config, \%defaults);
+build::probe::rdtscp(\%config, \%defaults);
 
 my $order = $config{be} ? 'big endian' : 'little endian';
 
@@ -364,6 +481,7 @@ my $order = $config{be} ? 'big endian' : 'little endian';
 print "\n", <<TERM, "\n";
         make: $config{make}
      compile: $config{cc} $config{cflags}
+    includes: $config{cincludes}
         link: $config{ld} $config{ldflags}
         libs: $config{ldlibs}
 
@@ -399,14 +517,14 @@ for (sort keys %$thirdparty) {
 
      # dummy build - nothing to do
     if (exists $current->{dummy}) {
-        $clean //= sprintf '$(RM) %s', $lib;
+        $clean = sprintf '$(RM) %s', $lib unless defined $clean;
     }
 
     # use explicit object list
     elsif (exists $current->{objects}) {
         $objects = $current->{objects};
-        $rule  //= sprintf '$(AR) $(ARFLAGS) @arout@$@ @%sobjects@', $_;
-        $clean //= sprintf '$(RM) @%slib@ @%sobjects@', $_, $_;
+        $rule    = sprintf '$(AR) $(ARFLAGS) @arout@$@ @%sobjects@', $_  unless defined $rule;
+        $clean   = sprintf '$(RM) @%slib@ @%sobjects@', $_, $_ unless defined $clean;
     }
 
     # find *.c files and build objects for those
@@ -415,8 +533,8 @@ for (sort keys %$thirdparty) {
         my $globs   = join ' ', map { $_ . '/*@obj@' } @{ $current->{src} };
 
         $objects = join ' ', map { s/\.c$/\@obj\@/; $_ } @sources;
-        $rule  //= sprintf '$(AR) $(ARFLAGS) @arout@$@ %s', $globs;
-        $clean //= sprintf '$(RM) %s %s', $lib, $globs;
+        $rule    = sprintf '$(AR) $(ARFLAGS) @arout@$@ %s', $globs unless defined $rule;
+        $clean   = sprintf '$(RM) %s %s', $lib, $globs unless defined $clean;
     }
 
     # use an explicit rule (which has already been set)
@@ -428,7 +546,7 @@ for (sort keys %$thirdparty) {
         print dots('    continuing anyway');
     }
 
-    @config{@keys} = ($lib, $objects // '', $rule // '@:', $clean // '@:');
+    @config{@keys} = ($lib, defined_or($objects, ''), defined_or($rule, '@:'), defined_or($clean, '@:'));
 
     push @thirdpartylibs, $config{"${_}lib"};
 }
@@ -444,6 +562,12 @@ write_backend_config();
 print "\n", <<TERM, "\n";
   3rdparty: $thirdpartylibs
 TERM
+
+# make sure to link with the correct entry point */
+$config{mingw_unicode} = '';
+if ($config{os} eq 'mingw32') {
+    $config{mingw_unicode} = '-municode';
+}
 
 # read list of files to generate
 
@@ -483,7 +607,7 @@ TERM2
 if (!$failed && $args{'make-install'}) {
     system($config{make}, 'install');
 }
-
+print $folder_to_delete if $folder_to_delete;
 exit $failed;
 
 # helper functions
@@ -493,6 +617,7 @@ sub setup_native {
     my ($os) = @_;
 
     print dots("Configuring native build environment");
+    print "\n";
 
     $os = build::probe::win32_compiler_toolchain(\%config, \%defaults)
         if $os eq 'MSWin32';
@@ -603,10 +728,10 @@ sub setup_cross {
 # sets C<%defaults> from C<@_>
 sub set_defaults {
     # getting the correct 3rdparty information is somewhat tricky
-    my $thirdparty = $defaults{-thirdparty} // \%::THIRDPARTY;
+    my $thirdparty = defined_or $defaults{-thirdparty}, \%::THIRDPARTY;
     @defaults{ keys %$_ } = values %$_ for @_;
     $defaults{-thirdparty} = {
-        %$thirdparty, map{ %{ $_->{-thirdparty} // {} } } @_
+        %$thirdparty, map{ %{ defined_or $_->{-thirdparty}, {} } } @_
     };
 }
 
@@ -645,8 +770,8 @@ sub generate {
             # In-between slashes in makefiles need to be backslashes on Windows.
             # Double backslashes in config.c, beause these are in qq-strings.
             my $bs = $dest =~ /Makefile/ ? '\\' : '\\\\';
-            $line =~ s/(\w|\.|\w\:|\$\(PREFIX\))\/(\w|\.|\*)/$1$bs$2/g;
-            $line =~ s/(\w|\.|\w\:|\$\(PREFIX\))\\(\w|\.|\*)/$1$bs$2/g if $bs eq '\\\\';
+			$line =~ s/(\w|\.|\w\:|\$\(PREFIX\))\/(?=\w|\.|\*)/$1$bs/g;
+			$line =~ s/(\w|\.|\w\:|\$\(PREFIX\))\\(?=\w|\.|\*)/$1$bs/g if $bs eq '\\\\';
 
             # gmake doesn't like \*
             $line =~ s/(\w|\.|\w\:|\$\(PREFIX\))\\\*/$1\\\\\*/g
@@ -666,8 +791,9 @@ sub generate {
 sub dots {
     my $message = shift;
     my $length = shift || 55;
-
-    return "$message ". '.' x ($length - length $message) . ' ';
+    my $dot_count = $length - length $message;
+    $dot_count = 0 if $dot_count < 0;
+    return "$message " . '.' x $dot_count . ' ';
 }
 
 # fail but continue
@@ -689,7 +815,7 @@ sub write_backend_config {
     for my $k (sort keys %config) {
         next if $k eq 'backendconfig';
         my $v = $config{$k};
-        
+
         if (ref($v) eq 'ARRAY') {
             my $i = 0;
             for (@$v) {
@@ -701,7 +827,7 @@ sub write_backend_config {
             # should not be there
         }
         else {
-            $v //= '';
+            $v   = '' unless defined $v;
             $v   =~ s/"/\\"/g;
             $v   =~ s/\n/\\\n/g;
             $config{backendconfig} .= qq/        add_entry(tc, config, "$k", "$v");\n/;
@@ -709,6 +835,10 @@ sub write_backend_config {
     }
 }
 
+sub wsl_bash_on_win {
+    open my $fh, '<', '/proc/sys/kernel/osrelease' or return 0;
+    return ((readline $fh) =~ /\A\d\.\d\.\d-\d+-Microsoft\s*\z/) ? 1 : 0;
+}
 
 __END__
 
@@ -722,14 +852,21 @@ __END__
                    [--debug] [--optimize] [--instrument]
                    [--static] [--prefix]
                    [--has-libtommath] [--has-sha] [--has-libuv]
-                   [--has-libatomic_ops] [--has-dynasm]
-                   [--lua <lua>] [--asan] [--ubsan] [--no-jit]
+                   [--has-libatomic_ops]
+                   [--asan] [--ubsan] [--no-jit]
+                   [--telemeh]
 
     ./Configure.pl --build <build-triple> --host <host-triple>
                    [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>]
                    [--debug] [--optimize] [--instrument]
                    [--static] [--big-endian] [--prefix]
-                   [--lua <lua>] [--make-install]
+                   [--make-install]
+
+=head2 Use of environment variables
+
+Compiler and linker flags can be extended with environment variables.
+
+CFLAGS="..." LDFLAGS="..." ./Configure.pl
 
 =head1 OPTIONS
 
@@ -767,8 +904,7 @@ turns on Address Sanitizer when compiling with C<clang>.  Defaults to off.
 Set the operating system name which you are compiling to.
 
 Currently supported operating systems are C<posix>, C<linux>, C<darwin>,
-C<openbsd>, C<netbsd>, C<freebsd>, C<solaris>, C<win32>, C<cygwin> and
-C<mingw32>.
+C<openbsd>, C<netbsd>, C<freebsd>, C<solaris>, C<win32>, and C<mingw32>.
 
 If not explicitly set, the option will be provided by the Perl runtime.
 In case of unknown operating systems, a POSIX userland is assumed.
@@ -795,6 +931,19 @@ options.
 Explicitly set the compiler without affecting other configuration
 options.
 
+=item --show-autovect
+
+Prints debug messages when compiling showing which loops were auto vectorized
+to SIMD instructions during build. Option is supported for Clang and GCC only.
+
+=item --show-autovect-failed
+
+Prints debug messages which hopefully reveal why autovectorization has failed
+for a loop. Verbosity level is 1-3 for clang, for GCC it is likely 1-2.
+If you are trying to vectorize code, it's *highly* recommended to try using clang
+first as it's smarter and has more useful messages. Then once it is working,
+try to get it working on gcc.
+
 =item --asan
 
 Build with AddressSanitizer (ASAN) support. Requires clang and LLVM 3.1 or newer.
@@ -810,6 +959,10 @@ A full list of options is displayed if you set C<ASAN_OPTIONS> to C<help=1>.
 =item --ubsan
 
 Build with Undefined Behaviour sanitizer support.
+
+=item --valgrind
+
+Include Valgrind Client Requests for moarvm's own memory allocators.
 
 =item --ld <ld>
 
@@ -867,18 +1020,20 @@ Build and install MoarVM in addition to configuring it.
 
 =item --has-libatomic_ops
 
-=item --has-dynasm
-
 =item --has-dyncall
 
 =item --has-libffi
+
+=item --pkgconfig=/path/to/pkgconfig/executable
+
+Provide path to the pkgconfig executable. Default: /usr/bin/pkg-config
 
 =item --no-jit
 
 Disable JIT compiler, which is enabled by default to JIT-compile hot frames.
 
-=item --lua=path/to/lua/executable
+=item --telemeh
 
-Path to a lua executable. (Used during the build when JIT is enabled).
+Build support for the fine-grained internal event logger.
 
 =back

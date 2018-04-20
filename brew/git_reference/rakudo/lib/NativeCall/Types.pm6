@@ -10,7 +10,8 @@ our native long     is Int is ctype("long")     is repr("P6int") { };
 our native longlong is Int is ctype("longlong") is repr("P6int") { };
 our native ulong     is Int is ctype("long")     is unsigned is repr("P6int") { };
 our native ulonglong is Int is ctype("longlong") is unsigned is repr("P6int") { };
-our native size_t    is Int is ctype("size_t")               is repr("P6int") { };
+our native size_t    is Int is ctype("size_t")   is unsigned is repr("P6int") { };
+our native ssize_t   is Int is ctype("size_t")               is repr("P6int") { };
 our native bool      is Int is ctype("bool")                 is repr("P6int") { };
 our class void                                  is repr('Uninstantiable') { };
 # Expose a Pointer class for working with raw pointers.
@@ -32,7 +33,12 @@ our class Pointer                               is repr('CPointer') {
         nqp::p6box_i(nqp::unbox_i(nqp::decont(self)))
     }
 
-    method deref(::?CLASS:D \ptr:) { nativecast(void, ptr) }
+    proto method Bool() {*}
+    multi method Bool(::?CLASS:U: --> False) { }
+    multi method Bool(::?CLASS:D:) { so self.Int }
+
+
+    method deref(::?CLASS:D \ptr:) { self ?? nativecast(void, ptr) !! fail("Can't dereference a Null Pointer") }
 
     multi method gist(::?CLASS:U:) { '(' ~ self.^name ~ ')' }
     multi method gist(::?CLASS:D:) {
@@ -49,10 +55,32 @@ our class Pointer                               is repr('CPointer') {
 
     my role TypedPointer[::TValue] {
         method of() { TValue }
-        method deref(::?CLASS:D \ptr:) { nativecast(TValue, ptr) }
+        method deref(::?CLASS:D \ptr:) { self ?? nativecast(TValue, ptr) !! fail("Can't dereference a Null Pointer"); }
+        method add(Int $off) returns Pointer {
+            die "Can't do arithmetic with a void pointer"
+                if TValue.isa(void);
+            nqp::box_i(self.Int + nqp::nativecallsizeof(TValue) * $off, self.WHAT);
+        }
+        method succ {
+            self.add(1);
+        }
+        method pred {
+            self.add(-1);
+        }
+        method AT-POS(Int $pos) {
+            nqp::nativecallcast(
+                TValue,
+                nqp::istype(TValue, Int) ?? Int
+                                         !! nqp::istype(TValue, Num) ?? Num !! TValue,
+                nqp::box_i(nqp::unbox_i(nqp::decont(self)) + nqp::nativecallsizeof(TValue) * $pos, Pointer)
+            )
+        }
     }
     method ^parameterize(Mu:U \p, Mu:U \t) {
-        die "A typed pointer can only hold integers, numbers, strings, CStructs, CPointers or CArrays (not {t.^name})"
+        die "A typed pointer can only hold:\n" ~
+            "  (u)int8, (u)int16, (u)int32, (u)int64, (u)long, (u)longlong, num16, num32, (s)size_t, bool, Str\n" ~
+            "  and types with representation: CArray, CPointer, CStruct, CPPStruct and CUnion" ~
+            "not: {t.^name}"
             unless t ~~ Int|Num|Bool || t === Str|void || t.REPR eq any <CStruct CUnion CPPStruct CPointer CArray>;
         my $w := p.^mixin: TypedPointer[t.WHAT];
         $w.^set_name: "{p.^name}[{t.^name}]";
@@ -143,7 +171,10 @@ our class CArray is repr('CArray') is array_type(Pointer) {
             $mixin := NumTypedCArray[t.WHAT];
         }
         else {
-            die "A C array can only hold integers, numbers, strings, CStructs, CPointers or CArrays (not {t.^name})"
+            die "A C array can only hold:\n" ~
+                "  (u)int8, (u)int16, (u)int32, (u)int64, (u)long, (u)longlong, num16, num32, (s)size_t, bool, Str\n" ~
+                "  and types with representation: CArray, CPointer, CStruct, CPPStruct and CUnion\n" ~
+                "not: {t.^name}"
                 unless t === Str || t.REPR eq 'CStruct' | 'CPPStruct' | 'CUnion' | 'CPointer' | 'CArray';
             $mixin := TypedCArray[t];
         }
@@ -161,16 +192,20 @@ our class CArray is repr('CArray') is array_type(Pointer) {
     multi method new() { nqp::create(self) }
     multi method new(*@values) { self.new(@values) }
     multi method new(@values) {
-        nextsame unless @values;
-        my $result := self.new();
-        my int $n = @values.elems;
-        my int $i;
-        $result.ASSIGN-POS($n - 1, @values.AT-POS($n - 1));
-        while $i < $n {
-            $result.ASSIGN-POS($i, @values.AT-POS($i));
-            $i = $i + 1;
+        if @values.elems -> $n {
+            my int $elems = $n - 1;
+            my $result   := nqp::create(self);  # XXX setelems would be nice
+            $result.ASSIGN-POS($elems,@values.AT-POS($elems)); # fake setelems
+            my int $i = -1;
+            nqp::while(
+              nqp::islt_i(($i = nqp::add_i($i,1)),$elems),
+              $result.ASSIGN-POS($i,@values.AT-POS($i)),
+            );
+            $result
         }
-        $result;
+        else {
+            nqp::create(self)
+        }
     }
 }
 

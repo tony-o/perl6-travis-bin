@@ -1,6 +1,6 @@
 use v6;
 
-use lib 't/04-nativecall';
+use lib <lib t/04-nativecall>;
 use CompileTestLib;
 use NativeCall;
 use Test;
@@ -19,10 +19,10 @@ my $GlobalByte := cglobal('./10-cglobals', 'GlobalByte', int8);
 is $GlobalByte, -103, 'global char works';
 
 my $GlobalDouble := cglobal('./10-cglobals', 'GlobalDouble', num64);
-is_approx $GlobalDouble, 99.9e0, 'global double works';
+is-approx $GlobalDouble, 99.9e0, 'global double works';
 
 my $GlobalFloat := cglobal('./10-cglobals', 'GlobalFloat', num32);
-is_approx $GlobalFloat, -4.5e0, 'global float works';
+is-approx $GlobalFloat, -4.5e0, 'global float works';
 
 my $GlobalString := cglobal('./10-cglobals', 'GlobalString', str);
 is $GlobalString, "epic cuteness", 'global string works';

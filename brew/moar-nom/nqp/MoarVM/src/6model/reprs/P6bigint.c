@@ -4,40 +4,54 @@
    #define MIN(x,y) ((x)<(y)?(x):(y))
 #endif
 
-/* A forced 64-bit version of mp_get_long, since on some platforms long is
- * not all that long. */
-static MVMuint64 mp_get_int64(MVMThreadContext *tc, mp_int * a) {
-    int i, bits;
+/* Get a native int64 from an mp_int. */
+static MVMint64 mp_get_int64(MVMThreadContext *tc, mp_int * a) {
     MVMuint64 res;
+    MVMuint64 signed_max = 9223372036854775807ULL;
+    const int bits = mp_count_bits(a);
 
-    if (a->used == 0) {
-         return 0;
+    /* For 64-bit 2's complement numbers the positive max is 2**63-1, which is 63 bits,
+     * but the negative max is -(2**63), which is 64 bits. */
+    if (MP_NEG == SIGN(a)) {
+        if (bits > 64) {
+            MVM_exception_throw_adhoc(tc, "Cannot unbox %d bit wide bigint into native integer", bits);
+        }
+        ++signed_max;
+    }
+	else {
+        if (bits > 63) {
+            MVM_exception_throw_adhoc(tc, "Cannot unbox %d bit wide bigint into native integer", bits);
+        }
     }
 
-    bits = mp_count_bits(a);
+    res = mp_get_long_long(a);
+
+    if (res > signed_max) {
+        /* The mp_int was bigger than a signed result could be. */
+        MVM_exception_throw_adhoc(tc, "Cannot unbox %d bit wide bigint into native integer", bits);
+    }
+
+    return MP_NEG == SIGN(a) ? -res : res;
+}
+
+/* Get a native uint64 from an mp_int. */
+static MVMuint64 mp_get_uint64(MVMThreadContext *tc, mp_int * a) {
+    const int bits = mp_count_bits(a);
+
     if (bits > 64) {
         MVM_exception_throw_adhoc(tc, "Cannot unbox %d bit wide bigint into native integer", bits);
     }
 
-    /* get number of digits of the lsb we have to read */
-    i = MIN(a->used,(int)((sizeof(MVMuint64)*CHAR_BIT+DIGIT_BIT-1)/DIGIT_BIT))-1;
-
-    /* get most significant digit of result */
-    res = DIGIT(a,i);
-
-    while (--i >= 0) {
-        res = (res << DIGIT_BIT) | DIGIT(a,i);
-    }
-    return res;
+    return mp_get_long_long(a);
 }
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps P6bigint_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st  = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st  = MVM_gc_allocate_stable(tc, &P6bigint_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -91,16 +105,7 @@ static MVMint64 get_int(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, vo
     MVMP6bigintBody *body = (MVMP6bigintBody *)data;
     if (MVM_BIGINT_IS_BIG(body)) {
         mp_int *i = body->u.bigint;
-        if (MP_LT == mp_cmp_d(i, 0)) {
-            MVMint64 ret;
-            mp_neg(i, i);
-            ret = mp_get_int64(tc, i);
-            mp_neg(i, i);
-            return -ret;
-        }
-        else {
-            return mp_get_int64(tc, i);
-        }
+        return mp_get_int64(tc, i);
     }
     else {
         return body->u.smallint.value;
@@ -124,10 +129,10 @@ static MVMuint64 get_uint(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, 
     MVMP6bigintBody *body = (MVMP6bigintBody *)data;
     if (MVM_BIGINT_IS_BIG(body)) {
         mp_int *i = body->u.bigint;
-        if (MP_LT == mp_cmp_d(i, 0))
+        if (MP_NEG == SIGN(i))
             MVM_exception_throw_adhoc(tc, "Cannot unbox negative bigint into native unsigned integer");
         else
-            return mp_get_int64(tc, i);
+            return mp_get_uint64(tc, i);
     }
     else {
         return body->u.smallint.value;
@@ -195,14 +200,14 @@ static void serialize(MVMThreadContext *tc, MVMSTable *st, void *data, MVMSerial
         str = MVM_string_ascii_decode(tc, tc->instance->VMString, buf, len - 1);
 
         /* write the "is small" flag */
-        MVM_serialization_write_varint(tc, writer, 0);
+        MVM_serialization_write_int(tc, writer, 0);
         MVM_serialization_write_str(tc, writer, str);
         MVM_free(buf);
     }
     else {
         /* write the "is small" flag */
-        MVM_serialization_write_varint(tc, writer, 1);
-        MVM_serialization_write_varint(tc, writer, body->u.smallint.value);
+        MVM_serialization_write_int(tc, writer, 1);
+        MVM_serialization_write_int(tc, writer, body->u.smallint.value);
     }
 }
 
@@ -215,9 +220,9 @@ static void deserialize_stable_size(MVMThreadContext *tc, MVMSTable *st, MVMSeri
 static void deserialize(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMSerializationReader *reader) {
     MVMP6bigintBody *body = (MVMP6bigintBody *)data;
 
-    if (MVM_serialization_read_varint(tc, reader) == 1) { /* Is it small int? */
+    if (MVM_serialization_read_int(tc, reader) == 1) { /* Is it small int? */
         body->u.smallint.flag = MVM_BIGINT_32_FLAG;
-        body->u.smallint.value = MVM_serialization_read_varint(tc, reader);
+        body->u.smallint.value = MVM_serialization_read_int(tc, reader);
     } else {  /* big int */
         char *buf = MVM_string_ascii_encode(tc, MVM_serialization_read_str(tc, reader), NULL, 0);
         body->u.bigint = MVM_malloc(sizeof(mp_int));
@@ -227,12 +232,21 @@ static void deserialize(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, vo
     }
 }
 
-/* Initializes the representation. */
-const MVMREPROps * MVMP6bigint_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+/* Calculates the non-GC-managed memory we hold on to. */
+static MVMuint64 unmanaged_size(MVMThreadContext *tc, MVMSTable *st, void *data) {
+    MVMP6bigintBody *body = (MVMP6bigintBody *)data;
+    if (MVM_BIGINT_IS_BIG(body))
+        return body->u.bigint->alloc;
+    else
+        return 0;
 }
 
-static const MVMREPROps this_repr = {
+/* Initializes the representation. */
+const MVMREPROps * MVMP6bigint_initialize(MVMThreadContext *tc) {
+    return &P6bigint_this_repr;
+}
+
+static const MVMREPROps P6bigint_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     initialize,
@@ -268,5 +282,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "P6bigint", /* name */
     MVM_REPR_ID_P6bigint,
-    0, /* refs_frames */
+    unmanaged_size, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

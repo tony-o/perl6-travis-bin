@@ -7,16 +7,16 @@ sub MAIN(*@ARGS) {
     my $nqpcomp-cc   := nqp::clone($nqpcomp-orig);
     $nqpcomp-cc.language('nqp-cc');
     
-    $nqpcomp-cc.backend(HLLBackend::JavaScript);
+    $nqpcomp-cc.backend(JavaScriptBackend.new(compiler => $nqpcomp-cc));
     
     #:custom-regex-lib('QRegex')
 
     my @clo := $nqpcomp-cc.commandline_options();
     @clo.push('source-map');
-    @clo.push('source-map-debug');
     @clo.push('beautify');
-    @clo.push('cps=s');
+    @clo.push('substagestats');
     @clo.push('nyi=s');
+    @clo.push('shebang');
 
     $nqpcomp-cc.command_line(@ARGS,:module-path('gen/js/stage2'),
         :setting-path('gen/js/stage2'),

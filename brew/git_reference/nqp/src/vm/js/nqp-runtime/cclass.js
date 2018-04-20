@@ -1,40 +1,53 @@
-var op = {};
+'use strict';
+const xregexp = require('xregexp');
+const graphemes = require('./graphemes.js');
+
+const op = {};
 exports.op = op;
 
 function boolish(bool) {
   return bool ? 1 : 0;
 }
 
+const UPPERCASE = xregexp('\\p{Lu}', 'yA');
+const LOWERCASE = xregexp('\\p{Ll}', 'yA');
+const ALPHABETIC = xregexp('\\pL', 'yA');
+const NUMERIC = xregexp('\\p{Nd}', 'yA');
+const HEXADECIMAL = xregexp('[0-9A-Fa-f]', 'y');
+const WHITESPACE = xregexp('\\p{White_Space}', 'yA');
+const PRINTING = xregexp('[^\u0000-\u001F\u007F-\u009F]', 'y');
+const BLANK = xregexp('\t|\\p{Zs}', 'yA');
+const CONTROL = xregexp('[\u0000-\u001F\u007F-\u009F]', 'y');
+const PUNCTUATION = xregexp('\\pP', 'yA');
+const ALPHANUMERIC = xregexp('\\pL|\\p{Nd}', 'yA');
+const NEWLINE = xregexp('[\n\r\u0085\u2029\f\u000b\u2028]', 'y');
+const WORD = xregexp('\\pL|_|\\p{Nd}', 'yA');
+const ANY = xregexp('\\p{Any}', 'yA');
+
+const cclassToRegex = [];
+cclassToRegex[1] = UPPERCASE;
+cclassToRegex[2] = LOWERCASE;
+cclassToRegex[4] = ALPHABETIC;
+cclassToRegex[8] = NUMERIC;
+cclassToRegex[16] = HEXADECIMAL;
+cclassToRegex[32] = WHITESPACE;
+cclassToRegex[64] = PRINTING;
+cclassToRegex[256] = BLANK;
+cclassToRegex[512] = CONTROL;
+cclassToRegex[1024] = PUNCTUATION;
+cclassToRegex[2048] = ALPHANUMERIC;
+cclassToRegex[4096] = NEWLINE;
+cclassToRegex[8192] = WORD;
+cclassToRegex[65535] = ANY;
+
 function iscclass(cclass, target, offset) {
   if (offset < 0 || offset >= target.length) return 0;
-  switch (cclass) {
-    //ANY
-    case 65535: return 1;
-    //UPPERCASE
-    case 1: return boolish(!/^\d|_/.test(target[offset]) && /\w/.test(target[offset]) && target[offset] == target[offset].toUpperCase());
-    //LOWERCASE
-    case 2: return boolish(!/^\d|_/.test(target[offset]) && /\w/.test(target[offset]) && target[offset] == target[offset].toLowerCase());
-    //ALPHABETIC
-    case 4: return boolish(!/^\d|_/.test(target[offset]) && /\w/.test(target[offset]));
-    //NUMERIC
-    case 8: return boolish(/^\d/.test(target[offset]));
-    //HEXADECIMAL
-    case 16: return boolish(/^[0-9a-fA-F]/.test(target[offset]));
-    //WHITESPACE
-    case 32: return boolish('\n\u000b\f\r\u0085\u2028\u2029\t \u00a0\u1680\u180e\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u202f\u205f\u3000'.indexOf(target[offset]) != -1);
-    //BLANK
-    case 256: return boolish(target[offset] == ' ' || target[offset] == '\t'); //HACK - not all such chars
-    //CONTROL
-    case 512: return boolish('\n\t\r'.indexOf(target[offset]) != -1); //HACK - not all such chars
-    //PUNCTUATION
-    case 1024: return boolish(/[.,;?!]/.test(target[offset])); //HACK
-    //ALPHANUMERIC
-    case 2048: return boolish(/^\w/.test(target[offset]) && target[offset] != '_');
-    //NEWLINE
-    case 4096: return boolish(target[offset] == '\n' || target[offset] == '\r' || target[offset] == '\u0085'); //HACK
-    //WORD
-    case 8192: return boolish(/^\w/.test(target[offset]));
-    default: throw 'cclass ' + cclass + ' not yet implemented';
+  const regex = cclassToRegex[cclass];
+  if (regex === undefined) {
+    throw 'cclass ' + cclass + ' not yet implemented';
+  } else {
+    regex.lastIndex = offset;
+    return boolish(regex.test(target));
   }
 }
 
@@ -42,11 +55,21 @@ op.iscclass = function(cclass, target, offset) {
   return iscclass(cclass, target, offset);
 };
 
+op.iscclassnfg = function(cclass, target, offset) {
+  let offsetGraphemes = offset;
+  let offsetChars = 0;
+  while (offsetGraphemes--) {
+    offsetChars = graphemes.nextBreak(target, offsetChars);
+  }
+
+  return iscclass(cclass, target, offsetChars);
+};
+
 op.findcclass = function(cclass, target, offset, count) {
-  var end = offset + count;
+  let end = offset + count;
   end = target.length < end ? target.length : end;
 
-  for (var pos = offset; pos < end; pos++) {
+  for (let pos = offset; pos < end; pos++) {
     if (iscclass(cclass, target, pos) > 0) {
       return pos;
     }
@@ -56,11 +79,18 @@ op.findcclass = function(cclass, target, offset, count) {
 };
 
 op.findnotcclass = function(cclass, target, offset, count) {
-  var end = offset + count;
+  let end = offset + count;
   end = target.length < end ? target.length : end;
 
-  for (var pos = offset; pos < end; pos++) {
-    if (iscclass(cclass, target, pos) == 0) {
+  const regex = cclassToRegex[cclass];
+
+  let pos = offset;
+
+  regex.lastIndex = pos;
+  while (pos < end) {
+    if (regex.test(target)) {
+      pos = regex.lastIndex;
+    } else {
       return pos;
     }
   }

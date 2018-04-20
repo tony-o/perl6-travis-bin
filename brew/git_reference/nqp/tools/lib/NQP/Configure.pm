@@ -6,34 +6,28 @@ use File::Copy qw(copy);
 
 use base qw(Exporter);
 our @EXPORT_OK = qw(sorry slurp system_or_die
-                    cmp_rev 
-                    read_parrot_config read_config
-                    fill_template_file fill_template_text 
+                    cmp_rev
+                    read_config
+                    fill_template_file fill_template_text
                     git_checkout
                     verify_install gen_moar
                     github_url
                     probe_node
-                    gen_nqp gen_parrot);
+                    gen_nqp);
 
 our $exe = $^O eq 'MSWin32' ? '.exe' : '';
 our $bat = $^O eq 'MSWin32' ? '.bat' : '';
-
-our @required_parrot_files = qw(
-    @bindir@/parrot@exe@
-    @bindir@/pbc_to_exe@exe@
-    @bindir@/@ops2c@@exe@
-    @libdir@@versiondir@/tools/build/pmc2c.pl
-    @srcdir@@versiondir@/pmc
-    @includedir@@versiondir@/pmc
-);
 
 our @required_nqp_files = qw(
     @bindir@/nqp-p@exe@
 );
 
 sub sorry {
-    my @msg = @_;
-    die join("\n", '', '===SORRY!===', @msg, "\n");
+    my ($ignore_errors, @msg) = @_;
+    my $message = join("\n", '', '===SORRY!===', @msg, "\n");
+    die $message
+        unless $ignore_errors;
+    print $message;
 }
 
 sub slurp {
@@ -56,17 +50,18 @@ sub system_or_die {
 
 sub parse_revision {
     my $rev = shift;
+    my $what = shift;
     my $sep = qr/[_.]/;
     $rev =~ /(\d+)$sep(\d+)(?:$sep(\d+))?(?:-(\d+)-g[a-f0-9]*)?$/
-        or die "Unrecognized revision specifier '$rev'\n";
+        or die "Unrecognized revision specifier '$rev' from $what\n";
     return ($1, $2, $3 || 0, $4 || 0);
 }
 
 
 sub cmp_rev {
-    my ($a, $b) = @_;
-    my @a = parse_revision($a);
-    my @b = parse_revision($b);
+    my ($a, $b, $what) = @_;
+    my @a = parse_revision($a, "$what have");
+    my @b = parse_revision($b, "$what want");
     my $cmp = 0;
     for (0..3) {
         $cmp = $a[$_] <=> $b[$_];
@@ -90,57 +85,6 @@ sub read_config {
         }
         last if %config;
     }
-    return %config;
-}
-
-
-sub read_parrot_config {
-    my @parrot_config_src = @_;
-    my %config = ();
-    open my $CONFIG_PIR, '>', 'parrot-config.pir'
-      or die "Unable to write parrot-config.pir\n";
-    print $CONFIG_PIR <<'END';
-        .include 'iglobals.pasm'
-        .sub "main" :main
-            .local pmc interp, config_hash, config_iter
-            interp = getinterp
-            config_hash = interp[.IGLOBALS_CONFIG_HASH]
-            config_iter = iter config_hash
-          config_loop:
-            unless config_iter goto config_done
-            $P0 = shift config_iter
-            print "parrot::"
-            $S0 = $P0.'key'()
-            print $S0
-            print "="
-            $S0 = $P0.'value'()
-            print $S0
-            print "\n"
-            goto config_loop
-          config_done:
-            .return ()
-        .end
-END
-    close($CONFIG_PIR);
-    
-    for my $file (@parrot_config_src) {
-        no warnings;
-        if ($file =~ /.pir$/ && open my $PARROT_CONFIG, '<', $file) {
-            while (<$PARROT_CONFIG>) {
-                if (/P0\["(.*?)"\], "(.*?)"/) { $config{"parrot::$1"} = $2 }
-            }
-            close($PARROT_CONFIG) or die $!;
-        }
-        elsif (open my $PARROT, '-|', "\"$file\" parrot-config.pir") {
-            while (<$PARROT>) {
-                if (/^([\w:]+)=(.*)/) { $config{$1} = $2 }
-            }
-            close($PARROT);
-        }
-        last if %config;
-    }
-    unlink('parrot-config.pir');
-    $config{'parrot::ops2c'} = 'ops2c' unless exists $config{'parrot::ops2c'};
     return %config;
 }
 
@@ -182,8 +126,8 @@ sub fill_template_text {
         $str;
     };
 
-    $text =~ s/@@([:\w]+)@@/$escape->($config{$1} || $config{"parrot::$1"} || '')/ge;
-    $text =~ s/@([:\w]+)@/$config{$1} || $config{"parrot::$1"} || ''/ge;
+    $text =~ s/@@([:\w]+)@@/$escape->($config{$1} || '')/ge;
+    $text =~ s/@([:\w]+)@/$config{$1} || ''/ge;
     if ($text =~ /nqp::makefile/) {
         if ($^O eq 'MSWin32') {
             $text =~ s{/}{\\}g;
@@ -231,16 +175,19 @@ sub git_checkout {
     else {
         chdir($dir);
         system_or_die('git', 'fetch');
+        # pre-git 1.9/2.0 `--tags` did not fetch tags in addition to normal
+        # fetch https://stackoverflow.com/a/20608181/2410502 so do it separately
+        system_or_die('git', 'fetch', '--tags');
     }
 
     if ($checkout) {
         system_or_die('git', 'checkout', $checkout);
-        system_or_die('git', 'pull') 
+        system_or_die('git', 'pull')
             if slurp('.git/HEAD') =~ /^ref:/;
     }
 
     my $git_describe;
-    if (open(my $GIT, '-|', "git describe --tags")) {
+    if (open(my $GIT, '-|', 'git describe --tags "--match=20*"')) {
         $git_describe = <$GIT>;
         close($GIT);
         chomp $git_describe;
@@ -272,35 +219,12 @@ sub gen_nqp {
 
     my $backends    = $options{'backends'};
     my $gen_nqp     = $options{'gen-nqp'};
-    my $gen_parrot  = $options{'gen-parrot'};
     my $prefix      = $options{'prefix'} || cwd().'/install';
     my $startdir    = cwd();
     my $git_protocol = $options{'git-protocol'} || 'https';
 
-    my $PARROT_REVISION = 'nqp/tools/build/PARROT_REVISION';
-
     my (%impls, %need);
 
-    if ($backends =~ /parrot/) {
-        my %c = read_parrot_config("$prefix/bin/parrot");
-
-        if (%c) {
-            my $bin = fill_template_text('@bindir@/nqp-p@ext@', %c);
-            $impls{parrot}{bin} = $bin;
-            %c  = read_config($bin);
-            my $nqp_have = $c{'nqp::version'};
-            my $nqp_ok   = $nqp_have && cmp_rev($nqp_have, $nqp_want) >= 0;
-            if ($nqp_ok) {
-                $impls{parrot}{config} = \%c;
-            }
-            else {
-                $need{parrot} = 1;
-            }
-        }
-        else {
-            $need{parrot} = 1;
-        }
-    }
     for my $b (qw/jvm moar/) {
         if ($backends =~ /$b/) {
             my $postfix = substr $b, 0, 1;
@@ -308,7 +232,7 @@ sub gen_nqp {
             $impls{$b}{bin} = $bin;
             my %c = read_config($bin);
             my $nqp_have = $c{'nqp::version'} || '';
-            my $nqp_ok   = $nqp_have && cmp_rev($nqp_have, $nqp_want) >= 0;
+            my $nqp_ok   = $nqp_have && cmp_rev($nqp_have, $nqp_want, "NQP") >= 0;
             if ($nqp_ok) {
                 $impls{$b}{config} = \%c;
             }
@@ -320,7 +244,7 @@ sub gen_nqp {
 
     return %impls unless %need;
 
-    if (defined $gen_nqp || defined $gen_parrot) {
+    if (defined $gen_nqp) {
         git_checkout(
             github_url($git_protocol, 'perl6', 'nqp'),
             'nqp', $nqp_want,
@@ -330,15 +254,7 @@ sub gen_nqp {
         );
     }
 
-    if ($need{parrot} && defined $gen_parrot) {
-        my ($par_want) = split(' ', slurp($PARROT_REVISION));
-        my $parrot = gen_parrot($par_want, %options, prefix => $prefix);
-        my %c = read_parrot_config($parrot);
-        $impls{parrot}{bin} = fill_template_text('@bindir@/nqp-p@ext@', %c);
-        $impls{parrot}{config} = \%c;
-    }
-
-    return %impls unless defined($gen_nqp) || defined($gen_parrot);
+    return %impls unless defined($gen_nqp);
 
     my $backends_to_build = join ',', sort keys %need;
     my @cmd = ($^X, 'Configure.pl', "--prefix=$prefix",
@@ -357,83 +273,10 @@ sub gen_nqp {
     return %impls;
 }
 
-
-sub gen_parrot {
-    my $par_want = shift;
-    my %options  = @_;
-
-    my $prefix     = $options{'prefix'} || cwd()."/install";
-    my $gen_parrot = $options{'gen-parrot'};
-    my @opts       = @{ $options{'parrot-option'} || [] };
-    push @opts, "--optimize";
-    my $startdir   = cwd();
-    my $git_protocol = $options{'git-protocol'} || 'https';
-
-    my $par_exe  = "$options{'prefix'}/bin/parrot$exe";
-    my %config   = read_parrot_config($par_exe);
-
-    my $par_have = $config{'parrot::git_describe'} || '';
-    my $par_ok   = $par_have && cmp_rev($par_have, $par_want) >= 0;
-    if ($gen_parrot) {
-        my $par_repo = git_checkout(
-            github_url($git_protocol, 'parrot', 'parrot'),
-            'parrot', $gen_parrot,
-            github_url('ssh', 'parrot', 'parrot'),
-            $options{'git-depth'} ? "--depth=$options{'git-depth'}" : '',
-            $options{'git-reference'} ? "--reference=$options{'git-reference'}/parrot" : '',
-        );
-        $par_ok = $par_have eq $par_repo;
-    }
-    elsif (!$par_ok) {
-        git_checkout(
-            github_url($git_protocol, 'parrot', 'parrot'),
-            'parrot', $par_want,
-            github_url('ssh', 'parrot', 'parrot'),
-            $options{'git-depth'} ? "--depth=$options{'git-depth'}" : '',
-            $options{'git-reference'} ? "--reference=$options{'git-reference'}/parrot" : '',
-        );
-    }
-
-    if ($par_ok) {
-        print "$par_exe is Parrot $par_have.\n";
-        return $par_exe;
-    }
-    chdir("$startdir/parrot") or die $!;
-    if (-f 'Makefile') {
-        %config = read_parrot_config('config_lib.pir');
-        my $make = $config{'parrot::make'};
-        if ($make) {
-            print "\nPerforming '$make realclean' ...\n";
-            system_or_die($make, 'realclean');
-        }
-    }
-
-    $prefix =~ s{\\}{/}g;
-
-    print "\nConfiguring Parrot ...\n";
-    my @cmd = ($^X, "Configure.pl", @opts, "--prefix=$prefix");
-    print "@cmd\n";
-    system_or_die(@cmd);
-
-    print "\nBuilding Parrot ...\n";
-    %config = read_parrot_config('config_lib.pir');
-    my $make = $config{'parrot::make'} or
-        die "Unable to determine value for 'make' from parrot config\n";
-    system_or_die($make, 'install-dev');
-    chdir($startdir);
-
-    # That is a hack to get the import-lib in place. Parrot seems unpatchable because
-    # its static build shares the same libname as the import-lib.
-    if (-e "$startdir/parrot/libparrot.lib" && !-e "$startdir/install/bin/libparrot.lib") {
-        copy("$startdir/parrot/libparrot.lib", "$startdir/install/bin/libparrot.lib");
-    }
-
-    print "Parrot installed.\n";
-    return fill_template_text('@bindir@/parrot@exe@', %config);
-}
-
 sub gen_moar {
     my $moar_want = shift;
+    my $moar_have;
+    my @errors;
     my %options  = @_;
 
     my $prefix     = $options{'prefix'} || cwd()."/install";
@@ -447,21 +290,27 @@ sub gen_moar {
         $sdkroot
             ? File::Spec->catfile( $sdkroot, $prefix, 'bin', "moar$exe" )
             : File::Spec->catfile( $prefix, 'bin', "moar$exe" ));
-    my $moar_have  = qx{ $moar_exe --version };
-    if ($moar_have) {
-        $moar_have = $moar_have =~ /version (\S+)/ ? $1 : undef;
+    my $moar_version_output  = qx{ $moar_exe --version };
+    if ($moar_version_output) {
+        $moar_have = $moar_version_output =~ /version (\S+)/ ? $1 : undef;
     }
 
-    my $moar_ok   = $moar_have && cmp_rev($moar_have, $moar_want) >= 0;
+    my $moar_ok   = $moar_have && cmp_rev($moar_have, $moar_want, "MoarVM") >= 0;
     if ($moar_ok) {
-        print "Found $moar_exe version $moar_have, which is new enough.\n";
-        return $moar_exe;
+        push @errors, "Found $moar_exe version $moar_have, which is new enough.\n";
+        return ($moar_exe, @errors);
     }
     elsif ($moar_have) {
-        print "Found $moar_exe version $moar_have, which is too old.\n";
+        push @errors, "Found $moar_exe version $moar_have, which is too old. Wanted at least $moar_want\n";
+        return ($moar_exe, @errors) if $options{'ignore-errors'};
+    }
+    elsif ($moar_version_output =~ /This is MoarVM version/i ) {
+        push @errors, "Found a MoarVM binary but was not able to get its version number.\n"
+        . "If running `git describe` inside the MoarVM repository does not work,\n"
+        . "you need to make sure to checkout tags of the repository and run \nConfigure.pl and make install again\n";
     }
 
-    return unless defined $gen_moar;
+    return ($gen_moar, @errors) unless defined $gen_moar;
 
     my $moar_repo = git_checkout(
         github_url($git_protocol, 'MoarVM', 'MoarVM'),
@@ -471,7 +320,7 @@ sub gen_moar {
         $options{'git-reference'} ? "--reference=$options{'git-reference'}/MoarVM" : '',
     );
 
-    unless (cmp_rev($moar_repo, $moar_want) >= 0) {
+    unless (0 <= cmp_rev($moar_repo, $moar_want, "moar") and !$options{'ignore-errors'}) {
         die "You asked me to build $gen_moar, but $moar_repo is not new enough to satisfy version $moar_want\n";
     }
 
@@ -485,7 +334,7 @@ sub gen_moar {
 
     chdir($startdir);
 
-    return $moar_exe;
+    return ($moar_exe, @errors);
 }
 
 sub github_url {

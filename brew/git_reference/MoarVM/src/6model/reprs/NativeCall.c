@@ -1,12 +1,12 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps NativeCall_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. Also sets the invocation protocol handler in the STable. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st = MVM_gc_allocate_stable(tc, &NativeCall_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -38,6 +38,7 @@ static void copy_to(MVMThreadContext *tc, MVMSTable *st, void *src, MVMObject *d
         memcpy(dest_body->arg_types, src_body->arg_types, src_body->num_args * sizeof(MVMint16));
     }
     dest_body->ret_type = src_body->ret_type;
+    dest_body->jitcode = src_body->jitcode;
 }
 
 
@@ -88,6 +89,8 @@ static void gc_cleanup(MVMThreadContext *tc, MVMSTable *st, void *data) {
         MVM_free(body->arg_types);
     if (body->arg_info)
         MVM_free(body->arg_info);
+    if (body->jitcode)
+        MVM_jit_destroy_code(tc, body->jitcode);
 }
 
 static void gc_free(MVMThreadContext *tc, MVMObject *obj) {
@@ -101,10 +104,10 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info) {
 
 /* Initializes the representation. */
 const MVMREPROps * MVMNativeCall_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &NativeCall_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps NativeCall_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     NULL, /* initialize */
@@ -130,6 +133,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "NativeCall", /* name */
     MVM_REPR_ID_MVMNativeCall,
-    0, /* refs_frames */
     NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

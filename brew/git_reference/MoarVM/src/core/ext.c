@@ -6,18 +6,15 @@ int MVM_ext_load(MVMThreadContext *tc, MVMString *lib, MVMString *ext) {
     MVMDLLSym *sym;
     void (*init)(MVMThreadContext *);
 
-    MVMROOT(tc, lib, {
-    MVMROOT(tc, ext, {
+    MVMROOT2(tc, lib, ext, {
         colon = MVM_string_ascii_decode_nt(
             tc, tc->instance->VMString, ":");
         prefix = MVM_string_concatenate(tc, lib, colon);
         name = MVM_string_concatenate(tc, prefix, ext);
     });
-    });
 
     uv_mutex_lock(&tc->instance->mutex_ext_registry);
 
-    MVM_string_flatten(tc, name);
     MVM_HASH_GET(tc, tc->instance->ext_registry, name, entry);
 
     /* Extension already loaded. */
@@ -41,6 +38,8 @@ int MVM_ext_load(MVMThreadContext *tc, MVMString *lib, MVMString *ext) {
     MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->name,
         "Extension name");
     MVM_HASH_BIND(tc, tc->instance->ext_registry, name, entry);
+    MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->hash_handle.key,
+        "Extension name hash key");
 
     uv_mutex_unlock(&tc->instance->mutex_ext_registry);
 
@@ -60,7 +59,6 @@ int MVM_ext_register_extop(MVMThreadContext *tc, const char *cname,
 
     uv_mutex_lock(&tc->instance->mutex_extop_registry);
 
-    MVM_string_flatten(tc, name);
     MVM_HASH_GET(tc, tc->instance->extop_registry, name, entry);
 
     /* Op already registered, so just verify its signature. */
@@ -157,8 +155,10 @@ int MVM_ext_register_extop(MVMThreadContext *tc, const char *cname,
     entry->info.num_operands = num_operands;
     entry->info.pure         = flags & MVM_EXTOP_PURE;
     entry->info.deopt_point  = 0;
+    entry->info.logged       = 0;
     entry->info.no_inline    = flags & MVM_EXTOP_NOINLINE;
     entry->info.jittivity    = (flags & MVM_EXTOP_INVOKISH) ? MVM_JIT_INFO_INVOKISH : 0;
+    entry->info.uses_hll     = 0;
     memcpy(entry->info.operands, operands, num_operands);
     memset(entry->info.operands + num_operands, 0,
             MVM_MAX_OPERANDS - num_operands);
@@ -170,6 +170,8 @@ int MVM_ext_register_extop(MVMThreadContext *tc, const char *cname,
     MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->name,
         "Extension op name");
     MVM_HASH_BIND(tc, tc->instance->extop_registry, name, entry);
+    MVM_gc_root_add_permanent_desc(tc, (MVMCollectable **)&entry->hash_handle.key,
+        "Extension op name hash key");
 
     uv_mutex_unlock(&tc->instance->mutex_extop_registry);
 
@@ -186,7 +188,6 @@ const MVMOpInfo * MVM_ext_resolve_extop_record(MVMThreadContext *tc,
 
     uv_mutex_lock(&tc->instance->mutex_extop_registry);
 
-    MVM_string_flatten(tc, record->name);
     MVM_HASH_GET(tc, tc->instance->extop_registry, record->name, entry);
 
     if (!entry) {

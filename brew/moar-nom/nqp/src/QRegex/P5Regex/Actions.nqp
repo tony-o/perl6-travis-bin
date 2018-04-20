@@ -135,7 +135,7 @@ class QRegex::P5Regex::Actions is HLL::Actions {
                 my $rhs;
                 if $_[0]<backslash> {
                     $node := $_[0]<backslash>.ast;
-                    $/.CURSOR.panic("Illegal range endpoint in regex: " ~ ~$_)
+                    $/.panic("Illegal range endpoint in regex: " ~ ~$_)
                         if $node.rxtype ne 'literal' && $node.rxtype ne 'enumcharlist'
                             || $node.negate || nqp::chars($node[0]) != 1;
                     $lhs := $node[0];
@@ -145,7 +145,7 @@ class QRegex::P5Regex::Actions is HLL::Actions {
                 }
                 if $_[1][0]<backslash> {
                     $node := $_[1][0]<backslash>.ast;
-                    $/.CURSOR.panic("Illegal range endpoint in regex: " ~ ~$_)
+                    $/.panic("Illegal range endpoint in regex: " ~ ~$_)
                         if $node.rxtype ne 'literal' && $node.rxtype ne 'enumcharlist'
                             || $node.negate || nqp::chars($node[0]) != 1;
                     $rhs := $node[0];
@@ -156,7 +156,7 @@ class QRegex::P5Regex::Actions is HLL::Actions {
                 sub add_range($from, $to) {
                     my int $ord0 := nqp::ord($from);
                     my int $ord1 := nqp::ord($to);
-                    $/.CURSOR.panic("Illegal reversed character range in regex: " ~ ~$_)
+                    $/.panic("Illegal reversed character range in regex: " ~ ~$_)
                         if $ord0 > $ord1;
                     $str := nqp::concat($str, nqp::chr($ord0++)) while $ord0 <= $ord1;
                 }
@@ -200,8 +200,14 @@ class QRegex::P5Regex::Actions is HLL::Actions {
     }
 
     method p5backslash:sym<h>($/) {
-        make QAST::Regex.new( "\x[09,20,a0,1680,180e,2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,200a,202f,205f,3000]", :rxtype('enumcharlist'),
-                        :negate($<sym> eq 'H'), :node($/) );
+        make QAST::Regex.new(
+#?if js
+            nqp::chr(0x2000) ~ nqp::chr(0x2001) ~ # HACK workaround for a cross compiling problem
+#?endif
+            "\x[09,20,a0,1680,180e,2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,200a,202f,205f,3000]",
+            :rxtype('enumcharlist'),
+            :negate($<sym> eq 'H'),
+            :node($/) );
     }
 
     method p5backslash:sym<r>($/) {
@@ -344,8 +350,8 @@ class QRegex::P5Regex::Actions is HLL::Actions {
     
     method p5quantifier:sym<{ }>($/) {
         my $qast;
-        $qast := QAST::Regex.new( :rxtype<quant>, :min(+$<start>), :node($/) );
-        if $<end> && ~$<end>[0] ne '' { $qast.max(+$<end>[0]); }
+        $qast := QAST::Regex.new( :rxtype<quant>, :min(nqp::radix(10, $<start>, 0, 0)[0]), :node($/) );
+        if $<end> && ~$<end>[0] ne '' { $qast.max(nqp::radix(10, $<end>[0], 0, 0)[0]); }
         elsif $<comma>                { $qast.max(-1); }
         else                          { $qast.max($qast.min); }
         make quantmod($qast, $<quantmod>);
@@ -358,6 +364,7 @@ class QRegex::P5Regex::Actions is HLL::Actions {
     }
     
     method qbuildsub($qast, $block = QAST::Block.new(), :$anon, :$addself, *%rest) {
+	my $*LANG := $qast.node;
         my $code_obj := nqp::existskey(%rest, 'code_obj')
             ?? %rest<code_obj>
             !! self.create_regex_code_object($block);
@@ -515,7 +522,7 @@ class QRegex::P5Regex::Actions is HLL::Actions {
 
     method metachar:sym<var>($/) {
         my $qast;
-        my $name := $<pos> ?? +$<pos> !! ~$<name>;
+        my $name := $<pos> ?? nqp::radix(10, $<pos>, 0, 0)[0] !! ~$<name>;
         if $<quantified_atom> {
             $qast := $<quantified_atom>[0].ast;
             if $qast.rxtype eq 'quant' && $qast[0].rxtype eq 'subrule' {
@@ -551,8 +558,14 @@ class QRegex::P5Regex::Actions is HLL::Actions {
     }
 
     method backslash:sym<h>($/) {
-        my $qast := QAST::Regex.new( "\x[09,20,a0,1680,180e,2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,200a,202f,205f,3000]", :rxtype('enumcharlist'),
-                        :negate($<sym> eq 'H'), :node($/) );
+        my $qast := QAST::Regex.new(
+#?if js
+            nqp::chr(0x2000) ~ nqp::chr(0x2001) ~ # HACK workaround for a cross compiling problem
+#?endif
+            "\x[09,20,a0,1680,180e,2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,200a,202f,205f,3000]",
+            :rxtype('enumcharlist'),
+            :negate($<sym> eq 'H'),
+            :node($/) );
         make $qast;
     }
 

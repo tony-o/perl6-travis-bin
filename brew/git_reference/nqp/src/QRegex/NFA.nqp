@@ -1,9 +1,5 @@
 use QASTNode;
 
-our $nfatime;
-our $lastnfatime;
-our $etctime;
-
 class QRegex::NFA {
     my $EDGE_FATE            := 0;
     my $EDGE_EPSILON         := 1;
@@ -37,26 +33,31 @@ class QRegex::NFA {
     sub dentin() {
         if $nfadeb {
             $ind := $ind + 2;
-            nqp::x(' ', $ind);
+            nqp::x(' ', nqp::if($ind >= 0, $ind, 0));
         }
         else { '' }
     }
 
     sub dentout($x) {
-        $ind := $ind - 2 if $nfadeb;
+        if $nfadeb {
+            $ind := $ind - 2;
+            if $ind < 0 {
+                note("                inconsistent indentation! NFA debugger tried to dentout to $ind.");
+            }
+        }
         $x;
     }
 
     # The build-time set of states, with element zero being the fate name
     # list.
     has $!states;
-    
+
     # Non-zero if this NFA has some edges added.
     has $!edges;
-    
+
     # Non-zero if this NFA is generic.
     has int $!generic;
-    
+
     # The NFA we will actually run (with NFA REPR).
     has $!nfa_object;
 
@@ -71,7 +72,7 @@ class QRegex::NFA {
         $new.addstate();  # entry point, mostly fanout epsilons
         $new;
     }
-    
+
     method from_saved($saved) {
         self.bless(:states($saved), :edges(1));
     }
@@ -128,7 +129,7 @@ class QRegex::NFA {
 
         $!LITEND := 1 unless $method eq 'literal' || $method eq 'concat' || $method eq 'alt';
 
-        my $result := self.HOW.can(self, $method) 
+        my $result := self.HOW.can(self, $method)
          ?? self."$method"($node, $from, $to)
          !! self.fate($node, $from, $to);
         note("$indent ...regex_nfa returns $result") if $nfadeb;
@@ -136,7 +137,7 @@ class QRegex::NFA {
         dentout($result);
     }
 
-    method fate($node, $from, $to) { 
+    method fate($node, $from, $to) {
         my $indent := dentin();
         note("$indent fate $from -> $to") if $nfadeb;
         dentout(self.addedge($from, 0, $EDGE_FATE, 0, :newedge(0)));
@@ -163,7 +164,7 @@ class QRegex::NFA {
     }
 
     method altseq($node, $from, $to) {
-        if +@($node) {
+        if nqp::elems(@($node)) {
             my $indent := dentin();
             my int $st := self.regex_nfa($node[0], $from, $to);
             $to := $st if $to < 0 && $st > 0;
@@ -177,11 +178,11 @@ class QRegex::NFA {
         }
     }
 
-    method anchor($node, $from, $to) { 
+    method anchor($node, $from, $to) {
         self.addedge($from, $to, $EDGE_EPSILON, 0);
     }
-    
-    method dba($node, $from, $to) { 
+
+    method dba($node, $from, $to) {
         self.addedge($from, $to, $EDGE_EPSILON, 0);
     }
 
@@ -192,14 +193,13 @@ class QRegex::NFA {
         %cclass_code<s>  := nqp::const::CCLASS_WHITESPACE;
         %cclass_code<w>  := nqp::const::CCLASS_WORD;
         %cclass_code<n>  := nqp::const::CCLASS_NEWLINE;
-        %cclass_code<nl> := nqp::const::CCLASS_NEWLINE;
         $nfadeb := nqp::existskey(nqp::getenvhash(),'NQP_NFA_DEB');
-        $ACTIONS := ['FATE','EPSILON','CODEPOINT','CODEPOINT_NEG','CHARCLASS','CHARCLASS_NEG','CHARLIST','CHARLIST_NEG','SUBRULE','CODEPOINT_I','CODEPOINT_I_NEG','GENERIC_VAR','CHARRANGE','CHARRANGE_NEG','CODEPOINT_LL','CODEPOINT_I_LL','CODEPOINT_M','CODEPOINT_M_NEG'];
+        $ACTIONS := ['FATE','EPSILON','CODEPOINT','CODEPOINT_NEG','CHARCLASS',
+            'CHARCLASS_NEG','CHARLIST','CHARLIST_NEG','SUBRULE','CODEPOINT_I',
+            'CODEPOINT_I_NEG','GENERIC_VAR','CHARRANGE','CHARRANGE_NEG',
+            'CODEPOINT_LL','CODEPOINT_I_LL','CODEPOINT_M','CODEPOINT_M_NEG'];
         # $ind := 0;
         # $indent := '';
-        $nfatime := 0;
-        $etctime := 0;
-        $lastnfatime := nqp::time_n();
     }
 
     method cclass($node, $from, $to) {
@@ -258,14 +258,15 @@ class QRegex::NFA {
             if $node.subtype eq 'zerowidth' {
                 my $next := self.addedge($from, -1, $base_edge + ?$node.negate,
                     [$ord0, $ord1]);
-                $result := dentout(self.addedge($next, 0, $EDGE_FATE, 0));
+                $result := self.addedge($next, 0, $EDGE_FATE, 0);
             }
             else {
-                $result := dentout(self.addedge($from, $to, $base_edge + ?$node.negate,
-                    [$ord0, $ord1]));
+                $result := self.addedge($from, $to, $base_edge + ?$node.negate,
+                    [$ord0, $ord1]);
+                $to := $result if $to < 0 && $result > 0;
             }
         }
-        $result
+        dentout($result)
     }
 
     # Synthetics must be conveyed as strings; anything else can go as an
@@ -334,7 +335,8 @@ class QRegex::NFA {
         my $indent := dentin();
         my $subtype := $node.subtype;
         note("$indent subrule $from -> $to {$node.name}") if $nfadeb;
-        if $node.name eq 'before' && !$node.negate {
+        if $node.name eq 'before' && !$node.negate &&
+                nqp::istype((try $node[0][1].ann('orig_qast')), QAST::Regex) {
             my int $end := self.addstate();
             self.regex_nfa($node[0][1].ann('orig_qast'), $from, $end);
             dentout(self.fate($node, $end, $to));
@@ -342,21 +344,24 @@ class QRegex::NFA {
         elsif $subtype ne 'zerowidth' &&
                 ($node.name eq 'alpha' ||
                     $subtype eq 'method' &&
-                    ($node[0][0] ~~ QAST::SVal ?? $node[0][0].value !! $node[0][0]) eq 'alpha') {
+                    (nqp::istype($node[0][0], QAST::SVal)
+                      ?? $node[0][0].value !! $node[0][0]) eq 'alpha') {
             $to := self.addedge($from, $to, $EDGE_CHARCLASS + $node.negate,
                 nqp::const::CCLASS_ALPHABETIC);
             dentout(self.addedge($from, $to, $EDGE_CODEPOINT + $node.negate, 95));
         }
-        elsif !$node.negate && 
+        elsif !$node.negate &&
                 ($node.name eq 'ws' ||
                     $subtype eq 'method' &&
-                    ($node[0][0] ~~ QAST::SVal ?? $node[0][0].value !! $node[0][0]) eq 'ws') {
+                    (nqp::istype($node[0][0], QAST::SVal)
+                      ?? $node[0][0].value !! $node[0][0]) eq 'ws') {
             dentout(self.fate($node, $from, $to));
         }
         elsif !$node.negate && $subtype ne 'zerowidth' &&
                 ($node.name eq 'ident' ||
                     $subtype eq 'method' &&
-                    ($node[0][0] ~~ QAST::SVal ?? $node[0][0].value !! $node[0][0]) eq 'ident') {
+                    (nqp::istype($node[0][0], QAST::SVal)
+                      ?? $node[0][0].value !! $node[0][0]) eq 'ident') {
             my int $beginstate := self.addstate();
             self.addedge($from, $beginstate, $EDGE_EPSILON, 0);
 
@@ -382,8 +387,10 @@ class QRegex::NFA {
             }
         }
         elsif $*vars_as_generic && $subtype eq 'method' &&
-                $node[0][0] ~~ QAST::SVal && $node[0][0].value eq '!INTERPOLATE' &&
-                $node[0][1] ~~ QAST::Var && $node[0][1].scope eq 'lexical' {
+                nqp::istype($node[0][0], QAST::SVal)
+                && $node[0][0].value eq '!INTERPOLATE'
+                && nqp::istype($node[0][1], QAST::Var)
+                && $node[0][1].scope eq 'lexical' {
             $!generic := 1;
             dentout(self.addedge($from, $to, $EDGE_GENERIC_VAR, $node[0][1].name));
         }
@@ -393,27 +400,26 @@ class QRegex::NFA {
                 !! self.addedge($from, $to, $EDGE_SUBRULE, $node[0][0]))
         }
     }
-    
+
     method quant($node, $from, $to) {
         my $indent := dentin();
         my int $min := 0 + ($node.min // 0);
         my int $max := 0 + ($node.max // -1); # -1 means Inf
         note("$indent quant $from -> $to $min $max") if $nfadeb;
-        
+
         if $max > 1 || $min > 1 {
             my int $count := 0;
-            my int $st;
+            my int $st := -1;
             my int $has_sep := nqp::defined($node[1]);
             while $count < $max || $count < $min {
                 if $count >= $min {
-                    my int $f := self.addedge($from, $to, $EDGE_EPSILON, 0);
-                    note("$indent ...quant f = $f") if $nfadeb;
-                    $st := $st || $f;
+                    $st := self.addedge($from, $to, $EDGE_EPSILON, 0);
+                    note("$indent ...quant sf = $st") if $nfadeb;
                 }
                 if $has_sep && $count > 0 {
                     $from := self.regex_nfa($node[1], $from, -1);
                 }
-                $from := self.regex_nfa($node[0], $from, -1);
+                $from := self.regex_nfa($node[0], $from, $st);
                 $count := $count + 1;
             }
             $st := self.addedge($from, $to, $EDGE_EPSILON, 0);
@@ -482,7 +488,7 @@ class QRegex::NFA {
             dentout(self.fate($node, $from, $to))
         }
     }
-    
+
     method qastnode($node, $from, $to) {
         my $indent := dentin();
         note("$indent qastnode $from -> $to") if $nfadeb;
@@ -490,19 +496,19 @@ class QRegex::NFA {
             self.addedge($from, $to, $EDGE_EPSILON, 0) !!
             self.fate($node, $from, $to));
     }
-    
+
     method subcapture($node, $from, $to) {
         my $indent := dentin();
         note("$indent subcapture $from -> $to") if $nfadeb;
         dentout(self.regex_nfa($node[0], $from, $to));
     }
-    
+
     method save(:$non_empty) {
         my $indent := dentin();
         note("$indent save") if $nfadeb;
         unless $!edges {
             return 0 unless $non_empty;
-            self.addedge(1, 0, $EDGE_FATE, 0, :newedge(1)) 
+            self.addedge(1, 0, $EDGE_FATE, 0, :newedge(1))
         }
         dentout($!states)
     }
@@ -513,7 +519,6 @@ class QRegex::NFA {
         my @substates;
         my $meth;
         my $n;
-        my $err := nqp::getstderr();
         if nqp::istype($name,QAST::Var) {
             $meth := $name.ann('coderef');
             $n := $meth.name;
@@ -526,14 +531,16 @@ class QRegex::NFA {
                 %seen{$n} := 1;
             }
             else {
-                nqp::printfh($err, "$indent ...skipping $n to avoid left recursion\n") if $nfadeb;
+                note("$indent ...skipping $n to avoid left recursion") if $nfadeb;
             }
         }
         elsif nqp::can($cursor, $name) {
-            nqp::printfh($err,"$indent mergesubrule $name start $start to $to fate $fate\n") if $nfadeb;
+            note("$indent mergesubrule $name start $start to $to fate $fate") if $nfadeb;
             $n := $name;
             if !nqp::existskey(%seen, $name) {
-                $meth := $cursor.HOW.find_method($cursor, $name, :no_trace(1));
+                $meth := nqp::can($cursor.HOW, 'traced') && $cursor.HOW.traced($cursor)
+                    ?? $cursor.HOW.find_method($cursor, $name, :no_trace(1))
+                    !! nqp::findmethod($cursor, $name);
                 if nqp::can($meth, 'NFA') {
                     @substates := $meth.NFA();
                     @substates := [] if nqp::isnull(@substates);
@@ -555,7 +562,7 @@ class QRegex::NFA {
                 %seen{$name} := 1;
             }
             else {
-                nqp::printfh($err, "$indent ...skipping $name to avoid left recursion\n") if $nfadeb;
+                note("$indent ...skipping $name to avoid left recursion") if $nfadeb;
             }
         }
         if $nfadeb {
@@ -565,51 +572,51 @@ class QRegex::NFA {
             while $s < $send {
                 my $edges := @substates[$s];
                 if +$edges == 0 {
-                    nqp::printfh($err, "$indent ...Bad at $s:\n");
+                    note("$indent ...Bad at $s:");
                     $bad := $bad + 1;
                 }
                 $s := $s + 1;
             }
             if $bad > 0 {
-                nqp::printfh($err, "$indent ...attempt to merge $bad empty states from $n\n");
-                nqp::printfh($err, "Fates:\n");
+                note("$indent ...attempt to merge $bad empty states from $n");
+                note("Fates:");
                 for @substates[0] -> $f {
-                    nqp::printfh($err, "\t$f\n");
+                    note("\t$f");
                 }
-                nqp::printfh($err, "\n");
+                note("");
                 $s := 1;
                 while $s < $send {
-                    nqp::printfh($err, "$s:");
+                    note("$s:");
                     for @substates[$s] -> $a, $v, $t {
                         my $act := nqp::bitand_i($a,0xff);
                         my $action := $ACTIONS[$act];
                         if $act == $EDGE_CODEPOINT || $act == $EDGE_CODEPOINT_LL {
-                            nqp::printfh($err, "\t$t $action " ~ nqp::chr($v) ~ "\n");
+                            note("\t$t $action " ~ nqp::chr($v));
                         }
                         elsif $act == $EDGE_FATE {
-                            nqp::printfh($err, "\t$t $action " ~ $v ~ "\n");
+                            note("\t$t $action " ~ $v);
                         }
                         elsif $act == $EDGE_CHARCLASS || $act == $EDGE_CHARCLASS_NEG {
-                            nqp::printfh($err, "\t$t $action " ~ $v ~ "\n");
+                            note("\t$t $action " ~ $v ~ "\n");
                         }
                         elsif $act == $EDGE_CHARLIST || $act == $EDGE_CHARLIST_NEG {
-                            nqp::printfh($err, "\t$t $action " ~ $v ~ "\n");
+                            note("\t$t $action " ~ $v ~ "\n");
                         }
                         elsif $act == $EDGE_SUBRULE && nqp::istype($v,BOOTStr) {
-                            nqp::printfh($err, "\t$t $action " ~ $v ~ "\n");
+                            note("\t$t $action " ~ $v ~ "\n");
                         }
                         else {
-                            nqp::printfh($err, "\t$t $action\n");
+                            note("\t$t $action\n");
                         }
                     }
-                    nqp::printfh($err, "\n");
+                    note("\n");
                     $s := $s + 1;
                 }
             }
         }
         dentout(self.mergesubstates($start, $to, $fate, @substates, $cursor, %seen));
     }
-    
+
     method mergesubstates($start, $to, $fate, @substates, $cursor, %seen?) {
         my $indent := dentin();
         note("$indent mergesubstates start $start to $to fate $fate") if $nfadeb;
@@ -622,7 +629,7 @@ class QRegex::NFA {
             # values for use in this particular NFA.
             @substates := nqp::clone(@substates);
             nqp::shift(@substates);
-            nqp::push($!states, nqp::clone(nqp::shift(@substates))) 
+            nqp::push($!states, nqp::clone(nqp::shift(@substates)))
               while @substates;
             # Go through all of the newly added states, and
             #    apply $substart offset to target states
@@ -671,7 +678,7 @@ class QRegex::NFA {
             dentout(self.addedge($start, 0, $EDGE_FATE, $fate));
         }
     }
-    
+
     # NFA type.
     my knowhow NFAType is repr('NFA') { }
 
@@ -682,18 +689,10 @@ class QRegex::NFA {
             $!nfa_object := nqp::nfafromstatelist($!states, NFAType);
             nqp::scwbenable();
         }
-#        my $t0 := nqp::time_n();
-#        $etctime := $etctime + $t0 - $lastnfatime;
         my $result := nqp::nfarunproto($!nfa_object, $target, $offset);
-#        my $t1 := nqp::time_n();
-#        $nfatime := $nfatime + $t1 - $t0;
-#        if nqp::chars($target) == $offset {
-#            note( "EOS in proto at $offset " ~ $nfatime ~ " / " ~ $etctime ~ " " ~ ($nfatime / ($etctime + $nfatime)));
-#        }
-#        $lastnfatime := $t1;
         $result;
     }
-    
+
     method run_alt(str $target, int $offset, $bstack, $cstack, @labels) {
         unless nqp::isconcrete($!nfa_object) {
             self.mydump() if $nfadeb;
@@ -701,22 +700,14 @@ class QRegex::NFA {
             $!nfa_object := nqp::nfafromstatelist($!states, NFAType);
             nqp::scwbenable();
         }
-#        my $t0 := nqp::time_n();
-#        $etctime := $etctime + $t0 - $lastnfatime;
         my $result := nqp::nfarunalt($!nfa_object, $target, $offset, $bstack, $cstack, @labels);
-#        my $t1 := nqp::time_n();
-#        $nfatime := $nfatime + $t1 - $t0;
-#        if nqp::chars($target) == $offset {
-#            note( "EOS in alt at $offset " ~ $nfatime ~ " / " ~ $etctime ~ " " ~ ($nfatime / ($etctime + $nfatime)));
-#        }
-#        $lastnfatime := $t1;
         $result;
     }
-    
+
     method generic() {
         $!generic
     }
-    
+
     method instantiate_generic($env) {
         # Create a copy.
         my $copy := nqp::create(self);
@@ -726,11 +717,11 @@ class QRegex::NFA {
         }
         nqp::bindattr($copy, QRegex::NFA, '$!states', @copied_states);
         nqp::bindattr($copy, QRegex::NFA, '$!edges', $!edges);
-     
+
         # Work out what we need to do to instantiate it by replacing any
         # generic edges.
         my int $from := 0;
-        for @copied_states -> @values {        
+        for @copied_states -> @values {
             my @output_values;
             my int $i := 0;
             my int $n := nqp::elems(@values);
@@ -757,7 +748,7 @@ class QRegex::NFA {
             }
             $from++;
         }
-        
+
         $copy
     }
 
@@ -775,8 +766,8 @@ class QRegex::NFA {
 
     method optimize() {
         my int $send := nqp::elems($!states);
-        my $err := nqp::getstderr();
-        nqp::printfh($err, "------------------------------------------\n   $send states\n") if $nfadeb;
+        note("------------------------------------------\n   $send states") if $nfadeb;
+        $ind := 0 if $nfadeb;
         my $remap := nqp::list_i();
         nqp::setelems($remap, $send + 1);
         my $refs := nqp::list_i();
@@ -813,14 +804,14 @@ class QRegex::NFA {
 #            while $s < $send {
 #               if nqp::atpos_i($remap, $s) {
 #                    my $newpos := nqp::atpos_i($remap,$s);
-#                    nqp::printfh($err, "\t$s -> $newpos\n");
+#                    note("\t$s -> $newpos");
 #
 #                }
 #                $s := $s + 1;
 #            }
 
             # unlink all the empty epsilons, count resulting refs to each state
-            nqp::printfh($err, "now $send states before unlinking empties\n") if $nfadeb;
+            note("now $send states before unlinking empties") if $nfadeb;
             $s := 1;
             while $s < $send {
                 my $edges := $!states[$s];
@@ -836,7 +827,7 @@ class QRegex::NFA {
                         if $to && nqp::atpos_i($remap,$to) {
                             while nqp::atpos_i($remap,$to) {
                                 $to := nqp::atpos_i($remap,$to);
-                                nqp::printfh($err, "  chasing $was to $to\n") if $nfadeb;
+                                note("  chasing $was to $to") if $nfadeb;
                             }
                             $edges[$e] := $to;
                         }
@@ -849,7 +840,7 @@ class QRegex::NFA {
 
             self.mydump() if $nfadeb;
             # replace epsilons to single edge, single ref states
-            nqp::printfh($err, "now $send states before stealing singleton edges\n") if $nfadeb;
+            note("now $send states before stealing singleton edges") if $nfadeb;
             $s := 1;
             while $s < $send {
                 my $edges := $!states[$s];
@@ -863,7 +854,7 @@ class QRegex::NFA {
                         if $to {
                             my $sedges := $!states[$to];
                             if +$sedges == 3 {
-                                nqp::printfh($err, "  $s stealing $to\n") if $nfadeb;
+                                note("  $s stealing $to") if $nfadeb;
                                 $edges[$e]     := $sedges[0];
                                 $edges[$e + 1] := $sedges[1];
                                 $edges[$e + 2] := $sedges[2];
@@ -882,7 +873,7 @@ class QRegex::NFA {
             self.mydump() if $nfadeb;
 
             # build resequence map for states that still have any edges
-            nqp::printfh($err, "now $send states before calculating remap\n") if $nfadeb;
+            note("now $send states before calculating remap") if $nfadeb;
             my int $newend := 1;
             $s := 1;
             while $s < $send {
@@ -896,20 +887,20 @@ class QRegex::NFA {
                 $s := $s + 1;
             }
 
-#            nqp::printfh($err, "now $send states\n");
+#            note("now $send states");
 #            self.mydump();
 #            $s := 1;
 #            while $s < $send {
 #                if nqp::atpos_i($remap, $s) {
 #                    my $newpos := nqp::atpos_i($remap,$s);
-#                    nqp::printfh($err, "\t$s -> $newpos\n");
+#                    note("\t$s -> $newpos");
 #                }
 #                $s := $s + 1;
 #            }
 
             # now move the states and remap the edges (if, in fact, any states were removed)
             self.mydump() if $nfadeb;
-            nqp::printfh($err, "now $send states mapping to $newend states\n") if $nfadeb;
+            note("now $send states mapping to $newend states") if $nfadeb;
             if $newend < $send {
                 my $newstates := nqp::list();
                 nqp::setelems($newstates, $newend);
@@ -918,7 +909,7 @@ class QRegex::NFA {
                 while $s < $send {
                     if +$!states[$s] {
                         my $newpos := nqp::atpos_i($remap,$s);
-                        nqp::printfh($err, "OOPS outrageous $newpos\n") if $newpos > $s;
+                        note("OOPS outrageous $newpos") if $newpos > $s;
                         if $newpos {
                             nqp::bindpos($newstates, $newpos, $!states[$s]);
                             my $edges := $newstates[$newpos];
@@ -929,7 +920,7 @@ class QRegex::NFA {
                                 my int $act := nqp::bitand_i($edges[$e-2], 0xff);
                                 if $to {
                                     my $to2 := nqp::atpos_i($remap,$to);
-                                    nqp::printfh($err, "In $s -> $newpos remapping " ~ $ACTIONS[$act] ~ " $to -> $to2\n") if $nfadeb;
+                                    note("In $s -> $newpos remapping " ~ $ACTIONS[$act] ~ " $to -> $to2") if $nfadeb;
                                     $edges[$e] := $to2;
                                 }
                                 $e := $e + 3;
@@ -942,7 +933,7 @@ class QRegex::NFA {
                                     my $f := 0;
                                     while $f < $e {
                                         if $act == $edges[$f] && $edges[$e+2] == $edges[$f+2] && $edges[$e+1] == $edges[$f+1] {
-                                            nqp::printfh($err, "Deleting dup edge at $s $e/$f\n") if $nfadeb;
+                                            note("Deleting dup edge at $s $e/$f") if $nfadeb;
                                             $f := $e;
                                             nqp::splice($edges,[],$e,3);
                                             $e := $e - 3;
@@ -955,11 +946,11 @@ class QRegex::NFA {
                             }
                         }
                         else {
-                            nqp::printfh($err, "False mapping for $s\n") if $nfadeb;
+                            note("False mapping for $s") if $nfadeb;
                         }
                     }
                     else {
-                        nqp::printfh($err, "Skipping $s\n") if $nfadeb;
+                        note("Skipping $s") if $nfadeb;
                     }
                     $s := $s + 1;
                 }
@@ -972,40 +963,39 @@ class QRegex::NFA {
     method mydump() {
         my int $send := nqp::elems($!states);
         if $send > 1 {
-            my $err := nqp::getstderr();
-            nqp::printfh($err, "==========================================\n   $send states\n");
-            nqp::printfh($err, "Fates:\n");
+            note("==========================================\n   $send states");
+            note("Fates:");
             for $!states[0] -> $f {
                 $f := "" if nqp::isnull($f);
-                nqp::printfh($err, "\t$f\n");
+                note("\t$f");
             }
-            nqp::printfh($err, "\n");
+            note("");
             my int $s := 1;
             while $s < $send {
-                nqp::printfh($err, "$s:");
+                note("$s:");
                 for $!states[$s] -> $a, $v, $t {
                     my $act := nqp::bitand_i($a,0xff);
                     my $action := $ACTIONS[$act];
                     if $act == $EDGE_CODEPOINT || $act == $EDGE_CODEPOINT_LL {
-                        nqp::printfh($err, "\t$t $action " ~ nqp::chr($v) ~ "\n");
+                        note("\t$t $action " ~ nqp::chr($v));
                     }
                     elsif $act == $EDGE_FATE {
-                        nqp::printfh($err, "\t$t $action " ~ $v ~ "\n");
+                        note("\t$t $action " ~ $v);
                     }
                     elsif $act == $EDGE_CHARCLASS || $act == $EDGE_CHARCLASS_NEG {
-                        nqp::printfh($err, "\t$t $action " ~ $v ~ "\n");
+                        note("\t$t $action " ~ $v);
                     }
                     elsif $act == $EDGE_CHARLIST || $act == $EDGE_CHARLIST_NEG {
-                        nqp::printfh($err, "\t$t $action " ~ $v ~ "\n");
+                        note("\t$t $action " ~ $v);
                     }
                     elsif $act == $EDGE_SUBRULE && nqp::istype($v,BOOTStr) {
-                        nqp::printfh($err, "\t$t $action " ~ $v ~ "\n");
+                        note("\t$t $action " ~ $v);
                     }
                     else {
-                        nqp::printfh($err, "\t$t $action\n");
+                        note("\t$t $action");
                     }
                 }
-                nqp::printfh($err, "\n");
+                note("");
                 $s := $s + 1;
             }
         }

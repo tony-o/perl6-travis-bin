@@ -1,12 +1,12 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps Uninstantiable_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st  = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st  = MVM_gc_allocate_stable(tc, &Uninstantiable_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -20,7 +20,7 @@ static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
 /* Creates a new instance based on the type object. */
 static MVMObject * allocate(MVMThreadContext *tc, MVMSTable *st) {
     MVM_exception_throw_adhoc(tc,
-        "You cannot create an instance of this type");
+        "You cannot create an instance of this type (%s)", MVM_6model_get_stable_debug_name(tc, st));
 }
 
 /* Copies the body of one object to another. */
@@ -55,10 +55,10 @@ static void deserialize_stable_size(MVMThreadContext *tc, MVMSTable *st, MVMSeri
 
 /* Initializes the representation. */
 const MVMREPROps * MVMUninstantiable_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &Uninstantiable_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps Uninstantiable_this_repr = {
     type_object_for,
     allocate,
     NULL, /* initialize */
@@ -84,5 +84,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "Uninstantiable", /* name */
     MVM_REPR_ID_Uninstantiable,
-    0, /* refs_frames */
+    NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

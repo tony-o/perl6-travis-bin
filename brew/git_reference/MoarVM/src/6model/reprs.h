@@ -1,6 +1,6 @@
 /* Pull in all of the core REPRs. */
 #include "6model/reprs/MVMString.h"
-#include "6model/reprs/MVMArray.h"
+#include "6model/reprs/VMArray.h"
 #include "6model/reprs/MVMHash.h"
 #include "6model/reprs/MVMCFunction.h"
 #include "6model/reprs/KnowHOWREPR.h"
@@ -17,7 +17,6 @@
 #include "6model/reprs/MVMIter.h"
 #include "6model/reprs/MVMContext.h"
 #include "6model/reprs/SCRef.h"
-#include "6model/reprs/Lexotic.h"
 #include "6model/reprs/MVMCallCapture.h"
 #include "6model/reprs/P6bigint.h"
 #include "6model/reprs/NFA.h"
@@ -42,6 +41,9 @@
 #include "6model/reprs/CPPStruct.h"
 #include "6model/reprs/NativeRef.h"
 #include "6model/reprs/MultiDimArray.h"
+#include "6model/reprs/Decoder.h"
+#include "6model/reprs/MVMSpeshLog.h"
+#include "6model/reprs/MVMStaticFrameSpesh.h"
 
 /* REPR related functions. */
 void MVM_repr_initialize_registry(MVMThreadContext *tc);
@@ -52,7 +54,7 @@ const MVMREPROps * MVM_repr_get_by_name(MVMThreadContext *tc, MVMString *name);
 /* Core representation IDs (determined by the order we add them
  * to the registery in reprs.c). */
 #define MVM_REPR_ID_MVMString               0
-#define MVM_REPR_ID_MVMArray                1
+#define MVM_REPR_ID_VMArray                 1
 #define MVM_REPR_ID_MVMHash                 2
 #define MVM_REPR_ID_MVMCFunction            3
 #define MVM_REPR_ID_KnowHOWREPR             4
@@ -69,7 +71,7 @@ const MVMREPROps * MVM_repr_get_by_name(MVMThreadContext *tc, MVMString *name);
 #define MVM_REPR_ID_MVMIter                 15
 #define MVM_REPR_ID_MVMContext              16
 #define MVM_REPR_ID_SCRef                   17
-#define MVM_REPR_ID_Lexotic                 18
+#define MVM_REPR_ID_MVMSpeshLog             18
 #define MVM_REPR_ID_MVMCallCapture          19
 #define MVM_REPR_ID_P6bigint                20
 #define MVM_REPR_ID_NFA                     21
@@ -94,8 +96,10 @@ const MVMREPROps * MVM_repr_get_by_name(MVMThreadContext *tc, MVMString *name);
 #define MVM_REPR_ID_MVMCUnion               40
 #define MVM_REPR_ID_MultiDimArray           41
 #define MVM_REPR_ID_MVMCPPStruct            42
+#define MVM_REPR_ID_Decoder                 43
+#define MVM_REPR_ID_MVMStaticFrameSpesh     44
 
-#define MVM_REPR_CORE_COUNT                 43
+#define MVM_REPR_CORE_COUNT                 45
 #define MVM_REPR_MAX_COUNT                  64
 
 /* Default attribute functions for a REPR that lacks them. */
@@ -104,7 +108,8 @@ const MVMREPROps * MVM_repr_get_by_name(MVMThreadContext *tc, MVMString *name);
     MVM_REPR_DEFAULT_GET_ATTRIBUTE, \
     MVM_REPR_DEFAULT_BIND_ATTRIBUTE, \
     MVM_REPR_DEFAULT_HINT_FOR, \
-    MVM_REPR_DEFAULT_IS_ATTRIBUTE_INITIALIZED \
+    MVM_REPR_DEFAULT_IS_ATTRIBUTE_INITIALIZED, \
+    MVM_REPR_DEFAULT_ATTRIBUTE_AS_ATOMIC \
 }
 
 /* Default boxing functions for a REPR that lacks them. */
@@ -136,7 +141,9 @@ const MVMREPROps * MVM_repr_get_by_name(MVMThreadContext *tc, MVMString *name);
     MVM_REPR_DEFAULT_BIND_POS_MULTIDIM, \
     MVM_REPR_DEFAULT_DIMENSIONS, \
     MVM_REPR_DEFAULT_SET_DIMENSIONS, \
-    MVM_REPR_DEFAULT_GET_ELEM_STORAGE_SPEC \
+    MVM_REPR_DEFAULT_GET_ELEM_STORAGE_SPEC, \
+    MVM_REPR_DEFAULT_POS_AS_ATOMIC, \
+    MVM_REPR_DEFAULT_POS_AS_ATOMIC_MULTIDIM \
 }
 
 /* Default associative functions for a REPR that lacks them. */
@@ -166,6 +173,7 @@ void MVM_REPR_DEFAULT_GET_ATTRIBUTE(MVMThreadContext *tc, MVMSTable *st, MVMObje
 void MVM_REPR_DEFAULT_BIND_ATTRIBUTE(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMObject *class_handle, MVMString *name, MVMint64 hint, MVMRegister value, MVMuint16 kind);
 MVMint64 MVM_REPR_DEFAULT_IS_ATTRIBUTE_INITIALIZED(MVMThreadContext *tc, MVMSTable *st, void *data, MVMObject *class_handle, MVMString *name, MVMint64 hint);
 MVMint64 MVM_REPR_DEFAULT_HINT_FOR(MVMThreadContext *tc, MVMSTable *st, MVMObject *class_handle, MVMString *name);
+AO_t * MVM_REPR_DEFAULT_ATTRIBUTE_AS_ATOMIC(MVMThreadContext *tc, MVMSTable *st, void *data, MVMObject *class_handle, MVMString *name);
 
 /* Default boxing REPR function for a REPR that lacks it. */
 void MVM_REPR_DEFAULT_SET_INT(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMint64 value);
@@ -191,6 +199,10 @@ void MVM_REPR_DEFAULT_BIND_POS_MULTIDIM(MVMThreadContext *tc, MVMSTable *st, MVM
 void MVM_REPR_DEFAULT_DIMENSIONS(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMint64 *num_dimensions, MVMint64 **dimensions);
 void MVM_REPR_DEFAULT_SET_DIMENSIONS(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMint64 num_dimensions, MVMint64 *dimensions);
 MVMStorageSpec MVM_REPR_DEFAULT_GET_ELEM_STORAGE_SPEC(MVMThreadContext *tc, MVMSTable *st);
+AO_t * MVM_REPR_DEFAULT_POS_AS_ATOMIC(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
+    void *data, MVMint64 index);
+AO_t * MVM_REPR_DEFAULT_POS_AS_ATOMIC_MULTIDIM(MVMThreadContext *tc, MVMSTable *st,
+    MVMObject *root, void *data, MVMint64 num_indices, MVMint64 *indices);
 
 /* Default associative indexing REPR function for a REPR that lacks it. */
 void MVM_REPR_DEFAULT_SPLICE(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void *data, MVMObject *target_array, MVMint64 offset, MVMuint64 elems);

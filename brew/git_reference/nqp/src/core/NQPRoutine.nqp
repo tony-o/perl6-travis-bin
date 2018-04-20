@@ -51,18 +51,18 @@ my knowhow NQPRoutine {
     
     # Sorts the dispatchees. Puts nulls between groups that are of equal weight.
     # The most specific group comes first.
-    my $SLURPY_ARITY      := nqp::bitshiftl_i(1, 30);
-    my $EDGE_REMOVAL_TODO := -1;
-    my $EDGE_REMOVED      := -2;
-    my $DEFINED_ONLY      := 1;
-    my $UNDEFINED_ONLY    := 2;
+    my int $SLURPY_ARITY      := nqp::bitshiftl_i(1, 30);
+    my int $EDGE_REMOVAL_TODO := -1;
+    my int $EDGE_REMOVED      := -2;
+    my int $DEFINED_ONLY      := 1;
+    my int $UNDEFINED_ONLY    := 2;
     method sort_dispatchees() {        
         # Takes two candidates and determines if the first one is narrower than the
         # second. Returns a true value if they are.
         sub is_narrower(%a, %b) {
             # Work out how many parameters to compare, factoring in slurpiness
             # and optionals.
-            my $types_to_check;
+            my int $types_to_check;
             if %a<num_types> == %b<num_types> {
                 $types_to_check := %a<num_types>;
             }
@@ -117,7 +117,7 @@ my knowhow NQPRoutine {
             my $multi_sig := $candidate.signature;
             my @types_list := $multi_sig.types;
             my @definedness_list := $multi_sig.definednesses;
-            my $sig_elems := nqp::elems(@types_list);
+            my int $sig_elems := nqp::elems(@types_list);
 
             # Type information.
             my %info := nqp::hash(
@@ -174,9 +174,9 @@ my knowhow NQPRoutine {
 
         # Perform the topological sort.
         my @result;
-        my $candidates_to_sort := $num_candidates;
+        my int $candidates_to_sort := $num_candidates;
         while $candidates_to_sort > 0 {
-            my $rem_results := nqp::elems(@result);
+            my int $rem_results := nqp::elems(@result);
 
             # Find any nodes that have no incoming edges and add them to
             # results.
@@ -199,7 +199,7 @@ my knowhow NQPRoutine {
             $i := 0;
             while $i < $num_candidates {
                 if @graph[$i]<edges_in> == $EDGE_REMOVAL_TODO {
-                    my $j := 0;
+                    my int $j := 0;
                     while $j < @graph[$i]<edges_out> {
                         @graph[$i]<edges>[$j]<edges_in>--;
                         $j++;
@@ -221,7 +221,7 @@ my knowhow NQPRoutine {
     
     method dispatch($capture) {
         # Count arguments.
-        my $num_args := nqp::captureposelems($capture);
+        my int $num_args := nqp::captureposelems($capture);
 
         # Get list and number of candidates, triggering a sort if there are none.
         my @candidates := $!dispatch_order;
@@ -230,12 +230,12 @@ my knowhow NQPRoutine {
             @candidates := $!dispatch_order := self.sort_dispatchees();
             nqp::scwbenable();
         }
-        my $num_candidates := nqp::elems(@candidates);
+        my int $num_candidates := nqp::elems(@candidates);
 
         # Initialize dispatcher state.
         my @possibles;
 
-        # Go thorugh candidates.
+        # Go through candidates.
         my int $type_mismatch;
         my int $type_check_count;
         my int $i;
@@ -260,13 +260,13 @@ my knowhow NQPRoutine {
                 }
             }
 
-            # Check if it's admissable by arity.
+            # Check if it's admissible by arity.
             if $num_args < $cur_candidate<min_arity> || $num_args > $cur_candidate<max_arity> {
                 $cur_idx++;
                 next;
             }
 
-            # Check if it's admissable by type.
+            # Check if it's admissible by type.
             $type_check_count := $cur_candidate<num_types> > $num_args
                              ?? $num_args
                              !! $cur_candidate<num_types>;
@@ -274,12 +274,7 @@ my knowhow NQPRoutine {
             $i := 0;
             while $i < $type_check_count {
                 my $param := nqp::captureposarg($capture, $i);
-#?if parrot
-                my $param_type := pir::what_or_null__PP($param);
-#?endif
-#?if !parrot
                 my $param_type := $param.WHAT;
-#?endif
                 my $type_obj := $cur_candidate<types>[$i];
                 my $definedness := $cur_candidate<definednesses>[$i];
                 unless nqp::eqaddr($param_type, $type_obj) || nqp::isnull($type_obj) || is_narrower_type($param_type, $type_obj) {
@@ -288,7 +283,7 @@ my knowhow NQPRoutine {
                 }
                 if $definedness {
                     # Have a constraint on the definedness.
-                    my $defined := nqp::isnull($param_type) ?? nqp::defined($param) !! nqp::isconcrete($param);
+                    my int $defined := nqp::isnull($param_type) ?? nqp::defined($param) !! nqp::isconcrete($param);
                     if (!$defined && $definedness == $DEFINED_ONLY) || ($defined && $definedness == $UNDEFINED_ONLY) {
                         $type_mismatch := 1;
                         last;
@@ -302,7 +297,7 @@ my knowhow NQPRoutine {
                 next;
             }
 
-            # If we get here, it's an admissable candidate; add to list. */
+            # If we get here, it's an admissible candidate; add to list. */
             nqp::push(@possibles, $cur_candidate);
             $cur_idx++;
         }
@@ -351,6 +346,10 @@ my knowhow NQPRoutine {
     }
     
     method signature() { $!signature }
+
+    method gist() {
+        self.name()
+    }
 }
 nqp::setinvokespec(NQPRoutine, NQPRoutine, '$!do', nqp::null);
 #?if moar

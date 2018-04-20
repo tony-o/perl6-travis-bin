@@ -75,9 +75,18 @@ void MVM_gc_root_add_instance_roots_to_worklist(MVMThreadContext *tc, MVMGCWorkl
     add_collectable(tc, worklist, snapshot, tc->instance->compiler_registry, "Compiler registry");
     add_collectable(tc, worklist, snapshot, tc->instance->hll_syms, "HLL symbols");
     add_collectable(tc, worklist, snapshot, tc->instance->clargs, "Command line args");
-    add_collectable(tc, worklist, snapshot, tc->instance->event_loop_todo_queue, "Event loop todo queue");
-    add_collectable(tc, worklist, snapshot, tc->instance->event_loop_cancel_queue, "Event loop cancel queue");
+    add_collectable(tc, worklist, snapshot, tc->instance->event_loop_todo_queue,
+        "Event loop todo queue");
+    add_collectable(tc, worklist, snapshot, tc->instance->event_loop_permit_queue,
+        "Event loop permit queue");
+    add_collectable(tc, worklist, snapshot, tc->instance->event_loop_cancel_queue,
+        "Event loop cancel queue");
     add_collectable(tc, worklist, snapshot, tc->instance->event_loop_active, "Event loop active");
+
+    add_collectable(tc, worklist, snapshot, tc->instance->spesh_queue,
+        "Specialization log queue");
+    if (worklist)
+        MVM_spesh_plan_gc_mark(tc, tc->instance->spesh_plan, worklist);
 
     int_to_str_cache = tc->instance->int_to_str_cache;
     for (i = 0; i < MVM_INT_TO_STR_CACHE_SIZE; i++)
@@ -88,18 +97,33 @@ void MVM_gc_root_add_instance_roots_to_worklist(MVMThreadContext *tc, MVMGCWorkl
      * keys of it anyway... */
     HASH_ITER(hash_handle, tc->instance->sc_weakhash, current, tmp, bucket_tmp) {
         /* mark the string handle pointer iff it hasn't yet been resolved */
+        add_collectable(tc, worklist, snapshot, current->hash_handle.key,
+            "SC weakhash hash key");
         if (!current->sc)
             add_collectable(tc, worklist, snapshot, current->handle,
                 "SC weakhash unresolved handle");
+        else if (!current->claimed)
+            add_collectable(tc, worklist, snapshot, current->sc,
+                "SC weakhash unclaimed SC");
     }
 
     HASH_ITER(hash_handle, tc->instance->loaded_compunits, current_lcun, tmp_lcun, bucket_tmp) {
+        add_collectable(tc, worklist, snapshot, current_lcun->hash_handle.key,
+            "Loaded compilation unit hash key");
         add_collectable(tc, worklist, snapshot, current_lcun->filename,
             "Loaded compilation unit filename");
     }
 
     add_collectable(tc, worklist, snapshot, tc->instance->cached_backend_config,
         "Cached backend configuration hash");
+
+    add_collectable(tc, worklist, snapshot, tc->instance->env_hash,
+        "Cached environment variable hash");
+
+    add_collectable(tc, worklist, snapshot, tc->instance->sig_hash,
+        "Cached signal mapping hash");
+
+    MVM_debugserver_mark_handles(tc, worklist, snapshot);
 }
 
 /* Adds anything that is a root thanks to being referenced by a thread,
@@ -108,21 +132,26 @@ void MVM_gc_root_add_tc_roots_to_worklist(MVMThreadContext *tc, MVMGCWorklist *w
     MVMNativeCallbackCacheHead *current_cbceh, *tmp_cbceh;
     unsigned bucket_tmp;
 
-    /* Any active exception handlers. */
+    /* Any active exception handlers and payload. */
     MVMActiveHandler *cur_ah = tc->active_handlers;
     while (cur_ah != NULL) {
-        add_collectable(tc, worklist, snapshot, cur_ah->ex_obj, "Active exception object");
+        add_collectable(tc, worklist, snapshot, cur_ah->ex_obj, "Active handler exception object");
+        if (!MVM_FRAME_IS_ON_CALLSTACK(tc, cur_ah->frame))
+            add_collectable(tc, worklist, snapshot, cur_ah->frame, "Active handler frame");
         cur_ah = cur_ah->next_handler;
     }
+    add_collectable(tc, worklist, snapshot, tc->last_payload,
+        "Last exception payload");
 
     /* The thread object. */
     add_collectable(tc, worklist, snapshot, tc->thread_obj, "Thread object");
 
+    /* The thread's entry frame. */
+    if (tc->thread_entry_frame && !MVM_FRAME_IS_ON_CALLSTACK(tc, tc->thread_entry_frame))
+        add_collectable(tc, worklist, snapshot, tc->thread_entry_frame, "Thread entry frame");
+
     /* Any exception handler result. */
     add_collectable(tc, worklist, snapshot, tc->last_handler_result, "Last handler result");
-
-    /* The usecapture object. */
-    add_collectable(tc, worklist, snapshot, tc->cur_usecapture, "Cached usecapture");
 
     /* List of SCs currently being compiled. */
     add_collectable(tc, worklist, snapshot, tc->compiling_scs, "Compiling serialization contexts");
@@ -130,22 +159,16 @@ void MVM_gc_root_add_tc_roots_to_worklist(MVMThreadContext *tc, MVMGCWorklist *w
     /* compunit variable pointer (and be null if thread finished) */
     if (tc->interp_cu)
         add_collectable(tc, worklist, snapshot, *(tc->interp_cu), "Current interpreter compilation unit");
-
-    /* Lexotics cache. */
-    if (tc->lexotic_cache_size) {
-        MVMuint32 i;
-        for (i = 0; i < tc->lexotic_cache_size; i++)
-            if (tc->lexotic_cache[i])
-                add_collectable(tc, worklist, snapshot, tc->lexotic_cache[i], "Lexotic cache entry");
-    }
-
     /* Current dispatcher. */
     add_collectable(tc, worklist, snapshot, tc->cur_dispatcher, "Current dispatcher");
+    add_collectable(tc, worklist, snapshot, tc->cur_dispatcher_for, "Current dispatcher for");
 
     /* Callback cache. */
     HASH_ITER(hash_handle, tc->native_callback_cache, current_cbceh, tmp_cbceh, bucket_tmp) {
         MVMint32 i;
         MVMNativeCallback *entry = current_cbceh->head;
+        add_collectable(tc, worklist, snapshot, current_cbceh->hash_handle.key,
+            "Native callback cache key");
         while (entry) {
             for (i = 0; i < entry->num_types; i++)
                 add_collectable(tc, worklist, snapshot, entry->types[i],
@@ -163,6 +186,18 @@ void MVM_gc_root_add_tc_roots_to_worklist(MVMThreadContext *tc, MVMGCWorklist *w
     /* Serialized string heap, if any. */
     add_collectable(tc, worklist, snapshot, tc->serialized_string_heap,
         "Serialized string heap");
+
+    /* Specialization log and stack simulation. */
+    add_collectable(tc, worklist, snapshot, tc->spesh_log, "Specialization log");
+    if (worklist)
+        MVM_spesh_sim_stack_gc_mark(tc, tc->spesh_sim_stack, worklist);
+    else {
+        MVM_spesh_sim_stack_gc_describe(tc, snapshot, tc->spesh_sim_stack);
+    }
+
+    if (tc->step_mode_frame)
+        add_collectable(tc, worklist, snapshot, tc->step_mode_frame,
+                "Frame referenced for stepping mode");
 }
 
 /* Pushes a temporary root onto the thread-local roots list. */
@@ -199,7 +234,15 @@ void MVM_gc_root_temp_pop_all(MVMThreadContext *tc) {
     tc->num_temproots = tc->mark_temproots;
 }
 
-/* Adds the set of thread-local temporary roots to a GC worklist. */
+/* Adds the set of thread-local temporary roots to a GC worklist. Note that we
+ * may MVMROOT things that are actually frames on a therad local call stack as
+ * they may be GC-able; check for this and make sure such roots do not get
+ * added to the worklist. (Cheaper to do it here in the event we GC than to
+ * do it on every stack push). */
+static MVMuint32 is_stack_frame(MVMThreadContext *tc, MVMCollectable **c) {
+    MVMCollectable *maybe_frame = *c;
+    return maybe_frame && maybe_frame->flags == 0 && maybe_frame->owner == 0;
+}
 void MVM_gc_root_add_temps_to_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMHeapSnapshotState *snapshot) {
     MVMuint32         i, num_roots;
     MVMCollectable ***temproots;
@@ -207,11 +250,13 @@ void MVM_gc_root_add_temps_to_worklist(MVMThreadContext *tc, MVMGCWorklist *work
     temproots = tc->temproots;
     if (worklist) {
         for (i = 0; i < num_roots; i++)
-            MVM_gc_worklist_add(tc, worklist, temproots[i]);
+            if (!is_stack_frame(tc, temproots[i]))
+                MVM_gc_worklist_add(tc, worklist, temproots[i]);
     }
     else {
         for (i = 0; i < num_roots; i++)
-            MVM_profile_heap_add_collectable_rel_idx(tc, snapshot, *(temproots[i]), i);
+            if (!is_stack_frame(tc, temproots[i]))
+                MVM_profile_heap_add_collectable_rel_idx(tc, snapshot, *(temproots[i]), i);
     }
 }
 
@@ -258,7 +303,6 @@ void MVM_gc_root_add_gen2s_to_worklist(MVMThreadContext *tc, MVMGCWorklist *work
     for (i = 0; i < num_roots; i++) {
         /* Count items on worklist before we mark it. */
         MVMuint32 items_before_mark  = worklist->items;
-        MVMuint32 frames_before_mark = worklist->frames;
 
         /* Put things it references into the worklist; since the worklist will
          * be set not to include gen2 things, only nursery things will make it
@@ -266,23 +310,33 @@ void MVM_gc_root_add_gen2s_to_worklist(MVMThreadContext *tc, MVMGCWorklist *work
         assert(!(gen2roots[i]->flags & MVM_CF_FORWARDER_VALID));
         MVM_gc_mark_collectable(tc, worklist, gen2roots[i]);
 
-        /* If we added any nursery objects or frames, or if we are marked as
-         * referencing frames, then we need to stay in this list. */
+        /* If we added any nursery objects, or if we are a frame with ->work
+         * area, keep in this list. */
         if (worklist->items != items_before_mark ||
-                worklist->frames != frames_before_mark ||
-                (!(gen2roots[i]->flags & MVM_CF_STABLE) && REPR(gen2roots[i])->refs_frames)) {
+                (gen2roots[i]->flags & MVM_CF_FRAME && ((MVMFrame *)gen2roots[i])->work)) {
             gen2roots[insert_pos] = gen2roots[i];
             insert_pos++;
         }
 
-        /* Otherwise, clear the "in gen2 root list" flag. */
+        /* Otherwise, clear the "in gen2 root list" flag. Note that another
+         * thread may also clear this flag if it also had the entry in its
+         * inter-gen list, so be careful to clear it, not just toggle. */
         else {
-            gen2roots[i]->flags ^= MVM_CF_IN_GEN2_ROOT_LIST;
+            gen2roots[i]->flags &= ~MVM_CF_IN_GEN2_ROOT_LIST;
         }
     }
 
     /* New number of entries after sliding is the final insert position. */
     tc->num_gen2roots = insert_pos;
+}
+
+/* Adds inter-generational roots to a heap snapshot. */
+void MVM_gc_root_add_gen2s_to_snapshot(MVMThreadContext *tc, MVMHeapSnapshotState *snapshot) {
+    MVMCollectable **gen2roots = tc->gen2roots;
+    MVMuint32        num_roots = tc->num_gen2roots;
+    MVMuint32        i;
+    for (i = 0; i < num_roots; i++)
+        MVM_profile_heap_add_collectable_rel_idx(tc, snapshot, gen2roots[i], i);
 }
 
 /* Visits all of the roots in the gen2 list and removes those that have been
@@ -313,45 +367,32 @@ void MVM_gc_root_gen2_cleanup(MVMThreadContext *tc) {
 /* Walks frames and compilation units. Adds the roots it finds into the
  * GC worklist. */
 static void scan_lexicals(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMFrame *frame);
-void MVM_gc_root_add_frame_roots_to_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMFrame *start_frame) {
-    MVMFrame *cur_frame = start_frame;
-    MVMuint32 cur_seq_number = MVM_load(&tc->instance->gc_seq_number);
-    /* If we already saw the frame this run, skip it. */
-    MVMuint32 orig_seq = MVM_load(&cur_frame->gc_seq_number);
-    if (orig_seq == cur_seq_number)
-        return;
-    if (MVM_cas(&cur_frame->gc_seq_number, orig_seq, cur_seq_number) != orig_seq)
-        return;
+void MVM_gc_root_add_frame_roots_to_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMFrame *cur_frame) {
+    /* Add caller to worklist if it's heap-allocated. */
+    if (cur_frame->caller && !MVM_FRAME_IS_ON_CALLSTACK(tc, cur_frame->caller))
+        MVM_gc_worklist_add(tc, worklist, &cur_frame->caller);
 
-    /* Add caller and outer to frames work list. */
-    MVM_gc_worklist_add_frame(tc, worklist, cur_frame->caller);
-    MVM_gc_worklist_add_frame(tc, worklist, cur_frame->outer);
-
-    /* add code_ref to work list unless we're the top-level frame. */
-    if (cur_frame->code_ref)
-        MVM_gc_worklist_add(tc, worklist, &cur_frame->code_ref);
+    /* Add outer, code_ref and static info to work list. */
+    MVM_gc_worklist_add(tc, worklist, &cur_frame->outer);
+    MVM_gc_worklist_add(tc, worklist, &cur_frame->code_ref);
     MVM_gc_worklist_add(tc, worklist, &cur_frame->static_info);
 
-    /* Add any context object. */
-    if (cur_frame->context_object)
-        MVM_gc_worklist_add(tc, worklist, &cur_frame->context_object);
-
-    /* Mark special return data, if needed. */
-    if (cur_frame->special_return_data && cur_frame->mark_special_return_data)
-        cur_frame->mark_special_return_data(tc, cur_frame, worklist);
-
-    /* Mark any continuation tags. */
-    if (cur_frame->continuation_tags) {
-        MVMContinuationTag *tag = cur_frame->continuation_tags;
-        while (tag) {
-            MVM_gc_worklist_add(tc, worklist, &tag->tag);
-            tag = tag->next;
+    /* Mark frame extras if needed. */
+    if (cur_frame->extra) {
+        MVMFrameExtra *e = cur_frame->extra;
+        if (e->special_return_data && e->mark_special_return_data)
+            e->mark_special_return_data(tc, cur_frame, worklist);
+        if (e->continuation_tags) {
+            MVMContinuationTag *tag = e->continuation_tags;
+            while (tag) {
+                MVM_gc_worklist_add(tc, worklist, &tag->tag);
+                tag = tag->next;
+            }
         }
+        MVM_gc_worklist_add(tc, worklist, &e->invoked_call_capture);
+        if (e->dynlex_cache_name)
+            MVM_gc_worklist_add(tc, worklist, &e->dynlex_cache_name);
     }
-
-    /* Mark any dyn lex cache. */
-    if (cur_frame->dynlex_cache_name)
-        MVM_gc_worklist_add(tc, worklist, &cur_frame->dynlex_cache_name);
 
     /* Scan the registers. */
     MVM_gc_root_add_frame_registers_to_worklist(tc, worklist, cur_frame);
@@ -363,10 +404,16 @@ void MVM_gc_root_add_frame_registers_to_worklist(MVMThreadContext *tc, MVMGCWork
     MVMuint16  i, count, flag;
     MVMuint16 *type_map;
     MVMuint8  *flag_map;
+    /* We only need to do any of this work if the frame is in dynamic scope. */
+    if (frame->work) {
+        /* Scan locals. */
 
-    /* Scan locals. */
-    if (frame->work && frame->tc) {
-        if (frame->spesh_cand && frame->spesh_log_idx == -1 && frame->spesh_cand->local_types) {
+        MVMSpeshCandidate *spesh_cand = frame->spesh_cand;
+        MVMJitCode *jitcode = spesh_cand ? spesh_cand->jitcode : NULL;
+        if (jitcode && jitcode->local_types) {
+            type_map = jitcode->local_types;
+            count    = jitcode->num_locals;
+        } else if (frame->spesh_cand && frame->spesh_cand->local_types) {
             type_map = frame->spesh_cand->local_types;
             count    = frame->spesh_cand->num_locals;
         }
@@ -377,37 +424,37 @@ void MVM_gc_root_add_frame_registers_to_worklist(MVMThreadContext *tc, MVMGCWork
         for (i = 0; i < count; i++)
             if (type_map[i] == MVM_reg_str || type_map[i] == MVM_reg_obj)
                 MVM_gc_worklist_add(tc, worklist, &frame->work[i].o);
-    }
 
-    /* Scan arg buffer if needed. */
-    if (frame->args && frame->cur_args_callsite) {
-        flag_map = frame->cur_args_callsite->arg_flags;
-        count = frame->cur_args_callsite->arg_count;
-        for (i = 0, flag = 0; i < count; i++, flag++) {
-            if (flag_map[flag] & MVM_CALLSITE_ARG_NAMED) {
-                /* Current position is name, then next is value. */
-                MVM_gc_worklist_add(tc, worklist, &frame->args[i].s);
-                i++;
+        /* Scan arg buffer if needed. */
+        if (frame->cur_args_callsite) {
+            flag_map = frame->cur_args_callsite->arg_flags;
+            count = frame->cur_args_callsite->arg_count;
+            for (i = 0, flag = 0; i < count; i++, flag++) {
+                if (flag_map[flag] & MVM_CALLSITE_ARG_NAMED) {
+                    /* Current position is name, then next is value. */
+                    MVM_gc_worklist_add(tc, worklist, &frame->args[i].s);
+                    i++;
+                }
+                if (flag_map[flag] & MVM_CALLSITE_ARG_STR || flag_map[flag] & MVM_CALLSITE_ARG_OBJ)
+                    MVM_gc_worklist_add(tc, worklist, &frame->args[i].o);
             }
-            if (flag_map[flag] & MVM_CALLSITE_ARG_STR || flag_map[flag] & MVM_CALLSITE_ARG_OBJ)
-                MVM_gc_worklist_add(tc, worklist, &frame->args[i].o);
         }
-    }
 
-    /* Scan arguments in case there was a flattening. Don't need to if
-     * there wasn't a flattening because orig args is a subset of locals. */
-    if (frame->params.arg_flags && frame->params.callsite->has_flattening) {
-        MVMArgProcContext *ctx = &frame->params;
-        flag_map = ctx->arg_flags;
-        count = ctx->arg_count;
-        for (i = 0, flag = 0; i < count; i++, flag++) {
-            if (flag_map[flag] & MVM_CALLSITE_ARG_NAMED) {
-                /* Current position is name, then next is value. */
-                MVM_gc_worklist_add(tc, worklist, &ctx->args[i].s);
-                i++;
+        /* Scan arguments in case there was a flattening. Don't need to if
+         * there wasn't a flattening because orig args is a subset of locals. */
+        if (frame->params.arg_flags && frame->params.callsite->has_flattening) {
+            MVMArgProcContext *ctx = &frame->params;
+            flag_map = ctx->arg_flags;
+            count = ctx->arg_count;
+            for (i = 0, flag = 0; i < count; i++, flag++) {
+                if (flag_map[flag] & MVM_CALLSITE_ARG_NAMED) {
+                    /* Current position is name, then next is value. */
+                    MVM_gc_worklist_add(tc, worklist, &ctx->args[i].s);
+                    i++;
+                }
+                if (flag_map[flag] & MVM_CALLSITE_ARG_STR || flag_map[flag] & MVM_CALLSITE_ARG_OBJ)
+                    MVM_gc_worklist_add(tc, worklist, &ctx->args[i].o);
             }
-            if (flag_map[flag] & MVM_CALLSITE_ARG_STR || flag_map[flag] & MVM_CALLSITE_ARG_OBJ)
-                MVM_gc_worklist_add(tc, worklist, &ctx->args[i].o);
         }
     }
 }
@@ -417,7 +464,7 @@ static void scan_lexicals(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMFram
     if (frame->env) {
         MVMuint16  i, count;
         MVMuint16 *type_map;
-        if (frame->spesh_cand && frame->spesh_log_idx == -1 && frame->spesh_cand->lexical_types) {
+        if (frame->spesh_cand && frame->spesh_cand->lexical_types) {
             type_map = frame->spesh_cand->lexical_types;
             count    = frame->spesh_cand->num_lexicals;
         }

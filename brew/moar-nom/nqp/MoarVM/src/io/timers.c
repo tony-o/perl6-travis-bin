@@ -13,8 +13,7 @@ typedef struct {
 static void timer_cb(uv_timer_t *handle) {
     TimerInfo        *ti = (TimerInfo *)handle->data;
     MVMThreadContext *tc = ti->tc;
-    MVMAsyncTask     *t  = (MVMAsyncTask *)MVM_repr_at_pos_o(tc,
-        tc->instance->event_loop_active, ti->work_idx);
+    MVMAsyncTask     *t  = MVM_io_eventloop_get_active_work(tc, ti->work_idx);
     MVM_repr_push_o(tc, t->body.queue, t->body.schedulee);
 }
 
@@ -22,10 +21,9 @@ static void timer_cb(uv_timer_t *handle) {
 static void setup(MVMThreadContext *tc, uv_loop_t *loop, MVMObject *async_task, void *data) {
     TimerInfo *ti = (TimerInfo *)data;
     uv_timer_init(loop, &ti->handle);
-    ti->work_idx    = MVM_repr_elems(tc, tc->instance->event_loop_active);
+    ti->work_idx    = MVM_io_eventloop_add_active_work(tc, async_task);
     ti->tc          = tc;
     ti->handle.data = ti;
-    MVM_repr_push_o(tc, tc->instance->event_loop_active, async_task);
     uv_timer_start(&ti->handle, timer_cb, ti->timeout, ti->repeat);
 }
 
@@ -33,6 +31,9 @@ static void setup(MVMThreadContext *tc, uv_loop_t *loop, MVMObject *async_task, 
 static void cancel(MVMThreadContext *tc, uv_loop_t *loop, MVMObject *async_task, void *data) {
     TimerInfo *ti = (TimerInfo *)data;
     uv_timer_stop(&ti->handle);
+    MVM_io_eventloop_send_cancellation_notification(ti->tc,
+        MVM_io_eventloop_get_active_work(tc, ti->work_idx));
+    MVM_io_eventloop_remove_active_work(tc, &(ti->work_idx));
 }
 
 /* Frees data associated with a timer async task. */
@@ -44,6 +45,7 @@ static void gc_free(MVMThreadContext *tc, MVMObject *t, void *data) {
 /* Operations table for async timer task. */
 static const MVMAsyncTaskOps op_table = {
     setup,
+    NULL,
     cancel,
     NULL,
     gc_free
@@ -80,7 +82,9 @@ MVMObject * MVM_io_timer_create(MVMThreadContext *tc, MVMObject *queue,
 
     /* Hand the task off to the event loop, which will set up the timer on the
      * event loop. */
-    MVM_io_eventloop_queue_work(tc, (MVMObject *)task);
+    MVMROOT(tc, task, {
+        MVM_io_eventloop_queue_work(tc, (MVMObject *)task);
+    });
 
     return (MVMObject *)task;
 }

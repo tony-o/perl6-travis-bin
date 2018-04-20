@@ -1,5 +1,5 @@
 /* State kept around for implementing Normal Form Grapheme. The design is such
- * that we can always do lookups without needing to acquire a look. When we
+ * that we can always do lookups without needing to acquire a lock. When we
  * do additions of new synthetics, we must acquire the lock before doing so,
  * and be sure to validate nothing changed. We also must do sufficient copying
  * to ensure that we never break another thread doing a read. Memory to be
@@ -19,18 +19,23 @@ struct MVMNFGState {
 
     /* Number of synthetics we have. */
     MVMint32 num_synthetics;
+
+    /* Cached CRLF grapheme index, since we need it so often. */
+    MVMGrapheme32 crlf_grapheme;
 };
 
 /* State held about a synthetic. */
 struct MVMNFGSynthetic {
     /* The base (non-combining) grapheme. */
-    MVMCodepoint base;
+    /* The index of the base (non-combining) grapheme
+     * set to -1 if it does not exist */
+    MVMint32 base_index;
 
-    /* The number of combiners we have. */
-    MVMint32 num_combs;
+    /* The number of codepoints we have. */
+    MVMint32 num_codes;
 
-    /* Array of combiners. */
-    MVMCodepoint *combs;
+    /* Array of codepoints. */
+    MVMCodepoint *codes;
 
     /* Cached case transforms, NULL if not calculated. */
     MVMGrapheme32 *case_uc;
@@ -52,7 +57,7 @@ struct MVMNFGSynthetic {
 struct MVMNFGTrieNode {
     /* Set of entries for further traversal, sorted ascending on codepoint
      * so we can find an entry using binary search. */
-    MVMNGFTrieNodeEntry *next_codes;
+    MVMNFGTrieNodeEntry *next_codes;
 
     /* Number of entries in next_cps. */
     MVMint32 num_entries;
@@ -63,13 +68,18 @@ struct MVMNFGTrieNode {
 };
 
 /* An entry in the list of next possible codepoints in the NFG trie. */
-struct MVMNGFTrieNodeEntry {
+struct MVMNFGTrieNodeEntry {
     /* The codepoint. */
     MVMCodepoint code;
 
     /* Trie node to traverse to if we find this node. */
     MVMNFGTrieNode *node;
 };
+
+/* The maximum number of codepoints we will allow in a synthetic grapheme.
+ * This is a good bit higher than any real-world use case is going to run
+ * in to. */
+#define MVM_GRAPHEME_MAX_CODEPOINTS 1024
 
 /* Functions related to grapheme handling. */
 MVMGrapheme32 MVM_nfg_codes_to_grapheme(MVMThreadContext *tc, MVMCodepoint *codes, MVMint32 num_codes);
@@ -79,5 +89,6 @@ MVMNFGSynthetic * MVM_nfg_get_synthetic_info(MVMThreadContext *tc, MVMGrapheme32
 MVMuint32 MVM_nfg_get_case_change(MVMThreadContext *tc, MVMGrapheme32 codepoint, MVMint32 case_, MVMGrapheme32 **result);
 MVMint32 MVM_nfg_is_concat_stable(MVMThreadContext *tc, MVMString *a, MVMString *b);
 
-/* NFG subsystem cleanup. */
+/* NFG subsystem initialization and cleanup. */
+void MVM_nfg_init(MVMThreadContext *tc);
 void MVM_nfg_destroy(MVMThreadContext *tc);

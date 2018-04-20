@@ -1,10 +1,20 @@
 use nqp;
-
-module NativeCall {
+use QAST:from<NQP>;
 
 use NativeCall::Types;
 use NativeCall::Compiler::GNU;
 use NativeCall::Compiler::MSVC;
+
+my $repr_map := nqp::hash(
+  "CArray",    "carray",
+  "CPPStruct", "cppstruct",
+  "CPointer",  "cpointer",
+  "CStruct",   "cstruct",
+  "CUnion",    "cunion",
+  "VMArray",   "vmarray",
+);
+
+module NativeCall {
 
 my constant long          is export(:types, :DEFAULT) = NativeCall::Types::long;
 my constant longlong      is export(:types, :DEFAULT) = NativeCall::Types::longlong;
@@ -12,10 +22,27 @@ my constant ulong         is export(:types, :DEFAULT) = NativeCall::Types::ulong
 my constant ulonglong     is export(:types, :DEFAULT) = NativeCall::Types::ulonglong;
 my constant bool          is export(:types, :DEFAULT) = NativeCall::Types::bool;
 my constant size_t        is export(:types, :DEFAULT) = NativeCall::Types::size_t;
+my constant ssize_t       is export(:types, :DEFAULT) = NativeCall::Types::ssize_t;
 my constant void          is export(:types, :DEFAULT) = NativeCall::Types::void;
 my constant CArray        is export(:types, :DEFAULT) = NativeCall::Types::CArray;
 my constant Pointer       is export(:types, :DEFAULT) = NativeCall::Types::Pointer;
 my constant OpaquePointer is export(:types, :DEFAULT) = NativeCall::Types::Pointer;
+
+
+# Role for carrying extra calling convention information.
+my role NativeCallingConvention[$name] {
+    method native_call_convention() { $name };
+}
+
+# Role for carrying extra string encoding information.
+my role NativeCallEncoded[$name] {
+    method native_call_encoded() { $name };
+}
+
+my role NativeCallMangled[$name] {
+    method native_call_mangled() { $name }
+}
+
 
 # Throwaway type just to get us some way to get at the NativeCall
 # representation.
@@ -118,6 +145,7 @@ my $type_map := nqp::hash(
   "num32",      "float",
   "num64",      "double",
   "size_t",     nqp::atpos_s($signed_ints_by_size,nativesizeof(size_t)),
+  "ssize_t",    nqp::atpos_s($signed_ints_by_size,nativesizeof(ssize_t)),
   "uint",       "ulong",
   "uint16",     "ushort",
   "uint32",     "uint",
@@ -125,15 +153,6 @@ my $type_map := nqp::hash(
   "uint8",      "uchar",
   "ulong",      "ulong",
   "ulonglong",  "ulonglong",
-);
-
-my $repr_map := nqp::hash(
-  "CArray",    "carray",
-  "CPPStruct", "cppstruct",
-  "CPointer",  "cpointer",
-  "CStruct",   "cstruct",
-  "CUnion",    "cunion",
-  "VMArray",   "vmarray",
 );
 
 sub type_code_for(Mu ::T) {
@@ -162,14 +181,15 @@ sub type_code_for(Mu ::T) {
 }
 
 sub gen_native_symbol(Routine $r, :$cpp-name-mangler) {
-    if $r.package.REPR eq 'CPPStruct' {
-        $cpp-name-mangler($r, $r.?native_symbol // ($r.package.^name ~ '::' ~ $r.name))
-    }
-    elsif $r.?native_call_mangled {
+    if ! $r.?native_call_mangled {
+        # Native symbol or name is said to be already mangled
+        $r.?native_symbol // $r.name;
+    } elsif $r.package.REPR eq 'CPPStruct' {
+        # Mangle C++ classes
+        $cpp-name-mangler($r, $r.?native_symbol // ($r.package.^name ~ '::' ~ $r.name));
+    } else {
+        # Mangle C
         $cpp-name-mangler($r, $r.?native_symbol // $r.name)
-    }
-    else {
-        $r.?native_symbol // $r.name
     }
 }
 
@@ -188,6 +208,12 @@ sub guess_library_name($lib) is export(:TEST) {
     my $apiversion = '';
     my Str $ext = '';
     given $lib {
+        when IO::Path {
+            $libname = $lib.absolute;
+        }
+        when Distribution::Resource {
+            return $lib.platform-library-name.Str;
+        }
         when Callable {
            return $lib();
         }
@@ -203,39 +229,6 @@ sub guess_library_name($lib) is export(:TEST) {
     #Already a full name?
     return $libname if ($libname ~~ /\.<.alpha>+$/ or $libname ~~ /\.so(\.<.digit>+)+$/);
     return $*VM.platform-library-name($libname.IO, :version($apiversion || Version)).Str;
-}
-
-sub check_routine_sanity(Routine $r) is export(:TEST) {
-    #Maybe this should use the hash already existing?
-    sub validnctype (Mu ::T) {
-      return True if nqp::existskey($repr_map,T.REPR) && T.REPR ne 'CArray' | 'CPointer';
-      return True if T.^name eq 'Str' | 'str' | 'Bool';
-      return False if T.REPR eq 'P6opaque';
-      return False if T.HOW.^can("nativesize") && T.^nativesize == 0; #to disting int and int32 for example
-      return validnctype(T.of) if T.REPR eq 'CArray' | 'CPointer' and T.^can('of');
-      return True;
-    }
-    my $sig = $r.signature;
-    for @($sig.params).kv -> $i, $param {
-        next if $r ~~ Method and ($i < 1 or $i == $sig.params.elems - 1); #Method have two extra parameters
-        if $param.type ~~ Callable {
-          # We probably want to check the given routine type too here. but I don't know how
-          next;
-        }
-        next unless $param.type ~~ Buf | Blob #Buf are Uninstantiable, make this buggy
-        || $param.type.^can('gist'); #FIXME, it's to handle case of class A { sub foo(A) is native) }, the type is not complete
-        if !validnctype($param.type) {
-           warn "In '{$r.name}' routine declaration - Not an accepted NativeCall type"
-            ~ " for parameter [{$i + 1}] {$param.name ?? $param.name !! ''} : {$param.type.^name}\n"
-            ~ " --> For Numerical type, use the appropriate int32/int64/num64...";
-        }
-    }
-    return True if $r.returns.REPR eq 'CPointer' | 'CStruct' | 'CPPStruct'; #Meh fix but 'imcomplete' type are a pain
-    if $r.returns.^name ne 'Mu' && !validnctype($r.returns) {
-        warn "The returning type of '{$r.name}' --> {$r.returns.^name} is erroneous."
-            ~ " You should not return a non NativeCall supported type (like Int inplace of int32),"
-            ~ " truncating errors can appear with different architectures";
-    }
 }
 
 my %lib;
@@ -261,59 +254,301 @@ sub guess-name-mangler(Routine $r, Str $libname) {
     }
 }
 
+my Lock $setup-lock .= new;
+
 # This role is mixed in to any routine that is marked as being a
 # native call.
-my role Native[Routine $r, $libname where Str|Callable|List] {
+our role Native[Routine $r, $libname where Str|Callable|List|IO::Path|Distribution::Resource] {
     has int $!setup;
     has native_callsite $!call is box_target;
     has Mu $!rettype;
     has $!cpp-name-mangler;
     has Pointer $!entry-point;
+    has int $!arity;
+    has int8 $!is-clone;
+    has int8 $!any-optionals;
+    has Mu $!optimized-body;
+    has Mu $!jit-optimized-body;
 
     method !setup() {
-        my $guessed_libname = guess_library_name($libname);
-        $!cpp-name-mangler  = %lib{$guessed_libname} //
-            (%lib{$guessed_libname} = guess-name-mangler($r, $guessed_libname));
-        my Mu $arg_info := param_list_for($r.signature, $r);
-        my $conv = self.?native_call_convention || '';
-        nqp::buildnativecall(self,
-            nqp::unbox_s($guessed_libname),                           # library name
-            nqp::unbox_s(gen_native_symbol($r, :$!cpp-name-mangler)), # symbol to call
-            nqp::unbox_s($conv),        # calling convention
-            $arg_info,
-            return_hash_for($r.signature, $r, :$!entry-point));
-        $!setup = 1;
-        $!rettype := nqp::decont(map_return_type($r.returns));
+        $setup-lock.protect: {
+            return if $!setup;
+            # Make sure that C++ methotds are treated as mangled (unless set otherwise)
+            if self.package.REPR eq 'CPPStruct' and not self.does(NativeCallMangled) {
+              self does NativeCallMangled[True];
+            }
+
+            my $guessed_libname = guess_library_name($libname);
+            if self.does(NativeCallMangled) and $r.?native_call_mangled {
+              # if needed, try to guess mangler
+              $!cpp-name-mangler  = %lib{$guessed_libname} //
+                  (%lib{$guessed_libname} = guess-name-mangler($r, $guessed_libname));
+            }
+            my Mu $arg_info := param_list_for($r.signature, $r);
+            my $conv = self.?native_call_convention || '';
+            my $jitted = nqp::buildnativecall(self,
+                nqp::unbox_s($guessed_libname),                           # library name
+                nqp::unbox_s(gen_native_symbol($r, :$!cpp-name-mangler)), # symbol to call
+                nqp::unbox_s($conv),        # calling convention
+                $arg_info,
+                return_hash_for($r.signature, $r, :$!entry-point));
+            $!rettype := nqp::decont(map_return_type($r.returns)) unless $!rettype;
+            $!arity = $r.signature.arity;
+            $!setup = $jitted ?? 2 !! 1;
+
+            $!any-optionals = self!any-optionals;
+
+            my $body := $jitted ?? $!jit-optimized-body !! $!optimized-body;
+            if $body {
+                nqp::bindattr(
+                    self,
+                    Code,
+                    '$!do',
+                    nqp::getattr(nqp::hllizefor($body, 'perl6'), ForeignCode, '$!do')
+                );
+                nqp::setinvokespec(self,
+                    Code.HOW.invocation_attr_class(Code),
+                    Code.HOW.invocation_attr_name(Code),
+                    nqp::null());
+            }
+        }
+    }
+
+    method !any-optionals() {
+        for $r.signature.params -> $p {
+            return True if $p.optional
+        }
+        return False
+    }
+
+    method !decont-for-type($type) {
+           $type ~~ Str ?? 'decont_s'
+        !! $type ~~ Int ?? 'decont_i'
+        !! $type ~~ Num ?? 'decont_n'
+        !! 'decont';
+    }
+
+    method !create-jit-compiled-function-body(Routine $r) {
+        my $block := QAST::Block.new(:name($r.name), :arity($!arity), :blocktype('declaration_static'));
+        my $locals = 0;
+        my @deconts;
+        my @params;
+        for $r.signature.params {
+            next if nqp::istype($r, Method) && ($_.name // '') eq '%_';
+            my $name = $_.name || '__anonymous_param__' ~ $++;
+            my $lowered_param_name = '__lowered_param__' ~ $locals;
+            my $lowered_name = '__lowered__' ~ $locals++;
+            $block.push: QAST::Var.new(
+                :name($lowered_name),
+                :scope<local>,
+                :decl<var>,
+                :returns(
+                       $_.type ~~ Str ?? nqp::bootstr()
+                    !! $_.type ~~ Int ?? nqp::bootint()
+                    !! $_.type ~~ Num ?? nqp::bootnum()
+                    !! $_.type
+                ),
+            );
+            @params.push: QAST::Var.new(:scope<local>, :name($lowered_name));
+            @deconts.push: QAST::Var.new(
+                :name($lowered_param_name),
+                :scope<local>,
+                :decl<param>,
+                :slurpy($_.slurpy ?? 1 !! 0),
+            );
+            @deconts.push: QAST::Op.new(
+                :op<if>,
+                QAST::Op.new(
+                    :op<isconcrete>,
+                    QAST::Var.new(:scope<local>, :name($lowered_param_name)),
+                ),
+                QAST::Op.new(
+                    :op<bind>,
+                    QAST::Var.new(:scope<local>, :name($lowered_name)),
+                    QAST::Op.new(
+                        :op(self!decont-for-type($_.type)),
+                        QAST::Var.new(:scope<local>, :name($lowered_param_name)),
+                    ),
+                ),
+                QAST::Op.new(
+                    :op<bind>,
+                    QAST::Var.new(:scope<local>, :name($lowered_name)),
+                       $_.type ~~ Str ?? QAST::SVal.new()
+                    !! $_.type ~~ Int ?? QAST::IVal.new(:value(0))
+                    !! $_.type ~~ Num ?? QAST::NVal.new(:value(0))
+                    !! QAST::IVal.new(:value(0))
+                ),
+            );
+        }
+        $block.push: nqp::decont($_) for @deconts; # do not interrupt the locals definitions
+        $!rettype := nqp::decont(map_return_type($r.returns)) unless $!rettype;
+        my $invoke_op := QAST::Op.new(
+            :op<nativeinvoke>,
+            QAST::WVal.new(:value(self)),
+            QAST::WVal.new(:value($!rettype)),
+        );
+        $invoke_op.push: nqp::decont($_) for @params;
+        $block.push: $invoke_op;
+        $block
+    }
+
+    method !create-function-body(Routine $r) {
+        my $block := QAST::Block.new(:name($r.name), :arity($!arity), :blocktype('declaration_static'));
+        my $arglist := QAST::Op.new(:op<list>);
+        my $locals = 0;
+        for $r.signature.params {
+            next if nqp::istype($r, Method) && ($_.name // '') eq '%_';
+            my $name = $_.name || '__anonymous_param__' ~ $++;
+            my $decont = self!decont-for-type($_.type);
+            if $_.rw and nqp::objprimspec($_.type) > 0 {
+                $block.push: QAST::Var.new(
+                    :name($name),
+                    :scope<lexicalref>,
+                    :decl<var>,
+                    :returns($_.type),
+                );
+                my $lowered_name = '__lowered_param__' ~ $locals++;
+                $block.push: QAST::Var.new(
+                    :name($lowered_name),
+                    :scope<local>,
+                    :decl<param>,
+                    QAST::Op.new(
+                        :op<bind>,
+                        QAST::Var.new(:scope<lexicalref>, :name($name)),
+                        QAST::Var.new(:scope<local>, :name($lowered_name)),
+                    ),
+                );
+                $arglist.push: QAST::Var.new(:scope<lexicalref>, :name($name));
+            }
+            else {
+                my $lowered_name = '__lowered__' ~ $locals++;
+                $block.push: QAST::Var.new(
+                    :name($lowered_name),
+                    :scope<local>,
+                    :decl<param>,
+                    :slurpy($_.slurpy ?? 1 !! 0),
+                );
+                $block.push: QAST::Op.new(
+                    :op<bind>,
+                    QAST::Var.new(:scope<local>, :name($lowered_name)),
+                    QAST::Op.new(
+                        :op<if>,
+                        QAST::Op.new(
+                            :op<isconcrete>,
+                            QAST::Var.new(:scope<local>, :name($lowered_name)),
+                        ),
+                        QAST::Op.new(
+                            :op(self!decont-for-type($_.type)),
+                            QAST::Var.new(:scope<local>, :name($lowered_name)),
+                        ),
+                        QAST::Var.new(:scope<local>, :name($lowered_name)),
+                    ),
+                );
+                $arglist.push: QAST::Var.new(:scope<local>, :name($lowered_name));
+            }
+        }
+        $!rettype := nqp::decont(map_return_type($r.returns)) unless $!rettype;
+        $block.push: QAST::Op.new(
+            :op<nativecallinvoke>,
+            QAST::WVal.new(:value($!rettype)),
+            QAST::WVal.new(:value(self)),
+            $arglist,
+        );
+        $block
+    }
+
+    my $perl6comp := nqp::getcomp("perl6");
+    my @stages = $perl6comp.stages;
+    Nil until @stages.shift eq 'optimize';
+
+    method !compile-function-body(Mu $block) {
+        my $result := $block;
+        $result := $perl6comp.^can($_)
+            ?? $perl6comp."$_"($result)
+            !! $perl6comp.backend."$_"($result)
+            for @stages;
+        my $body := nqp::compunitmainline($result);
+        $*W.add_object($body) if $*W;
+
+        nqp::setcodename($body, $r.name);
+        $body
+    }
+
+    method create-optimized-call() {
+        unless $!optimized-body {
+            $setup-lock.protect: {
+                unless nqp::defined(nqp::getobjsc(self)) {
+                    if $*W {
+                        $*W.add_object(self);
+                    }
+                    else {
+                        my $sc := nqp::createsc('NativeCallSub' ~ nqp::objectid(self));
+                        nqp::setobjsc(self, $sc);
+                        my int $idx = nqp::scobjcount($sc);
+                        nqp::scsetobj($sc, $idx, self);
+                    }
+                }
+
+                my $optimized-body     := self!create-function-body($r);
+                $optimized-body.annotate('code_object', self);
+                $optimized-body.code_object(self);
+                my $stub := nqp::freshcoderef(nqp::getattr(sub (*@args, *%named) { die "stub called" }, Code, '$!do'));
+                nqp::setcodename($stub, self.name);
+                nqp::markcodestatic($stub);
+                nqp::markcodestub($stub);
+                nqp::bindattr(self, $?CLASS, '$!optimized-body', $stub);
+                my $jit-optimized-body := self!create-jit-compiled-function-body($r);
+                $jit-optimized-body.annotate('code_object', self);
+                $jit-optimized-body.code_object(self);
+                nqp::bindattr(self, $?CLASS, '$!jit-optimized-body', $stub);
+                my $fixups := QAST::Stmts.new();
+                my $des := QAST::Stmts.new();
+                if $*W {
+                    $*W.add_root_code_ref($stub, $optimized-body);
+                    $*W.add_root_code_ref($stub, $jit-optimized-body);
+                    $*W.add_object($?CLASS);
+                    $*UNIT.push($optimized-body);
+                    $*UNIT.push($jit-optimized-body);
+                    $fixups.push($*W.set_attribute(self, $?CLASS, '$!optimized-body',
+                        QAST::BVal.new( :value($optimized-body) )));
+                    $fixups.push($*W.set_attribute(self, $?CLASS, '$!jit-optimized-body',
+                        QAST::BVal.new( :value($jit-optimized-body) )));
+                    $*W.add_fixup_task(:deserialize_ast($fixups), :fixup_ast($fixups));
+                }
+                else {
+                    $!optimized-body     := self!compile-function-body(self!create-function-body($r));
+                    $!jit-optimized-body := self!compile-function-body(self!create-jit-compiled-function-body($r));
+                }
+            }
+        }
+    }
+
+    method clone() {
+        my $clone := callsame;
+        nqp::bindattr_i($clone, $?CLASS, '$!is-clone', 1);
+        nqp::bindattr($clone, $?CLASS, '$!optimized-body', Mu);
+        nqp::bindattr($clone, $?CLASS, '$!jit-optimized-body', Mu);
+        $clone
     }
 
     method CALL-ME(|args) {
-        self!setup unless $!setup;
+        self.create-optimized-call() unless
+            $!is-clone # Clones and original would share the invokespec but not the $!do attribute
+            or $!any-optionals # the compiled code doesn't support optional parameters yet
+            or $*W;    # Avoid issues with compiling specialized version during BEGIN time
+        self!setup();
 
-        my Mu $args := nqp::getattr(nqp::decont(args), Capture, '$!list');
-        if nqp::elems($args) != $r.signature.arity {
+        my Mu $args := nqp::getattr(nqp::decont(args), Capture, '@!list');
+        if nqp::elems($args) != $!arity {
             X::TypeCheck::Argument.new(
                 :objname($.name),
                 :arguments(args.list.map(*.^name))
-                :signature("    Expected: " ~ try $r.signature.perl),
+                :signature(try $r.signature.gist),
             ).throw
         }
 
         nqp::nativecall($!rettype, self, $args)
     }
-}
-
-# Role for carrying extra calling convention information.
-my role NativeCallingConvention[$name] {
-    method native_call_convention() { $name };
-}
-
-# Role for carrying extra string encoding information.
-my role NativeCallEncoded[$name] {
-    method native_call_encoded() { $name };
-}
-
-my role NativeCallMangled[$name] {
-    method native_call_mangled() { $name }
 }
 
 multi sub postcircumfix:<[ ]>(CArray:D \array, $pos) is export(:DEFAULT, :types) {
@@ -325,13 +560,6 @@ multi sub postcircumfix:<[ ]>(CArray:D \array, *@pos) is export(:DEFAULT, :types
 
 multi trait_mod:<is>(Routine $r, :$symbol!) is export(:DEFAULT, :traits) {
     $r does NativeCallSymbol[$symbol];
-}
-
-# Specifies that the routine is actually a native call, into the
-# current executable (platform specific) or into a named library
-multi trait_mod:<is>(Routine $r, :$native!) is export(:DEFAULT, :traits) {
-    check_routine_sanity($r);
-    $r does Native[$r, $native === True ?? Str !! $native];
 }
 
 # Specifies the calling convention to use for a native call.
@@ -381,18 +609,17 @@ multi refresh($obj) is export(:DEFAULT, :utils) {
     1;
 }
 
-sub nativecast($target-type, $source) is export(:DEFAULT) {
-    if $target-type ~~ Signature {
-        my $r := sub { };
-        $r does Native[$r, Str];
-        nqp::bindattr($r, Code, '$!signature', nqp::decont($target-type));
-        nqp::bindattr($r, $r.WHAT, '$!entry-point', $source);
-        $r
-    }
-    else {
-        nqp::nativecallcast(nqp::decont($target-type),
-            nqp::decont(map_return_type($target-type)), nqp::decont($source));
-    }
+multi sub nativecast(Signature $target-type, $source) is export(:DEFAULT) {
+    my $r := sub { };
+    $r does Native[$r, Str];
+    nqp::bindattr($r, Code, '$!signature', nqp::decont($target-type));
+    nqp::bindattr($r, $r.WHAT, '$!entry-point', $source);
+    $r
+}
+
+multi sub nativecast($target-type, $source) is export(:DEFAULT) {
+    nqp::nativecallcast(nqp::decont($target-type),
+        nqp::decont(map_return_type($target-type)), nqp::decont($source));
 }
 
 sub nativesizeof($obj) is export(:DEFAULT) {
@@ -414,43 +641,61 @@ sub cglobal($libname, $symbol, $target-type) is export is rw {
 
 }
 
-sub EXPORT(|) {
-    use NQPHLL:from<NQP>;
-    my role HAS-decl-grammar {
-        # This is a direct copy of scope_declarator:sym<has>, besides the uppercase spelling.
-        token scope_declarator:sym<HAS> {
-            :my $*LINE_NO := HLL::Compiler.lineof(self.orig(), self.from(), :cache(1));
-            <sym>
-            :my $*HAS_SELF := 'partial';
-            :my $*ATTR_INIT_BLOCK;
-            <scoped('has')>
+sub check_routine_sanity(Routine $r) is export(:TEST) {
+    #Maybe this should use the hash already existing?
+    sub validnctype (Mu ::T) {
+      return True if nqp::existskey($repr_map,T.REPR) && T.REPR ne 'CArray' | 'CPointer';
+      return True if T.^name eq 'Str' | 'str' | 'Bool';
+      return False if T.REPR eq 'P6opaque';
+      return False if T.HOW.^can("nativesize") && !nqp::defined(T.^nativesize); #to disting int and int32 for example
+      return validnctype(T.of) if T.REPR eq 'CArray' | 'CPointer' and T.^can('of');
+      return True;
+    }
+    my $sig = $r.signature;
+    for @($sig.params).kv -> $i, $param {
+        next if $r ~~ Method and ($i < 1 or $i == $sig.params.elems - 1); #Method have two extra parameters
+        if $param.type ~~ Callable {
+          # We probably want to check the given routine type too here. but I don't know how
+          next;
+        }
+        next unless $param.type ~~ Buf | Blob #Buf are Uninstantiable, make this buggy
+        || $param.type.^can('gist'); #FIXME, it's to handle case of class A { sub foo(A) is native) }, the type is not complete
+        if !validnctype($param.type) {
+           warn "In '{$r.name}' routine declaration - Not an accepted NativeCall type"
+            ~ " for parameter [{$i + 1}] {$param.name ?? $param.name !! ''} : {$param.type.^name}\n"
+            ~ " --> For Numerical type, use the appropriate int32/int64/num64...";
         }
     }
-    my role HAS-decl-actions {
-        method scope_declarator:sym<HAS>(Mu $/) {
-            # my $scoped := $<scoped>.ast;
-            my Mu $scoped := nqp::atkey(nqp::findmethod($/, 'hash')($/), 'scoped').ast;
-            my Mu $attr   := $scoped.ann('metaattr');
-            if $attr.package.REPR ne 'CStruct'
-            && $attr.package.REPR ne 'CPPStruct'
-            && $attr.package.REPR ne 'CUnion' {
-                die "Can only use HAS-scoped attributes in classes with repr CStruct, CPPStruct and CUnion, not " ~ $attr.package.REPR;
-            }
-            if nqp::objprimspec($attr.type) != 0 {
-                warn "Useless use of HAS scope on an attribute with type { $attr.type.^name }.";
-            }
-            # Mark $attr as inlined, that's why we do all this.
-            nqp::bindattr_i(nqp::decont($attr), $attr.WHAT, '$!inlined', 1);
-            # make $scoped
-            nqp::bindattr(nqp::decont($/), $/.WHAT, '$!made', $scoped);
-        }
+    return True if $r.returns.REPR eq 'CPointer' | 'CStruct' | 'CPPStruct'; #Meh fix but 'imcomplete' type are a pain
+    if $r.returns.^name ne 'Mu' && !validnctype($r.returns) {
+        warn "The returning type of '{$r.name}' --> {$r.returns.^name} is erroneous."
+            ~ " You should not return a non NativeCall supported type (like Int inplace of int32),"
+            ~ " truncating errors can appear with different architectures";
     }
-    my Mu $MAIN-grammar := nqp::atkey(%*LANG, 'MAIN');
-    my Mu $MAIN-actions := nqp::atkey(%*LANG, 'MAIN-actions');
-    nqp::bindkey(%*LANG, 'MAIN',         $MAIN-grammar.HOW.mixin($MAIN-grammar, HAS-decl-grammar));
-    nqp::bindkey(%*LANG, 'MAIN-actions', $MAIN-actions.HOW.mixin($MAIN-actions, HAS-decl-actions));
+}
 
-    {}
+sub EXPORT(|) {
+    my @routines_to_setup;
+    if $*W {
+        my $block := {
+            for @routines_to_setup {
+                .create-optimized-call;
+                CATCH { default { note $_ } }
+            }
+        };
+        $*W.add_object($block);
+        my $op := $*W.add_phaser(Mu, 'CHECK', $block, class :: { method cuid { (^2**128).pick }});
+    }
+    # Specifies that the routine is actually a native call, into the
+    # current executable (platform specific) or into a named library
+    my $native_trait := multi trait_mod:<is>(Routine $r, :$native!) {
+        check_routine_sanity($r);
+        $r does NativeCall::Native[$r, $native === True ?? Str !! $native];
+        @routines_to_setup.push: $r;
+    };
+    Map.new(
+        '&trait_mod:<is>' => $native_trait.dispatcher,
+    );
 }
 
 # vim:ft=perl6

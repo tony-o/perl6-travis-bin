@@ -1,15 +1,15 @@
 my class Parameter { # declared in BOOTSTRAP
-    # class Parameter is Any {
+    # class Parameter is Any
     #     has str $!variable_name
-    #     has Mu $!named_names
-    #     has Mu $!type_captures
+    #     has @!named_names
+    #     has @!type_captures
     #     has int $!flags
     #     has Mu $!nominal_type
-    #     has Mu $!post_constraints
+    #     has @!post_constraints
     #     has Mu $!coerce_type
     #     has str $!coerce_method
-    #     has Mu $!sub_signature
-    #     has Mu $!default_value
+    #     has Signature $!sub_signature
+    #     has Code $!default_value
     #     has Mu $!container_descriptor;
     #     has Mu $!attr_package;
     #     has Mu $!why;
@@ -32,6 +32,7 @@ my class Parameter { # declared in BOOTSTRAP
     my constant $SIG_ELEM_UNDEFINED_ONLY     = 65536;
     my constant $SIG_ELEM_DEFINED_ONLY       = 131072;
     my constant $SIG_ELEM_SLURPY_ONEARG      = 16777216;
+    my constant $SIG_ELEM_CODE_SIGIL         = 33554432;
 
     my constant $SIG_ELEM_IS_NOT_POSITIONAL = $SIG_ELEM_SLURPY_POS
                                            +| $SIG_ELEM_SLURPY_NAMED
@@ -61,7 +62,7 @@ my class Parameter { # declared in BOOTSTRAP
               ?? '@'
               !!  nqp::bitand_i($!flags,$SIG_ELEM_HASH_SIGIL)
                 ?? '%'
-                !! nqp::eqat(nqp::unbox_s($!nominal_type.^name),'Callable',0)
+                !! nqp::bitand_i($!flags,$SIG_ELEM_CODE_SIGIL)
                   ?? '&'
                   !! nqp::bitand_i($!flags,$SIG_ELEM_IS_RAW)
                     ?? '\\'
@@ -88,28 +89,40 @@ my class Parameter { # declared in BOOTSTRAP
     }
 
     method constraint_list() {
-        nqp::isnull($!post_constraints) ?? () !!
-            nqp::hllize($!post_constraints)
+        nqp::isnull(@!post_constraints) ?? () !!
+            nqp::hllize(@!post_constraints)
     }
 
     method constraints() {
-        all(nqp::isnull($!post_constraints) ?? () !!
-            nqp::hllize($!post_constraints))
+        all(nqp::isnull(@!post_constraints) ?? () !!
+            nqp::hllize(@!post_constraints))
     }
 
     method type() { $!nominal_type }
     method named_names() {
-        nqp::p6bindattrinvres(nqp::create(List),List,'$!reified',$!named_names)
+        nqp::if(
+          @!named_names && (my int $elems = nqp::elems(@!named_names)),
+          nqp::stmts(
+            (my $buf := nqp::setelems(nqp::create(IterationBuffer),$elems)),
+            (my int $i = -1),
+            nqp::while(
+              nqp::islt_i(($i = nqp::add_i($i,1)),$elems),
+              nqp::bindpos($buf,$i,nqp::atpos_s(@!named_names,$i))
+            ),
+            nqp::p6bindattrinvres(nqp::create(List),List,'$!reified',$buf)
+          ),
+          nqp::create(List)
+        )
     }
     method named() {
         nqp::p6bool(
-          $!named_names || nqp::bitand_i($!flags,$SIG_ELEM_SLURPY_NAMED)
+          @!named_names || nqp::bitand_i($!flags,$SIG_ELEM_SLURPY_NAMED)
         )
     }
 
     method positional() {
         nqp::p6bool(
-          nqp::isnull($!named_names)
+          nqp::isnull(@!named_names)
           && nqp::iseq_i(nqp::bitand_i($!flags,$SIG_ELEM_IS_NOT_POSITIONAL),0)
         )
     }
@@ -154,7 +167,19 @@ my class Parameter { # declared in BOOTSTRAP
             !! { $!default_value }
     }
     method type_captures() {
-        nqp::p6bindattrinvres(nqp::create(List),List,'$!reified',$!type_captures)
+        nqp::if(
+          @!type_captures && (my int $elems = nqp::elems(@!type_captures)),
+          nqp::stmts(
+            (my $buf := nqp::setelems(nqp::create(IterationBuffer),$elems)),
+            (my int $i = -1),
+            nqp::while(
+              nqp::islt_i(($i = nqp::add_i($i,1)),$elems),
+              nqp::bindpos($buf,$i,nqp::atpos_s(@!type_captures,$i))
+            ),
+            nqp::p6bindattrinvres(nqp::create(List),List,'$!reified',$buf)
+          ),
+          nqp::create(List)
+        )
     }
 
     method !flags() { $!flags }
@@ -221,29 +246,29 @@ my class Parameter { # declared in BOOTSTRAP
         }
 
         # have nameds here
-        my $onamed_names := nqp::getattr(o,Parameter,'$!named_names');
-        if $!named_names {
+        my $onamed_names := nqp::getattr(o,Parameter,'@!named_names');
+        if @!named_names {
 
             # nameds there
             if $onamed_names {
 
                 # too many nameds there, can never be subset
-                my int $elems = nqp::elems($!named_names);
+                my int $elems = nqp::elems(@!named_names);
                 return False
                   if nqp::isgt_i(nqp::elems($onamed_names),$elems);
 
                 # set up lookup hash
                 my $lookup := nqp::hash;
                 my int $i   = -1;
-                nqp::bindkey($lookup,nqp::atpos($!named_names,$i),1)
-                  while nqp::islt_i($i = nqp::add_i($i,1),$elems);
+                nqp::bindkey($lookup,nqp::atpos_s(@!named_names,$i),1)
+                  while nqp::islt_i(++$i,$elems);
 
                 # make sure the other nameds are all here
                 $elems = nqp::elems($onamed_names);
                 $i     = -1;
                 return False unless
-                  nqp::existskey($lookup,nqp::atpos($onamed_names,$i))
-                  while nqp::islt_i($i = nqp::add_i($i,1),$elems);
+                  nqp::existskey($lookup,nqp::atpos_s($onamed_names,$i))
+                  while nqp::islt_i(++$i,$elems);
             }
         }
 
@@ -266,14 +291,14 @@ my class Parameter { # declared in BOOTSTRAP
         }
 
         # we have a post constraint
-        if nqp::islist($!post_constraints) {
+        if nqp::islist(@!post_constraints) {
 
             # callable means runtime check, so no match
             return False
-              if nqp::istype(nqp::atpos($!post_constraints,0),Callable);
+              if nqp::istype(nqp::atpos(@!post_constraints,0),Callable);
 
             # other doesn't have a post constraint
-            my Mu $opc := nqp::getattr(o,Parameter,'$!post_constraints');
+            my Mu $opc := nqp::getattr(o,Parameter,'@!post_constraints');
             return False unless nqp::islist($opc);
 
             # other post constraint is a Callable, so runtime check, so no match
@@ -281,12 +306,12 @@ my class Parameter { # declared in BOOTSTRAP
 
             # not same literal value
             return False
-              unless nqp::atpos($!post_constraints,0).ACCEPTS(
+              unless nqp::atpos(@!post_constraints,0).ACCEPTS(
                 nqp::atpos($opc,0));
         }
 
         # we don't, other *does* have a post constraint
-        elsif nqp::islist(nqp::getattr(o,Parameter,'$!post_constraints')) {
+        elsif nqp::islist(nqp::getattr(o,Parameter,'@!post_constraints')) {
             return False;
         }
 
@@ -301,10 +326,9 @@ my class Parameter { # declared in BOOTSTRAP
         my $modifier = self.modifier;
 
         $perl ~= "::$_ " for @($.type_captures);
-        # XXX Need a CODE_SIGIL too?
         if $!flags +& $SIG_ELEM_ARRAY_SIGIL or
             $!flags +& $SIG_ELEM_HASH_SIGIL or
-            $type ~~ /^^ Callable >> / {
+            $!flags +& $SIG_ELEM_CODE_SIGIL {
             $type ~~ / .*? \[ <( .* )> \] $$/;
             $perl ~= $/ ~ $modifier if $/;
         }
@@ -326,7 +350,7 @@ my class Parameter { # declared in BOOTSTRAP
                 $name = '@';
             } elsif $!flags +& $SIG_ELEM_HASH_SIGIL {
                 $name = '%';
-            } elsif $type ~~ /^^ Callable >> / {
+            } elsif $!flags +& $SIG_ELEM_CODE_SIGIL {
                 $name = '&';
             } else {
                 $name = '$';
@@ -362,7 +386,7 @@ my class Parameter { # declared in BOOTSTRAP
             $sig ~~ s/^^ ':'//;
             $rest ~= ' ' ~ $sig;
         }
-        unless nqp::isnull($!post_constraints) {
+        unless nqp::isnull(@!post_constraints) {
             my $where = &where(self);
             return Nil without $where;
             $rest ~= " $where";
@@ -378,25 +402,34 @@ my class Parameter { # declared in BOOTSTRAP
         nqp::isnull($!sub_signature) ?? Any !! $!sub_signature
     }
 
-    method set_why($why) {
+    method set_why($why --> Nil) {
         $!why := $why;
+    }
+
+    method set_default(Code:D $default --> Nil) {
+        $!default_value := $default;
     }
 }
 
-multi sub infix:<eqv>(Parameter \a, Parameter \b) {
+multi sub infix:<eqv>(Parameter:D \a, Parameter:D \b) {
 
     # we're us
     return True if a =:= b;
 
+    # different container type
+    return False unless a.WHAT =:= b.WHAT;
+
     # different nominal or coerce type
+    my $acoerce := nqp::getattr(a,Parameter,'$!coerce_type');
+    my $bcoerce := nqp::getattr(b,Parameter,'$!coerce_type');
     return False
       unless nqp::iseq_s(
           nqp::getattr(a,Parameter,'$!nominal_type').^name,
           nqp::getattr(b,Parameter,'$!nominal_type').^name
         )
       && nqp::iseq_s(
-          nqp::getattr(a,Parameter,'$!coerce_type').^name,
-          nqp::getattr(b,Parameter,'$!coerce_type').^name
+          nqp::isnull($acoerce) ?? "" !! $acoerce.^name,
+          nqp::isnull($bcoerce) ?? "" !! $bcoerce.^name
         );
 
     # different flags
@@ -430,14 +463,14 @@ multi sub infix:<eqv>(Parameter \a, Parameter \b) {
     }
 
     # first has a post constraint
-    my Mu $pca := nqp::getattr(a,Parameter,'$!post_constraints');
+    my Mu $pca := nqp::getattr(a,Parameter,'@!post_constraints');
     if nqp::islist($pca) {
 
         # callable means runtime check, so no match
         return False if nqp::istype(nqp::atpos($pca,0),Callable);
 
         # second doesn't have a post constraint
-        my Mu $pcb := nqp::getattr(b,Parameter,'$!post_constraints');
+        my Mu $pcb := nqp::getattr(b,Parameter,'@!post_constraints');
         return False unless nqp::islist($pcb);
 
         # second is a Callable, so runtime check, so no match
@@ -448,7 +481,7 @@ multi sub infix:<eqv>(Parameter \a, Parameter \b) {
     }
 
     # first doesn't, second *does* have a post constraint
-    elsif nqp::islist(nqp::getattr(b,Parameter,'$!post_constraints')) {
+    elsif nqp::islist(nqp::getattr(b,Parameter,'@!post_constraints')) {
         return False;
     }
 

@@ -17,7 +17,7 @@ my class CurrentThreadScheduler does Scheduler {
         my $delay = $at ?? $at - now !! $in;
         sleep $delay if $delay;
         &catch //=
-          self.uncaught_handler // -> $ex { self.handle_uncaught($ex) };
+          (self && self.uncaught_handler) // -> $ex { self.handle_uncaught($ex) };
 
         for 1 .. $times {
             code();
@@ -26,7 +26,7 @@ my class CurrentThreadScheduler does Scheduler {
         class { method cancel() {} }
     }
 
-    method loads() { 0 }
+    method loads(--> 0) { }
 }
 
 # vim: ft=perl6 expandtab sw=4

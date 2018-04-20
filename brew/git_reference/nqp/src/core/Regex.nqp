@@ -15,7 +15,7 @@ sub match ($text, $regex, :$global?) {
         my @matches;
         while $match {
             nqp::push(@matches, $match);
-            $match := $match.CURSOR.parse($text, :rule($regex), :c($match.to));
+            $match := $match.parse($text, :rule($regex), :c($match.to));
         }
         @matches;
     }
@@ -26,7 +26,7 @@ sub match ($text, $regex, :$global?) {
 
 
 =begin item subst
-Substitute an match of C<$regex> in C<$text> with C<$replacement>,
+Substitute a match of C<$regex> in C<$text> with C<$repl>,
 returning the substituted string.  If C<$global> is given, then
 perform the replacement on all matches of C<$text>.
 =end item

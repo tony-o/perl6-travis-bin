@@ -24,11 +24,12 @@ static void add_work(MVMThreadContext *tc, MVMThreadContext *stolen) {
  * the run, and are not counted. Returns the count of threads that should be
  * added to the finished countdown. */
 static MVMuint32 signal_one_thread(MVMThreadContext *tc, MVMThreadContext *to_signal) {
-
     /* Loop here since we may not succeed first time (e.g. the status of the
      * thread may change between the two ways we try to twiddle it). */
+    int had_suspend_request = 0;
     while (1) {
-        switch (MVM_load(&to_signal->gc_status)) {
+        AO_t current = MVM_load(&to_signal->gc_status);
+        switch (current) {
             case MVMGCStatus_NONE:
                 /* Try to set it from running to interrupted - the common case. */
                 if (MVM_cas(&to_signal->gc_status, MVMGCStatus_NONE,
@@ -37,13 +38,17 @@ static MVMuint32 signal_one_thread(MVMThreadContext *tc, MVMThreadContext *to_si
                     return 1;
                 }
                 break;
+            case MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST:
             case MVMGCStatus_INTERRUPT:
                 GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : thread %d already interrupted\n", to_signal->thread_id);
                 return 0;
+            case MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST:
+            case MVMGCStatus_UNABLE | MVMSuspendState_SUSPENDED:
+                had_suspend_request = current & MVMSUSPENDSTATUS_MASK;
             case MVMGCStatus_UNABLE:
                 /* Otherwise, it's blocked; try to set it to work Stolen. */
-                if (MVM_cas(&to_signal->gc_status, MVMGCStatus_UNABLE,
-                        MVMGCStatus_STOLEN) == MVMGCStatus_UNABLE) {
+                if (MVM_cas(&to_signal->gc_status, MVMGCStatus_UNABLE | had_suspend_request,
+                        MVMGCStatus_STOLEN | had_suspend_request) == (MVMGCStatus_UNABLE | had_suspend_request)) {
                     GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : A blocked thread %d spotted; work stolen\n", to_signal->thread_id);
                     add_work(tc, to_signal);
                     return 0;
@@ -51,6 +56,8 @@ static MVMuint32 signal_one_thread(MVMThreadContext *tc, MVMThreadContext *to_si
                 break;
             /* this case occurs if a child thread is Stolen by its parent
              * before we get to it in the chain. */
+            case MVMGCStatus_STOLEN | MVMSuspendState_SUSPEND_REQUEST:
+            case MVMGCStatus_STOLEN | MVMSuspendState_SUSPENDED:
             case MVMGCStatus_STOLEN:
                 GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : thread %d already stolen (it was a spawning child)\n", to_signal->thread_id);
                 return 0;
@@ -60,21 +67,17 @@ static MVMuint32 signal_one_thread(MVMThreadContext *tc, MVMThreadContext *to_si
         }
     }
 }
-static MVMuint32 signal_all_but(MVMThreadContext *tc, MVMThread *t, MVMThread *tail) {
+static MVMuint32 signal_all(MVMThreadContext *tc, MVMThread *threads) {
+    MVMThread *t = threads;
     MVMuint32 count = 0;
-    MVMThread *next;
-    if (!t) {
-        return 0;
-    }
-    do {
-        next = t->body.next;
+    while (t) {
         switch (MVM_load(&t->body.stage)) {
             case MVM_thread_stage_starting:
             case MVM_thread_stage_waiting:
             case MVM_thread_stage_started:
-                if (t->body.tc != tc) {
+                /* Don't signal ourself. */
+                if (t->body.tc != tc)
                     count += signal_one_thread(tc, t->body.tc);
-                }
                 break;
             case MVM_thread_stage_exited:
                 GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : queueing to clear nursery of thread %d\n", t->body.tc->thread_id);
@@ -92,10 +95,8 @@ static MVMuint32 signal_all_but(MVMThreadContext *tc, MVMThread *t, MVMThread *t
             default:
                 MVM_panic(MVM_exitcode_gcorch, "Corrupted MVMThread or running threads list: invalid thread stage %"MVM_PRSz"", MVM_load(&t->body.stage));
         }
-    } while (next && (t = next));
-    if (tail)
-        MVM_gc_write_barrier(tc, (MVMCollectable *)t, (MVMCollectable *)tail);
-    t->body.next = tail;
+        t = t->body.next;
+    }
     return count;
 }
 
@@ -142,13 +143,12 @@ static void finish_gc(MVMThreadContext *tc, MVMuint8 gen, MVMuint8 is_coordinato
 
     /* Decrement gc_finish to say we're done, and wait for termination. */
     GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : Voting to finish\n");
+    uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
     MVM_decr(&tc->instance->gc_finish);
-    while (MVM_load(&tc->instance->gc_finish)) {
-        for (i = 0; i < 1000; i++)
-            ; /* XXX Something HT-efficienter. */
-        /* XXX Here we can look to see if we got passed any work, and if so
-         * try to un-vote. */
-    }
+    uv_cond_broadcast(&tc->instance->cond_gc_finish);
+    while (MVM_load(&tc->instance->gc_finish))
+        uv_cond_wait(&tc->instance->cond_gc_finish, &tc->instance->mutex_gc_orchestrate);
+    uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
     GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : Termination agreed\n");
 
     /* Co-ordinator should do final check over all the in-trays, and trigger
@@ -184,18 +184,23 @@ static void finish_gc(MVMThreadContext *tc, MVMuint8 gen, MVMuint8 is_coordinato
             "Thread %d run %d : Co-ordinator handling fixed-size allocator safepoint frees\n");
         MVM_fixed_size_safepoint(tc, tc->instance->fsa);
 
+        MVM_profile_dump_instrumented_data(tc);
         MVM_profile_heap_take_snapshot(tc);
 
         GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE,
             "Thread %d run %d : Co-ordinator signalling in-trays clear\n");
+        uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
         MVM_store(&tc->instance->gc_intrays_clearing, 0);
+        uv_cond_broadcast(&tc->instance->cond_gc_intrays_clearing);
+        uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
     }
     else {
         GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE,
             "Thread %d run %d : Waiting for in-tray clearing completion\n");
+        uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
         while (MVM_load(&tc->instance->gc_intrays_clearing))
-            for (i = 0; i < 1000; i++)
-                ; /* XXX Something HT-efficienter. */
+            uv_cond_wait(&tc->instance->cond_gc_intrays_clearing, &tc->instance->mutex_gc_orchestrate);
+        uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
         GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE,
             "Thread %d run %d : Got in-tray clearing complete notice\n");
     }
@@ -216,6 +221,24 @@ static void finish_gc(MVMThreadContext *tc, MVMuint8 gen, MVMuint8 is_coordinato
             MVM_store(&thread_obj->body.stage, MVM_thread_stage_destroyed);
         }
         else {
+            /* Free gen2 unmarked if full collection. */
+            if (gen == MVMGCGenerations_Both) {
+                GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE,
+                    "Thread %d run %d : freeing gen2 of thread %d\n",
+                    other->thread_id);
+                MVM_gc_collect_free_gen2_unmarked(other, 0);
+            }
+
+            /* Contribute this thread's promoted bytes. */
+            MVM_add(&tc->instance->gc_promoted_bytes_since_last_full, other->gc_promoted_bytes);
+
+            /* Collect nursery. */
+            GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE,
+                "Thread %d run %d : collecting nursery uncopied of thread %d\n",
+                other->thread_id);
+            MVM_gc_collect_free_nursery_uncopied(other, tc->gc_work[i].limit);
+
+            /* Handle exited threads. */
             if (MVM_load(&thread_obj->body.stage) == MVM_thread_stage_exited) {
                 /* Don't bother freeing gen2; we'll do it next time */
                 MVM_store(&thread_obj->body.stage, MVM_thread_stage_clearing_nursery);
@@ -223,6 +246,8 @@ static void finish_gc(MVMThreadContext *tc, MVMuint8 gen, MVMuint8 is_coordinato
                     "Thread %d run %d : set thread %d clearing nursery stage to %d\n",
                     other->thread_id, (int)MVM_load(&thread_obj->body.stage));
             }
+
+            /* Mark thread free to continue. */
             MVM_cas(&other->gc_status, MVMGCStatus_STOLEN, MVMGCStatus_UNABLE);
             MVM_cas(&other->gc_status, MVMGCStatus_INTERRUPT, MVMGCStatus_NONE);
         }
@@ -235,6 +260,12 @@ static void finish_gc(MVMThreadContext *tc, MVMuint8 gen, MVMuint8 is_coordinato
         /* Set it to zero (we're guaranteed the only ones trying to write to
          * it here). Actual STable free in MVM_gc_enter_from_allocator. */
         MVM_store(&tc->instance->gc_ack, 0);
+
+        /* Also clear in GC flag. */
+        uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
+        tc->instance->in_gc = 0;
+        uv_cond_broadcast(&tc->instance->cond_blocked_can_continue);
+        uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
     }
 }
 
@@ -249,12 +280,17 @@ void MVM_gc_mark_thread_blocked(MVMThreadContext *tc) {
                 MVMGCStatus_UNABLE) == MVMGCStatus_NONE)
             return;
 
+        if (MVM_cas(&tc->gc_status, MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST,
+                MVMGCStatus_UNABLE | MVMSuspendState_SUSPENDED) == (MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST))
+            return;
+
         /* The only way this can fail is if another thread just decided we're to
          * participate in a GC run. */
         if (MVM_load(&tc->gc_status) == MVMGCStatus_INTERRUPT)
             MVM_gc_enter_from_interrupt(tc);
         else
-            MVM_panic(MVM_exitcode_gcorch, "Invalid GC status observed; aborting");
+            MVM_panic(MVM_exitcode_gcorch,
+                "Invalid GC status observed while blocking thread; aborting");
     }
 }
 
@@ -266,23 +302,100 @@ void MVM_gc_mark_thread_unblocked(MVMThreadContext *tc) {
     while (MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE,
             MVMGCStatus_NONE) != MVMGCStatus_UNABLE) {
         /* We can't, presumably because a GC run is going on. We should wait
-         * for that to finish before we go on, but without chewing CPU. */
-        MVM_platform_thread_yield();
+         * for that to finish before we go on; try using a condvar for it. */
+        uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
+        if (tc->instance->in_gc) {
+            uv_cond_wait(&tc->instance->cond_blocked_can_continue,
+                &tc->instance->mutex_gc_orchestrate);
+            uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
+        }
+        else {
+            uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
+            if ((MVM_load(&tc->gc_status) & MVMSUSPENDSTATUS_MASK) == MVMSuspendState_SUSPEND_REQUEST) {
+                while (1) {
+                    /* Let's try to unblock into INTERRUPT mode and keep the
+                     * suspend request, then immediately enter_from_interrupt,
+                     * so we actually wait to be woken up. */
+                    if (MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST,
+                                MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST) ==
+                            (MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST)) {
+                        MVM_gc_enter_from_interrupt(tc);
+                        break;
+                    }
+                    /* If we're being resumed while trying to unblock into
+                     * suspend request, we'd block forever. Therefor we have
+                     * to check if we've been un-requested. */
+                    if (MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE,
+                                MVMGCStatus_NONE) ==
+                            MVMGCStatus_UNABLE) {
+                        return;
+                    }
+                }
+            } else if (MVM_load(&tc->gc_status) == MVMGCStatus_NONE) {
+                fprintf(stderr, "marking thread %d unblocked, but its status is already NONE.\n", tc->thread_id);
+                break;
+            } else {
+                MVM_platform_thread_yield();
+            }
+        }
     }
 }
 
+/* Checks if a thread has marked itself as blocked. Considers that the GC may
+ * have stolen its work and marked it as such also. So what this really
+ * answers is, "did this thread mark itself blocked, and since then not mark
+ * itself unblocked", which is useful if you need to conditionally unblock
+ * or re-block. If the status changes from blocked to stolen or stolen to
+ * blocked between checking this and calling unblock, it's safe anyway since
+ * these cases are handled in MVM_gc_mark_thread_unblocked. Note that this
+ * relies on a thread itself only ever calling block/unblock. */
+MVMint32 MVM_gc_is_thread_blocked(MVMThreadContext *tc) {
+    AO_t gc_status = MVM_load(&(tc->gc_status)) & MVMGCSTATUS_MASK;
+    return gc_status == MVMGCStatus_UNABLE ||
+           gc_status == MVMGCStatus_STOLEN;
+}
+
 static MVMint32 is_full_collection(MVMThreadContext *tc) {
-    MVMuint64 threshold = MVM_GC_GEN2_THRESHOLD_BASE +
-        ((MVMuint64)tc->instance->num_user_threads * MVM_GC_GEN2_THRESHOLD_THREAD);
-    return MVM_load(&tc->instance->gc_promoted_bytes_since_last_full) > threshold;
+    MVMuint64 percent_growth, promoted;
+    size_t rss;
+
+    /* If it's below the absolute minimum, quickly return. */
+    promoted = (MVMuint64)MVM_load(&tc->instance->gc_promoted_bytes_since_last_full);
+    if (promoted < MVM_GC_GEN2_THRESHOLD_MINIMUM)
+        return 0;
+
+    /* If we're heap profiling then don't consider the resident set size, as
+     * it will be hugely distorted by the profile data we record. */
+    if (MVM_profile_heap_profiling(tc))
+        return 1;
+
+    /* Otherwise, consider percentage of resident set size. */
+    if (uv_resident_set_memory(&rss) < 0 || rss == 0)
+        rss = 50 * 1024 * 1024;
+    percent_growth = (100 * promoted) / (MVMuint64)rss;
+
+    return percent_growth >= MVM_GC_GEN2_THRESHOLD_PERCENT;
 }
 
 static void run_gc(MVMThreadContext *tc, MVMuint8 what_to_do) {
     MVMuint8   gen;
     MVMuint32  i, n;
 
+    unsigned int interval_id;
+
+#if MVM_GC_DEBUG
+    if (tc->in_spesh)
+        MVM_panic(1, "Must not GC when in the specializer/JIT\n");
+#endif
+
     /* Decide nursery or full collection. */
-    gen = is_full_collection(tc) ? MVMGCGenerations_Both : MVMGCGenerations_Nursery;
+    gen = tc->instance->gc_full_collect ? MVMGCGenerations_Both : MVMGCGenerations_Nursery;
+
+    if (tc->instance->gc_full_collect) {
+        interval_id = MVM_telemetry_interval_start(tc, "start full collection");
+    } else {
+        interval_id = MVM_telemetry_interval_start(tc, "start minor collection");
+    }
 
     /* Do GC work for ourselves and any work threads. */
     for (i = 0, n = tc->gc_work_count ; i < n; i++) {
@@ -297,32 +410,7 @@ static void run_gc(MVMThreadContext *tc, MVMuint8 what_to_do) {
     /* Wait for everybody to agree we're done. */
     finish_gc(tc, gen, what_to_do == MVMGCWhatToDo_All);
 
-    /* Now we're all done, it's safe to finalize any objects that need it. */
-	/* XXX TODO explore the feasability of doing this in a background
-	 * finalizer/destructor thread and letting the main thread(s) continue
-	 * on their merry way(s). */
-    for (i = 0, n = tc->gc_work_count ; i < n; i++) {
-        MVMThreadContext *other = tc->gc_work[i].tc;
-
-        /* The thread might've been destroyed */
-        if (!other)
-            continue;
-
-        /* Contribute this thread's promoted bytes. */
-        MVM_add(&tc->instance->gc_promoted_bytes_since_last_full, other->gc_promoted_bytes);
-
-        /* Collect nursery and gen2 as needed. */
-        GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE,
-            "Thread %d run %d : collecting nursery uncopied of thread %d\n",
-            other->thread_id);
-        MVM_gc_collect_free_nursery_uncopied(other, tc->gc_work[i].limit);
-        if (gen == MVMGCGenerations_Both) {
-            GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE,
-                "Thread %d run %d : freeing gen2 of thread %d\n",
-                other->thread_id);
-            MVM_gc_collect_free_gen2_unmarked(other, 0);
-        }
-    }
+    MVM_telemetry_interval_stop(tc, interval_id, "finished run_gc");
 }
 
 /* This is called when the allocator finds it has run out of memory and wants
@@ -332,11 +420,16 @@ static void run_gc(MVMThreadContext *tc, MVMuint8 what_to_do) {
 void MVM_gc_enter_from_allocator(MVMThreadContext *tc) {
     GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : Entered from allocate\n");
 
+    MVM_telemetry_timestamp(tc, "gc_enter_from_allocator");
+
     /* Try to start the GC run. */
     if (MVM_trycas(&tc->instance->gc_start, 0, 1)) {
         MVMThread *last_starter = NULL;
         MVMuint32 num_threads = 0;
-        MVMuint32 is_full;
+
+        /* Stash us as the thread to blame for this GC run (used to give it a
+         * potential nursery size boost). */
+        tc->instance->thread_to_blame_for_gc = tc;
 
         /* Need to wait for other threads to reset their gc_status. */
         while (MVM_load(&tc->instance->gc_ack)) {
@@ -354,11 +447,13 @@ void MVM_gc_enter_from_allocator(MVMThreadContext *tc) {
             (int)MVM_load(&tc->instance->gc_seq_number));
 
         /* Decide if it will be a full collection. */
-        is_full = is_full_collection(tc);
+        tc->instance->gc_full_collect = is_full_collection(tc);
+
+        MVM_telemetry_timestamp(tc, "won the gc starting race");
 
         /* If profiling, record that GC is starting. */
         if (tc->instance->profiling)
-            MVM_profiler_log_gc_start(tc, is_full);
+            MVM_profiler_log_gc_start(tc, tc->instance->gc_full_collect, 1);
 
         /* Ensure our stolen list is empty. */
         tc->gc_work_count = 0;
@@ -370,35 +465,32 @@ void MVM_gc_enter_from_allocator(MVMThreadContext *tc) {
         /* We'll take care of our own work. */
         add_work(tc, tc);
 
-        /* Find other threads, and signal or steal. */
-        do {
-            MVMThread *threads = (MVMThread *)MVM_load(&tc->instance->threads);
-            if (threads && threads != last_starter) {
-                MVMThread *head = threads;
-                MVMuint32 add;
-                while ((threads = (MVMThread *)MVM_casptr(&tc->instance->threads, head, NULL)) != head) {
-                    head = threads;
-                }
+        /* Find other threads, and signal or steal. Also set in GC flag. */
+        uv_mutex_lock(&tc->instance->mutex_threads);
+        tc->instance->in_gc = 1;
+        num_threads = signal_all(tc, tc->instance->threads);
+        uv_mutex_unlock(&tc->instance->mutex_threads);
 
-                add = signal_all_but(tc, head, last_starter);
-                last_starter = head;
-                if (add) {
-                    GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : Found %d other threads\n", add);
-                    MVM_add(&tc->instance->gc_start, add);
-                    num_threads += add;
-                }
-            }
+        /* Bump the thread count and signal any threads waiting for that. */
+        uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
+        MVM_add(&tc->instance->gc_start, num_threads);
+        uv_cond_broadcast(&tc->instance->cond_gc_start);
+        uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
 
-            /* If there's an event loop thread, wake it up to participate. */
-            if (tc->instance->event_loop_wakeup)
-                uv_async_send(tc->instance->event_loop_wakeup);
-        } while (MVM_load(&tc->instance->gc_start) > 1);
+        /* If there's an event loop thread, wake it up to participate. */
+        if (tc->instance->event_loop_wakeup)
+            uv_async_send(tc->instance->event_loop_wakeup);
 
-        /* Sanity checks. */
-        if (!MVM_trycas(&tc->instance->threads, NULL, last_starter))
-            MVM_panic(MVM_exitcode_gcorch, "threads list corrupted\n");
+        /* Wait for other threads to be ready. */
+        uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
+        while (MVM_load(&tc->instance->gc_start) > 1)
+            uv_cond_wait(&tc->instance->cond_gc_start, &tc->instance->mutex_gc_orchestrate);
+        uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
+
+        /* Sanity check finish votes. */
         if (MVM_load(&tc->instance->gc_finish) != 0)
-            MVM_panic(MVM_exitcode_gcorch, "Finish votes was %"MVM_PRSz"\n", MVM_load(&tc->instance->gc_finish));
+            MVM_panic(MVM_exitcode_gcorch, "Finish votes was %"MVM_PRSz"\n",
+                MVM_load(&tc->instance->gc_finish));
 
         /* gc_ack gets an extra so the final acknowledger
          * can also free the STables. */
@@ -409,7 +501,7 @@ void MVM_gc_enter_from_allocator(MVMThreadContext *tc) {
 
         /* Now we're ready to start, zero promoted since last full collection
          * counter if this is a full collect. */
-        if (is_full)
+        if (tc->instance->gc_full_collect)
             MVM_store(&tc->instance->gc_promoted_bytes_since_last_full, 0);
 
         /* This is a safe point for us to free any STables that have been marked
@@ -421,8 +513,11 @@ void MVM_gc_enter_from_allocator(MVMThreadContext *tc) {
 
         /* Signal to the rest to start */
         GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : coordinator signalling start\n");
+        uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
         if (MVM_decr(&tc->instance->gc_start) != 1)
             MVM_panic(MVM_exitcode_gcorch, "Start votes was %"MVM_PRSz"\n", MVM_load(&tc->instance->gc_start));
+        uv_cond_broadcast(&tc->instance->cond_gc_start);
+        uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
 
         /* Start collecting. */
         GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : coordinator entering run_gc\n");
@@ -432,7 +527,9 @@ void MVM_gc_enter_from_allocator(MVMThreadContext *tc) {
         if (tc->instance->profiling)
             MVM_profiler_log_gc_end(tc);
 
-        GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : GC complete (cooridnator)\n");
+        MVM_telemetry_timestamp(tc, "gc finished");
+
+        GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : GC complete (coordinator)\n");
     }
     else {
         /* Another thread beat us to starting the GC sync process. Thus, act as
@@ -442,17 +539,51 @@ void MVM_gc_enter_from_allocator(MVMThreadContext *tc) {
     }
 }
 
-/* This is called when a thread hits an interrupt at a GC safe point. This means
- * that another thread is already trying to start a GC run, so we don't need to
- * try and do that, just enlist in the run. */
+/* This is called when a thread hits an interrupt at a GC safe point.
+ *
+ * There are two interpretations for this:
+ * * That another thread is already trying to start a GC run, so we don't need
+ *   to try and do that, just enlist in the run.
+ * * The debug remote is asking this thread to suspend execution.
+ *
+ * Those cases can be distinguished by the gc state masked with
+ * MVMSUSPENDSTATUS_MASK.
+ *   */
 void MVM_gc_enter_from_interrupt(MVMThreadContext *tc) {
     AO_t curr;
 
     GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : Entered from interrupt\n");
 
+
+    if ((MVM_load(&tc->gc_status) & MVMSUSPENDSTATUS_MASK) == MVMSuspendState_SUSPEND_REQUEST) {
+        if (tc->instance->debugserver && tc->instance->debugserver->debugspam_protocol)
+            fprintf(stderr, "thread %d reacting to suspend request\n", tc->thread_id);
+        MVM_gc_mark_thread_blocked(tc);
+        while (1) {
+            uv_cond_wait(&tc->instance->debugserver->tell_threads, &tc->instance->debugserver->mutex_cond);
+            if ((MVM_load(&tc->gc_status) & MVMSUSPENDSTATUS_MASK) == MVMSuspendState_NONE) {
+                if (tc->instance->debugserver && tc->instance->debugserver->debugspam_protocol)
+                    fprintf(stderr, "thread %d got un-suspended\n", tc->thread_id);
+                break;
+            } else {
+                if (tc->instance->debugserver && tc->instance->debugserver->debugspam_protocol)
+                    fprintf(stderr, "something happened, but we're still suspended.\n");
+            }
+        }
+        MVM_gc_mark_thread_unblocked(tc);
+        return;
+    } else if (MVM_load(&tc->gc_status) == (MVMGCStatus_UNABLE | MVMSuspendState_SUSPENDED)) {
+        /* The thread that the tc belongs to is already waiting in that loop
+         * up there. If we reach this piece of code the active thread must be
+         * the debug remote using a suspended thread's ThreadContext. */
+        return;
+    }
+
+    MVM_telemetry_timestamp(tc, "gc_enter_from_interrupt");
+
     /* If profiling, record that GC is starting. */
     if (tc->instance->profiling)
-        MVM_profiler_log_gc_start(tc, is_full_collection(tc));
+        MVM_profiler_log_gc_start(tc, is_full_collection(tc), 0);
 
     /* We'll certainly take care of our own work. */
     tc->gc_work_count = 0;
@@ -462,16 +593,19 @@ void MVM_gc_enter_from_interrupt(MVMThreadContext *tc) {
      * greater (0 should never happen; 1 means the coordinator is still counting
      * up how many threads will join in, so we should wait until it decides to
      * decrement.) */
-    while ((curr = MVM_load(&tc->instance->gc_start)) < 2
-            || !MVM_trycas(&tc->instance->gc_start, curr, curr - 1)) {
-        /* MVM_platform_thread_yield();*/
-    }
+    uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
+    while (MVM_load(&tc->instance->gc_start) < 2)
+        uv_cond_wait(&tc->instance->cond_gc_start, &tc->instance->mutex_gc_orchestrate);
+    MVM_decr(&tc->instance->gc_start);
+    uv_cond_broadcast(&tc->instance->cond_gc_start);
+    uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
 
     /* Wait for all threads to indicate readiness to collect. */
     GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : Waiting for other threads\n");
-    while (MVM_load(&tc->instance->gc_start)) {
-        /* MVM_platform_thread_yield();*/
-    }
+    uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
+    while (MVM_load(&tc->instance->gc_start))
+        uv_cond_wait(&tc->instance->cond_gc_start, &tc->instance->mutex_gc_orchestrate);
+    uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate);
 
     GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE, "Thread %d run %d : Entering run_gc\n");
     run_gc(tc, MVMGCWhatToDo_NoInstance);
@@ -486,11 +620,45 @@ void MVM_gc_enter_from_interrupt(MVMThreadContext *tc) {
 void MVM_gc_global_destruction(MVMThreadContext *tc) {
     char *nursery_tmp;
 
-    /* Must wait until we're the only thread... */
-    while (tc->instance->num_user_threads) {
-        GC_SYNC_POINT(tc);
-        MVM_platform_thread_yield();
+    MVMInstance *vm = tc->instance;
+    MVMThread *cur_thread = 0;
+
+    /* Ask all threads to suspend on the next chance they get */
+    uv_mutex_lock(&vm->mutex_threads);
+
+    cur_thread = vm->threads;
+    while (cur_thread) {
+       if (cur_thread->body.tc != tc) {
+            while (1) {
+                /* Is the thread currently doing completely ordinary code execution? */
+                if (MVM_cas(&tc->gc_status, MVMGCStatus_NONE, MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST)
+                        == MVMGCStatus_NONE) {
+                    break;
+                }
+                /* Is the thread in question currently blocked, i.e. spending time in
+                 * some long-running piece of C code, waiting for I/O, etc.?
+                 * If so, just store the suspend request bit so when it unblocks itself
+                 * it'll suspend execution. */
+                if (MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE, MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST)
+                        == MVMGCStatus_UNABLE) {
+                    break;
+                }
+                /* Was the thread faster than us? For example by running into
+                 * a breakpoint, completing a step, or encountering an
+                 * unhandled exception? If so, we're done here. */
+                if ((MVM_load(&tc->gc_status) & MVMSUSPENDSTATUS_MASK) == MVMSuspendState_SUSPEND_REQUEST) {
+                    break;
+                }
+                MVM_platform_thread_yield();
+            }
+       }
+       cur_thread = cur_thread->body.next;
     }
+
+    uv_mutex_unlock(&vm->mutex_threads);
+
+    /* Allow other threads to do a little more work before we continue here */
+    MVM_platform_thread_yield();
 
     /* Fake a nursery collection run by swapping the semi-
      * space nurseries. */

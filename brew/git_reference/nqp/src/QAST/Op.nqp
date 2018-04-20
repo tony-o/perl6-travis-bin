@@ -6,6 +6,7 @@ class QAST::Op is QAST::Node does QAST::Children {
 
     method new(str :$name, str :$op, *@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::Op, '@!children', @children);
         nqp::bindattr_s($node, QAST::Op, '$!name', $name);
         nqp::bindattr_s($node, QAST::Op, '$!op', $op);
@@ -29,7 +30,7 @@ class QAST::Op is QAST::Node does QAST::Children {
 
     method count_inline_placeholder_usages(@usages) {
         my int $i := 0;
-        my int $elems := +@(self);
+        my int $elems := nqp::elems(@(self));
         while $i < $elems {
             self[$i].count_inline_placeholder_usages(@usages);
             $i++;
@@ -39,7 +40,7 @@ class QAST::Op is QAST::Node does QAST::Children {
     method substitute_inline_placeholders(@fillers) {
         my $result := self.shallow_clone();
         my int $i := 0;
-        my int $elems := +@(self);
+        my int $elems := nqp::elems(@(self));
         while $i < $elems {
             $result[$i] := self[$i].substitute_inline_placeholders(@fillers)
                 unless nqp::isstr(self[$i]);
@@ -51,7 +52,7 @@ class QAST::Op is QAST::Node does QAST::Children {
     method evaluate_unquotes(@unquotes) {
         my $result := self.shallow_clone();
         my $i := 0;
-        my $elems := +@(self);
+        my $elems := nqp::elems(@(self));
         while $i < $elems {
             $result[$i] := self[$i].evaluate_unquotes(@unquotes)
                 unless nqp::isstr(self[$i]);

@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.charset.Charset;
+import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -15,12 +16,12 @@ import org.perl6.nqp.runtime.ExceptionHandling;
 import org.perl6.nqp.runtime.ThreadContext;
 
 public class FileHandle extends SyncHandle implements IIOSeekable, IIOLockable {
-    
+
     FileChannel fc;
     FileLock lock;
-    protected boolean eof = false;
-    
-    public static OpenOption[] resolveOpenMode(String mode) {
+    private boolean append = false;
+
+    public OpenOption[] resolveOpenMode(String mode) {
         if(mode.length() == 0)
             return null;
 
@@ -51,12 +52,25 @@ public class FileHandle extends SyncHandle implements IIOSeekable, IIOLockable {
             default : return null;
         }
 
+        /* work around differences between Perl 6 and FileChannel.open */
+        List<OpenOption> optsToRemove = new ArrayList<OpenOption>();
+        if (opts.contains(StandardOpenOption.READ)) {
+            /* APPEND may not be used in conjunction with READ. */
+            if (opts.contains(StandardOpenOption.APPEND)) {
+                append = true;
+                optsToRemove.add(StandardOpenOption.APPEND);
+            }
+        }
+        opts.removeAll(optsToRemove);
+
         return opts.toArray(new OpenOption[opts.size()]);
     }
-    
+
     public FileHandle(ThreadContext tc, String filename, String mode) {
         try {
             Path p = new File(filename).toPath();
+            if (Files.isDirectory(p))
+                ExceptionHandling.dieInternal(tc, "Tried to open directory " + filename);
             OpenOption[] opts = resolveOpenMode(mode);
             if(opts == null)
                 ExceptionHandling.dieInternal(tc, "Unhandled file open mode '" + mode + "'");
@@ -67,7 +81,35 @@ public class FileHandle extends SyncHandle implements IIOSeekable, IIOLockable {
             throw ExceptionHandling.dieInternal(tc, e);
         }
     }
-    
+
+    public long write(ThreadContext tc, byte[] array) {
+        if (append) {
+            try {
+                fc.position(fc.size());
+            } catch (IOException e) {
+                throw ExceptionHandling.dieInternal(tc, e);
+            }
+            /* Reset readBuffer and eof after calling fc.position. */
+            readBuffer = null;
+            eof = false;
+        }
+        return super.write(tc, array);
+    }
+
+    public long print(ThreadContext tc, String s) {
+        if (append) {
+            try {
+                fc.position(fc.size());
+            } catch (IOException e) {
+                throw ExceptionHandling.dieInternal(tc, e);
+            }
+            /* Reset readBuffer and eof after calling fc.position. */
+            readBuffer = null;
+            eof = false;
+        }
+        return super.print(tc, s);
+    }
+
     public void seek(ThreadContext tc, long offset, long whence) {
         try {
             switch ((int)whence) {
@@ -88,8 +130,12 @@ public class FileHandle extends SyncHandle implements IIOSeekable, IIOLockable {
         } catch (IllegalArgumentException e) {
             throw ExceptionHandling.dieInternal(tc, e);
         }
+        /* Reset readBuffer since content is out of sync after fc.position. */
+        readBuffer = null;
+        /* Reset eof since it might have changed; needs to be checked anew. */
+        eof = false;
     }
-    
+
     public long tell(ThreadContext tc) {
         try {
             long position = fc.position();
@@ -132,7 +178,7 @@ public class FileHandle extends SyncHandle implements IIOSeekable, IIOLockable {
             throw ExceptionHandling.dieInternal(tc, e);
         }
     }
-    
+
     public void flush(ThreadContext tc) {
         try {
             fc.force(false);
@@ -148,7 +194,7 @@ public class FileHandle extends SyncHandle implements IIOSeekable, IIOLockable {
             return false;
         else {
             try {
-                eof = fc.position() >= fc.size();
+                eof = fc.size() > 0 && fc.position() >= fc.size();
                 return eof;
             }
             catch (Exception e) {

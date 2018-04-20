@@ -18,6 +18,11 @@
  * IN THE SOFTWARE.
  */
 
+/* We lean on the fact that POLL{IN,OUT,ERR,HUP} correspond with their
+ * EPOLL* counterparts.  We use the POLL* variants in this file because that
+ * is what libuv uses elsewhere and it avoids a dependency on <sys/epoll.h>.
+ */
+
 #include "uv.h"
 #include "internal.h"
 
@@ -39,7 +44,7 @@
 #define HAVE_IFADDRS_H 1
 
 #ifdef __UCLIBC__
-# if __UCLIBC_MAJOR__ < 0 || __UCLIBC_MINOR__ < 9 || __UCLIBC_SUBLEVEL__ < 32
+# if __UCLIBC_MAJOR__ < 0 && __UCLIBC_MINOR__ < 9 && __UCLIBC_SUBLEVEL__ < 32
 #  undef HAVE_IFADDRS_H
 # endif
 #endif
@@ -52,7 +57,7 @@
 # endif
 # include <sys/socket.h>
 # include <net/ethernet.h>
-# include <linux/if_packet.h>
+# include <netpacket/packet.h>
 #endif /* HAVE_IFADDRS_H */
 
 /* Available from 2.6.32 onwards. */
@@ -69,7 +74,9 @@
 #endif
 
 static int read_models(unsigned int numcpus, uv_cpu_info_t* ci);
-static int read_times(unsigned int numcpus, uv_cpu_info_t* ci);
+static int read_times(FILE* statfile_fp,
+                      unsigned int numcpus,
+                      uv_cpu_info_t* ci);
 static void read_speeds(unsigned int numcpus, uv_cpu_info_t* ci);
 static unsigned long read_cpufreq(unsigned int cpunum);
 
@@ -100,9 +107,27 @@ int uv__platform_loop_init(uv_loop_t* loop) {
 }
 
 
+int uv__io_fork(uv_loop_t* loop) {
+  int err;
+  void* old_watchers;
+
+  old_watchers = loop->inotify_watchers;
+
+  uv__close(loop->backend_fd);
+  loop->backend_fd = -1;
+  uv__platform_loop_delete(loop);
+
+  err = uv__platform_loop_init(loop);
+  if (err)
+    return err;
+
+  return uv__inotify_fork(loop, old_watchers);
+}
+
+
 void uv__platform_loop_delete(uv_loop_t* loop) {
   if (loop->inotify_fd == -1) return;
-  uv__io_stop(loop, &loop->inotify_read_watcher, UV__POLLIN);
+  uv__io_stop(loop, &loop->inotify_read_watcher, POLLIN);
   uv__close(loop->inotify_fd);
   loop->inotify_fd = -1;
 }
@@ -140,6 +165,26 @@ void uv__platform_invalidate_fd(uv_loop_t* loop, int fd) {
 }
 
 
+int uv__io_check_fd(uv_loop_t* loop, int fd) {
+  struct uv__epoll_event e;
+  int rc;
+
+  e.events = POLLIN;
+  e.data = -1;
+
+  rc = 0;
+  if (uv__epoll_ctl(loop->backend_fd, UV__EPOLL_CTL_ADD, fd, &e))
+    if (errno != EEXIST)
+      rc = -errno;
+
+  if (rc == 0)
+    if (uv__epoll_ctl(loop->backend_fd, UV__EPOLL_CTL_DEL, fd, &e))
+      abort();
+
+  return rc;
+}
+
+
 void uv__io_poll(uv_loop_t* loop, int timeout) {
   /* A bug in kernels < 2.6.37 makes timeouts larger than ~30 minutes
    * effectively infinite on 32 bits architectures.  To avoid blocking
@@ -161,6 +206,7 @@ void uv__io_poll(uv_loop_t* loop, int timeout) {
   sigset_t sigset;
   uint64_t sigmask;
   uint64_t base;
+  int have_signals;
   int nevents;
   int count;
   int nfds;
@@ -261,11 +307,13 @@ void uv__io_poll(uv_loop_t* loop, int timeout) {
     if (nfds == 0) {
       assert(timeout != -1);
 
-      timeout = real_timeout - timeout;
-      if (timeout > 0)
-        continue;
+      if (timeout == 0)
+        return;
 
-      return;
+      /* We may have been inside the system call for longer than |timeout|
+       * milliseconds so we need to update the timestamp to avoid drift.
+       */
+      goto update_timeout;
     }
 
     if (nfds == -1) {
@@ -288,6 +336,7 @@ void uv__io_poll(uv_loop_t* loop, int timeout) {
       goto update_timeout;
     }
 
+    have_signals = 0;
     nevents = 0;
 
     assert(loop->watchers != NULL);
@@ -321,7 +370,7 @@ void uv__io_poll(uv_loop_t* loop, int timeout) {
        * the current watcher. Also, filters out events that users has not
        * requested us to watch.
        */
-      pe->events &= w->pevents | UV__POLLERR | UV__POLLHUP;
+      pe->events &= w->pevents | POLLERR | POLLHUP;
 
       /* Work around an epoll quirk where it sometimes reports just the
        * EPOLLERR or EPOLLHUP event.  In order to force the event loop to
@@ -338,16 +387,30 @@ void uv__io_poll(uv_loop_t* loop, int timeout) {
        * needs to remember the error/hangup event.  We should get that for
        * free when we switch over to edge-triggered I/O.
        */
-      if (pe->events == UV__EPOLLERR || pe->events == UV__EPOLLHUP)
-        pe->events |= w->pevents & (UV__EPOLLIN | UV__EPOLLOUT);
+      if (pe->events == POLLERR || pe->events == POLLHUP)
+        pe->events |= w->pevents & (POLLIN | POLLOUT | UV__POLLPRI);
 
       if (pe->events != 0) {
-        w->cb(loop, w, pe->events);
+        /* Run signal watchers last.  This also affects child process watchers
+         * because those are implemented in terms of signal watchers.
+         */
+        if (w == &loop->signal_io_watcher)
+          have_signals = 1;
+        else
+          w->cb(loop, w, pe->events);
+
         nevents++;
       }
     }
+
+    if (have_signals != 0)
+      loop->signal_io_watcher.cb(loop, &loop->signal_io_watcher, POLLIN);
+
     loop->watchers[loop->nwatchers] = NULL;
     loop->watchers[loop->nwatchers + 1] = NULL;
+
+    if (have_signals != 0)
+      return;  /* Event loop should cycle now so don't poll again. */
 
     if (nevents != 0) {
       if (nfds == ARRAY_SIZE(events) && --count != 0) {
@@ -406,47 +469,6 @@ uint64_t uv__hrtime(uv_clocktype_t type) {
     return 0;  /* Not really possible. */
 
   return t.tv_sec * (uint64_t) 1e9 + t.tv_nsec;
-}
-
-
-void uv_loadavg(double avg[3]) {
-  struct sysinfo info;
-
-  if (sysinfo(&info) < 0) return;
-
-  avg[0] = (double) info.loads[0] / 65536.0;
-  avg[1] = (double) info.loads[1] / 65536.0;
-  avg[2] = (double) info.loads[2] / 65536.0;
-}
-
-
-int uv_exepath(char* buffer, size_t* size) {
-  ssize_t n;
-
-  if (buffer == NULL || size == NULL || *size == 0)
-    return -EINVAL;
-
-  n = *size - 1;
-  if (n > 0)
-    n = readlink("/proc/self/exe", buffer, n);
-
-  if (n == -1)
-    return -errno;
-
-  buffer[n] = '\0';
-  *size = n;
-
-  return 0;
-}
-
-
-uint64_t uv_get_free_memory(void) {
-  return (uint64_t) sysconf(_SC_PAGESIZE) * sysconf(_SC_AVPHYS_PAGES);
-}
-
-
-uint64_t uv_get_total_memory(void) {
-  return (uint64_t) sysconf(_SC_PAGESIZE) * sysconf(_SC_PHYS_PAGES);
 }
 
 
@@ -532,29 +554,57 @@ int uv_uptime(double* uptime) {
 }
 
 
+static int uv__cpu_num(FILE* statfile_fp, unsigned int* numcpus) {
+  unsigned int num;
+  char buf[1024];
+
+  if (!fgets(buf, sizeof(buf), statfile_fp))
+    return -EIO;
+
+  num = 0;
+  while (fgets(buf, sizeof(buf), statfile_fp)) {
+    if (strncmp(buf, "cpu", 3))
+      break;
+    num++;
+  }
+
+  if (num == 0)
+    return -EIO;
+
+  *numcpus = num;
+  return 0;
+}
+
+
 int uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) {
   unsigned int numcpus;
   uv_cpu_info_t* ci;
   int err;
+  FILE* statfile_fp;
 
   *cpu_infos = NULL;
   *count = 0;
 
-  numcpus = sysconf(_SC_NPROCESSORS_ONLN);
-  assert(numcpus != (unsigned int) -1);
-  assert(numcpus != 0);
+  statfile_fp = uv__open_file("/proc/stat");
+  if (statfile_fp == NULL)
+    return -errno;
 
+  err = uv__cpu_num(statfile_fp, &numcpus);
+  if (err < 0)
+    goto out;
+
+  err = -ENOMEM;
   ci = uv__calloc(numcpus, sizeof(*ci));
   if (ci == NULL)
-    return -ENOMEM;
+    goto out;
 
   err = read_models(numcpus, ci);
   if (err == 0)
-    err = read_times(numcpus, ci);
+    err = read_times(statfile_fp, numcpus, ci);
 
   if (err) {
     uv_free_cpu_info(ci, numcpus);
-    return err;
+    goto out;
   }
 
   /* read_models() on x86 also reads the CPU speed from /proc/cpuinfo.
@@ -565,8 +615,15 @@ int uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) {
 
   *cpu_infos = ci;
   *count = numcpus;
+  err = 0;
 
-  return 0;
+out:
+
+  if (fclose(statfile_fp))
+    if (errno != EINTR && errno != EINPROGRESS)
+      abort();
+
+  return err;
 }
 
 
@@ -608,7 +665,7 @@ static int read_models(unsigned int numcpus, uv_cpu_info_t* ci) {
     defined(__i386__) || \
     defined(__mips__) || \
     defined(__x86_64__)
-  fp = fopen("/proc/cpuinfo", "r");
+  fp = uv__open_file("/proc/cpuinfo");
   if (fp == NULL)
     return -errno;
 
@@ -676,7 +733,9 @@ static int read_models(unsigned int numcpus, uv_cpu_info_t* ci) {
 }
 
 
-static int read_times(unsigned int numcpus, uv_cpu_info_t* ci) {
+static int read_times(FILE* statfile_fp,
+                      unsigned int numcpus,
+                      uv_cpu_info_t* ci) {
   unsigned long clock_ticks;
   struct uv_cpu_times_s ts;
   unsigned long user;
@@ -688,22 +747,19 @@ static int read_times(unsigned int numcpus, uv_cpu_info_t* ci) {
   unsigned int num;
   unsigned int len;
   char buf[1024];
-  FILE* fp;
 
   clock_ticks = sysconf(_SC_CLK_TCK);
   assert(clock_ticks != (unsigned long) -1);
   assert(clock_ticks != 0);
 
-  fp = fopen("/proc/stat", "r");
-  if (fp == NULL)
-    return -errno;
+  rewind(statfile_fp);
 
-  if (!fgets(buf, sizeof(buf), fp))
+  if (!fgets(buf, sizeof(buf), statfile_fp))
     abort();
 
   num = 0;
 
-  while (fgets(buf, sizeof(buf), fp)) {
+  while (fgets(buf, sizeof(buf), statfile_fp)) {
     if (num >= numcpus)
       break;
 
@@ -742,7 +798,6 @@ static int read_times(unsigned int numcpus, uv_cpu_info_t* ci) {
     ts.irq  = clock_ticks * irq;
     ci[num++].cpu_times = ts;
   }
-  fclose(fp);
   assert(num == numcpus);
 
   return 0;
@@ -759,7 +814,7 @@ static unsigned long read_cpufreq(unsigned int cpunum) {
            "/sys/devices/system/cpu/cpu%u/cpufreq/scaling_cur_freq",
            cpunum);
 
-  fp = fopen(buf, "r");
+  fp = uv__open_file(buf);
   if (fp == NULL)
     return 0;
 
@@ -782,6 +837,19 @@ void uv_free_cpu_info(uv_cpu_info_t* cpu_infos, int count) {
   uv__free(cpu_infos);
 }
 
+static int uv__ifaddr_exclude(struct ifaddrs *ent, int exclude_type) {
+  if (!((ent->ifa_flags & IFF_UP) && (ent->ifa_flags & IFF_RUNNING)))
+    return 1;
+  if (ent->ifa_addr == NULL)
+    return 1;
+  /*
+   * On Linux getifaddrs returns information related to the raw underlying
+   * devices. We're not interested in this information yet.
+   */
+  if (ent->ifa_addr->sa_family == PF_PACKET)
+    return exclude_type;
+  return !exclude_type;
+}
 
 int uv_interface_addresses(uv_interface_address_t** addresses,
   int* count) {
@@ -801,11 +869,8 @@ int uv_interface_addresses(uv_interface_address_t** addresses,
 
   /* Count the number of interfaces */
   for (ent = addrs; ent != NULL; ent = ent->ifa_next) {
-    if (!((ent->ifa_flags & IFF_UP) && (ent->ifa_flags & IFF_RUNNING)) ||
-        (ent->ifa_addr == NULL) ||
-        (ent->ifa_addr->sa_family == PF_PACKET)) {
+    if (uv__ifaddr_exclude(ent, UV__EXCLUDE_IFADDR))
       continue;
-    }
 
     (*count)++;
   }
@@ -822,17 +887,7 @@ int uv_interface_addresses(uv_interface_address_t** addresses,
   address = *addresses;
 
   for (ent = addrs; ent != NULL; ent = ent->ifa_next) {
-    if (!((ent->ifa_flags & IFF_UP) && (ent->ifa_flags & IFF_RUNNING)))
-      continue;
-
-    if (ent->ifa_addr == NULL)
-      continue;
-
-    /*
-     * On Linux getifaddrs returns information related to the raw underlying
-     * devices. We're not interested in this information yet.
-     */
-    if (ent->ifa_addr->sa_family == PF_PACKET)
+    if (uv__ifaddr_exclude(ent, UV__EXCLUDE_IFADDR))
       continue;
 
     address->name = uv__strdup(ent->ifa_name);
@@ -856,11 +911,8 @@ int uv_interface_addresses(uv_interface_address_t** addresses,
 
   /* Fill in physical addresses for each interface */
   for (ent = addrs; ent != NULL; ent = ent->ifa_next) {
-    if (!((ent->ifa_flags & IFF_UP) && (ent->ifa_flags & IFF_RUNNING)) ||
-        (ent->ifa_addr == NULL) ||
-        (ent->ifa_addr->sa_family != PF_PACKET)) {
+    if (uv__ifaddr_exclude(ent, UV__EXCLUDE_IFPHYS))
       continue;
-    }
 
     address = *addresses;
 

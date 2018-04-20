@@ -1,6 +1,7 @@
 class QAST::WVal is QAST::Node does QAST::CompileTimeValue {
     method new(:$value, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::WVal, '$!compile_time_value', $value);
         $node.set(%options) if %options;
         $node
@@ -23,8 +24,13 @@ class QAST::WVal is QAST::Node does QAST::CompileTimeValue {
     }
 
     method dump_extra_node_info() {
-	CATCH { return "?" } 
+	      CATCH { return "?" }
         my $v := self.compile_time_value();
-        $v.HOW.name($v);
+        my $info := $v.HOW.name($v);
+        if self.ann('past_block') -> $qast {
+            $info := "$info :cuid("
+              ~ nqp::ifnull(nqp::getattr($qast, QAST::Block, '$!cuid'), '?') ~ ")";
+        }
+        $info;
     }
 }

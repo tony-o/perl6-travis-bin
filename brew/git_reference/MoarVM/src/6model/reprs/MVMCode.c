@@ -1,14 +1,14 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps MVMCode_this_repr;
 
 /* Invocation protocol handler. */
 static void invoke_handler(MVMThreadContext *tc, MVMObject *invokee, MVMCallsite *callsite, MVMRegister *args) {
     if (IS_CONCRETE(invokee)) {
         MVMCode *code = (MVMCode *)invokee;
         MVM_frame_invoke(tc, code->body.sf, callsite, args,
-            MVM_frame_acquire_ref(tc, &(code->body.outer)), invokee, -1);
+            code->body.outer, invokee, -1);
     }
     else {
         MVM_exception_throw_adhoc(tc, "Cannot invoke code type object");
@@ -18,7 +18,7 @@ static void invoke_handler(MVMThreadContext *tc, MVMObject *invokee, MVMCallsite
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. Also sets the invocation protocol handler in the STable. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st = MVM_gc_allocate_stable(tc, &MVMCode_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -35,8 +35,9 @@ static void copy_to(MVMThreadContext *tc, MVMSTable *st, void *src, MVMObject *d
     MVMCodeBody *src_body  = (MVMCodeBody *)src;
     MVMCodeBody *dest_body = (MVMCodeBody *)dest;
     MVM_ASSIGN_REF(tc, &(dest_root->header), dest_body->sf, src_body->sf);
-    if (src_body->outer)
-        dest_body->outer = MVM_frame_acquire_ref(tc, &(src_body->outer));
+    if (src_body->outer) {
+        MVM_ASSIGN_REF(tc, &(dest_root->header), dest_body->outer, src_body->outer);
+    }
     MVM_ASSIGN_REF(tc, &(dest_root->header), dest_body->name, src_body->name);
     /* Explicitly do *not* copy state vars in a (presumably closure) clone. */
 }
@@ -44,7 +45,7 @@ static void copy_to(MVMThreadContext *tc, MVMSTable *st, void *src, MVMObject *d
 /* Adds held objects to the GC worklist. */
 static void gc_mark(MVMThreadContext *tc, MVMSTable *st, void *data, MVMGCWorklist *worklist) {
     MVMCodeBody *body = (MVMCodeBody *)data;
-    MVM_gc_worklist_add_frame(tc, worklist, body->outer);
+    MVM_gc_worklist_add(tc, worklist, &body->outer);
     MVM_gc_worklist_add(tc, worklist, &body->code_object);
     MVM_gc_worklist_add(tc, worklist, &body->sf);
     MVM_gc_worklist_add(tc, worklist, &body->name);
@@ -67,11 +68,8 @@ static void gc_mark(MVMThreadContext *tc, MVMSTable *st, void *data, MVMGCWorkli
 /* Called by the VM in order to free memory associated with this object. */
 static void gc_free(MVMThreadContext *tc, MVMObject *obj) {
     MVMCode *code_obj = (MVMCode *)obj;
-    if (code_obj->body.outer)
-        code_obj->body.outer = MVM_frame_dec_ref(tc, code_obj->body.outer);
     MVM_free(code_obj->body.state_vars);
 }
-
 
 static const MVMStorageSpec storage_spec = {
     MVM_STORAGE_SPEC_REFERENCE, /* inlineable */
@@ -95,10 +93,10 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info) {
 
 /* Initializes the representation. */
 const MVMREPROps * MVMCode_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &MVMCode_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps MVMCode_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     NULL, /* initialize */
@@ -124,54 +122,57 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "MVMCode", /* name */
     MVM_REPR_ID_MVMCode,
-    1, /* refs_frames */
     NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };
 
 MVM_PUBLIC MVMObject * MVM_code_location(MVMThreadContext *tc, MVMObject *code) {
     MVMObject *BOOTHash = tc->instance->boot_types.BOOTHash;
-    MVMCodeBody *body = &((MVMCode*)code)->body;
+    MVMObject *result = REPR(BOOTHash)->allocate(tc, STABLE(BOOTHash));
+    MVMString *file;
+    MVMint32   line;
+    MVMObject *filename_boxed;
+    MVMObject *linenumber_boxed;
+    MVMString *filename_key, *linenumber_key;
 
+    MVM_code_location_out(tc, code, &file, &line);
+
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&file);
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&result);
+
+    filename_key = MVM_string_ascii_decode_nt(tc, tc->instance->VMString, "file");
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&filename_key);
+
+    linenumber_key = MVM_string_ascii_decode_nt(tc, tc->instance->VMString, "line");
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&linenumber_key);
+
+    filename_boxed = MVM_repr_box_str(tc, tc->instance->boot_types.BOOTStr, file);
+    MVM_repr_bind_key_o(tc, result, filename_key, filename_boxed);
+
+    linenumber_boxed = MVM_repr_box_int(tc, tc->instance->boot_types.BOOTInt, line);
+    MVM_repr_bind_key_o(tc, result, linenumber_key, linenumber_boxed);
+
+    MVM_gc_root_temp_pop_n(tc, 4);
+
+    return result;
+}
+
+void MVM_code_location_out(MVMThreadContext *tc, MVMObject *code,
+                           MVMString **file_out, MVMint32 *line_out) {
     if (REPR(code)->ID != MVM_REPR_ID_MVMCode) {
         MVM_exception_throw_adhoc(tc, "getcodelocation needs an object of MVMCode REPR, got %s instead", REPR(code)->name);
     } else {
-        MVMObject * result = REPR(BOOTHash)->allocate(tc, STABLE(BOOTHash));
+        MVMCodeBody          *body = &((MVMCode*)code)->body;
         MVMBytecodeAnnotation *ann = MVM_bytecode_resolve_annotation(tc, &body->sf->body, 0);
         MVMCompUnit            *cu = body->sf->body.cu;
         MVMint32           str_idx = ann ? ann->filename_string_heap_index : 0;
-        MVMint32           line_nr = ann ? ann->line_number : 1;
-        MVMString        *filename;
 
-        MVMObject   *filename_boxed;
-        MVMObject *linenumber_boxed;
-        MVMString *filename_key, *linenumber_key;
-
-        MVM_gc_root_temp_push(tc, (MVMCollectable **)&result);
-
-        filename_key = MVM_string_ascii_decode_nt(tc, tc->instance->VMString, "file");
-        MVM_gc_root_temp_push(tc, (MVMCollectable **)&filename_key);
-
-        linenumber_key = MVM_string_ascii_decode_nt(tc, tc->instance->VMString, "line");
-        MVM_gc_root_temp_push(tc, (MVMCollectable **)&linenumber_key);
-
+        *line_out = ann ? ann->line_number : 1;
         if (ann && str_idx < cu->body.num_strings) {
-            filename = MVM_cu_string(tc, cu, str_idx);
+            *file_out = MVM_cu_string(tc, cu, str_idx);
         } else {
-            filename = cu->body.filename;
+            *file_out = cu->body.filename;
         }
         MVM_free(ann);
-
-        filename_boxed = MVM_repr_box_str(tc, tc->instance->boot_types.BOOTStr, filename);
-
-        MVM_repr_bind_key_o(tc, result, filename_key, filename_boxed);
-
-        linenumber_boxed = MVM_repr_box_int(tc, tc->instance->boot_types.BOOTInt, line_nr);
-        MVM_repr_bind_key_o(tc, result, linenumber_key, linenumber_boxed);
-
-        MVM_gc_root_temp_pop_n(tc, 3);
-
-        return result;
     }
-
-    return NULL;
 }

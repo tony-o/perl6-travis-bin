@@ -1,14 +1,14 @@
 #include "moar.h"
-#include "math.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps CPPStruct_this_repr;
 
 /* Locates all of the attributes. Puts them onto a flattened, ordered
  * list of attributes (populating the passed flat_list). Also builds
  * the index mapping for doing named lookups. Note index is not related
  * to the storage position. */
-static MVMObject * index_mapping_and_flat_list(MVMThreadContext *tc, MVMObject *mro, MVMCPPStructREPRData *repr_data) {
+static MVMObject * index_mapping_and_flat_list(MVMThreadContext *tc, MVMObject *mro,
+         MVMCPPStructREPRData *repr_data, MVMSTable *st) {
     MVMInstance *instance  = tc->instance;
     MVMObject *flat_list, *class_list, *attr_map_list;
     MVMint32  num_classes, i, current_slot = 0;
@@ -16,6 +16,7 @@ static MVMObject * index_mapping_and_flat_list(MVMThreadContext *tc, MVMObject *
 
     MVMint32 mro_idx = MVM_repr_elems(tc, mro);
 
+    MVM_gc_root_temp_push(tc, (MVMCollectable **)&st);
     MVM_gc_root_temp_push(tc, (MVMCollectable **)&mro);
 
     flat_list = MVM_repr_alloc_init(tc, MVM_hll_current(tc)->slurpy_array_type);
@@ -85,15 +86,17 @@ static MVMObject * index_mapping_and_flat_list(MVMThreadContext *tc, MVMObject *
         }
     }
 
-    MVM_gc_root_temp_pop_n(tc, 4);
+    MVM_gc_root_temp_pop_n(tc, 5);
 
     /* We can now form the name map. */
     num_classes = MVM_repr_elems(tc, class_list);
     result = (MVMCPPStructNameMap *) MVM_malloc(sizeof(MVMCPPStructNameMap) * (1 + num_classes));
 
     for (i = 0; i < num_classes; i++) {
-        result[i].class_key = MVM_repr_at_pos_o(tc, class_list, i);
-        result[i].name_map  = MVM_repr_at_pos_o(tc, attr_map_list, i);
+        MVM_ASSIGN_REF(tc, &(st->header), result[i].class_key,
+            MVM_repr_at_pos_o(tc, class_list, i));
+        MVM_ASSIGN_REF(tc, &(st->header), result[i].name_map,
+            MVM_repr_at_pos_o(tc, attr_map_list, i));
     }
 
     /* set the end to be NULL, it's useful for iteration. */
@@ -104,12 +107,20 @@ static MVMObject * index_mapping_and_flat_list(MVMThreadContext *tc, MVMObject *
     return flat_list;
 }
 
+static MVMint32 round_up_to_multi(MVMint32 i, MVMint32 m) {
+    return (MVMint32)((i + m - 1) / m) * m;
+}
+
 /* This works out an allocation strategy for the object. It takes care of
  * "inlining" storage of attributes that are natively typed, as well as
  * noting unbox targets. */
-static void compute_allocation_strategy(MVMThreadContext *tc, MVMObject *repr_info, MVMCPPStructREPRData *repr_data) {
+static void compute_allocation_strategy(MVMThreadContext *tc, MVMSTable *st,
+                                        MVMObject *repr_info, MVMCPPStructREPRData *repr_data) {
     /* Compute index mapping table and get flat list of attributes. */
-    MVMObject *flat_list = index_mapping_and_flat_list(tc, repr_info, repr_data);
+    MVMObject *flat_list;
+    MVMROOT(tc, st, {
+        flat_list = index_mapping_and_flat_list(tc, repr_info, repr_data, st);
+    });
 
     /* If we have no attributes in the index mapping, then just the header. */
     if (repr_data->name_to_index_mapping[0].class_key == NULL) {
@@ -120,10 +131,8 @@ static void compute_allocation_strategy(MVMThreadContext *tc, MVMObject *repr_in
     /* Otherwise, we need to compute the allocation strategy.  */
     else {
         /* We track the size of the struct, which is what we'll want offsets into. */
-        MVMint32 cur_size = 0;
-        /* The structure itself will be the multiple of its biggest element in size.
-         * So we keep track of that biggest element. */
-        MVMint32 multiple_of = 1;
+        MVMint32 cur_size    = 0;
+        MVMint32 struct_size = 0;
 
         /* Get number of attributes and set up various counters. */
         MVMint32 num_attrs        = MVM_repr_elems(tc, flat_list);
@@ -164,11 +173,14 @@ static void compute_allocation_strategy(MVMThreadContext *tc, MVMObject *repr_in
                     bits = spec->bits;
                     align = spec->align;
 
-                    repr_data->attribute_locations[i] = (bits << MVM_CPPSTRUCT_ATTR_SHIFT) | MVM_CPPSTRUCT_ATTR_IN_STRUCT;
-                    repr_data->flattened_stables[i] = STABLE(type);
+                    repr_data->attribute_locations[i] = (bits << MVM_CPPSTRUCT_ATTR_SHIFT)
+                        | MVM_CPPSTRUCT_ATTR_IN_STRUCT;
+                    MVM_ASSIGN_REF(tc, &(st->header), repr_data->flattened_stables[i],
+                        STABLE(type));
                     if (REPR(type)->initialize) {
                         if (!repr_data->initialize_slots)
-                            repr_data->initialize_slots = (MVMint32 *) MVM_calloc(info_alloc + 1, sizeof(MVMint32));
+                            repr_data->initialize_slots = (MVMint32 *) MVM_calloc(
+                                info_alloc + 1, sizeof(MVMint32));
                         repr_data->initialize_slots[cur_init_slot] = i;
                         cur_init_slot++;
                     }
@@ -176,9 +188,11 @@ static void compute_allocation_strategy(MVMThreadContext *tc, MVMObject *repr_in
                 else if (spec->can_box & MVM_STORAGE_SPEC_CAN_BOX_STR) {
                     /* It's a string of some kind.  */
                     repr_data->num_child_objs++;
-                    repr_data->attribute_locations[i] = (cur_obj_attr++ << MVM_CPPSTRUCT_ATTR_SHIFT) | MVM_CPPSTRUCT_ATTR_STRING;
-                    repr_data->member_types[i] = type;
-                    repr_data->flattened_stables[i] = STABLE(type);
+                    repr_data->attribute_locations[i] = (cur_obj_attr++ << MVM_CPPSTRUCT_ATTR_SHIFT)
+                        | MVM_CPPSTRUCT_ATTR_STRING;
+                    MVM_ASSIGN_REF(tc, &(st->header), repr_data->member_types[i], type);
+                    MVM_ASSIGN_REF(tc, &(st->header), repr_data->flattened_stables[i],
+                        STABLE(type));
                     if (REPR(type)->initialize) {
                         if (!repr_data->initialize_slots)
                             repr_data->initialize_slots = (MVMint32 *) MVM_calloc(info_alloc + 1, sizeof(MVMint32));
@@ -190,13 +204,13 @@ static void compute_allocation_strategy(MVMThreadContext *tc, MVMObject *repr_in
                     /* It's a CArray of some kind.  */
                     repr_data->num_child_objs++;
                     repr_data->attribute_locations[i] = (cur_obj_attr++ << MVM_CPPSTRUCT_ATTR_SHIFT) | MVM_CPPSTRUCT_ATTR_CARRAY;
-                    repr_data->member_types[i] = type;
+                    MVM_ASSIGN_REF(tc, &(st->header), repr_data->member_types[i], type);
                 }
                 else if (type_id == MVM_REPR_ID_MVMCStruct) {
                     /* It's a CStruct. */
                     repr_data->num_child_objs++;
                     repr_data->attribute_locations[i] = (cur_obj_attr++ << MVM_CPPSTRUCT_ATTR_SHIFT) | MVM_CPPSTRUCT_ATTR_CSTRUCT;
-                    repr_data->member_types[i] = type;
+                    MVM_ASSIGN_REF(tc, &(st->header), repr_data->member_types[i], type);
                     if (inlined) {
                         MVMCStructREPRData *cstruct_repr_data = (MVMCStructREPRData *)STABLE(type)->REPR_data;
                         bits                                  = cstruct_repr_data->struct_size * 8;
@@ -208,7 +222,7 @@ static void compute_allocation_strategy(MVMThreadContext *tc, MVMObject *repr_in
                     /* It's a CPPStruct. */
                     repr_data->num_child_objs++;
                     repr_data->attribute_locations[i] = (cur_obj_attr++ << MVM_CPPSTRUCT_ATTR_SHIFT) | MVM_CPPSTRUCT_ATTR_CPPSTRUCT;
-                    repr_data->member_types[i] = type;
+                    MVM_ASSIGN_REF(tc, &(st->header), repr_data->member_types[i], type);
                     if (inlined) {
                         MVMCPPStructREPRData *cppstruct_repr_data = (MVMCPPStructREPRData *)STABLE(type)->REPR_data;
                         bits                                      = cppstruct_repr_data->struct_size * 8;
@@ -220,7 +234,7 @@ static void compute_allocation_strategy(MVMThreadContext *tc, MVMObject *repr_in
                     /* It's a CUnion. */
                     repr_data->num_child_objs++;
                     repr_data->attribute_locations[i] = (cur_obj_attr++ << MVM_CSTRUCT_ATTR_SHIFT) | MVM_CSTRUCT_ATTR_CUNION;
-                    repr_data->member_types[i] = type;
+                    MVM_ASSIGN_REF(tc, &(st->header), repr_data->member_types[i], type);
                     if (inlined) {
                         MVMCUnionREPRData *cunion_repr_data = (MVMCUnionREPRData *)STABLE(type)->REPR_data;
                         bits                                = cunion_repr_data->struct_size * 8;
@@ -232,11 +246,13 @@ static void compute_allocation_strategy(MVMThreadContext *tc, MVMObject *repr_in
                     /* It's a CPointer. */
                     repr_data->num_child_objs++;
                     repr_data->attribute_locations[i] = (cur_obj_attr++ << MVM_CPPSTRUCT_ATTR_SHIFT) | MVM_CPPSTRUCT_ATTR_CPTR;
-                    repr_data->member_types[i] = type;
+                    MVM_ASSIGN_REF(tc, &(st->header), repr_data->member_types[i], type);
                 }
                 else {
                     MVM_exception_throw_adhoc(tc,
-                        "CPPStruct representation only handles int, num, CArray, CPointer, CStruct, CPPStruct and CUnion");
+                        "CPPStruct representation only handles attributes of type:\n"
+                        "  (u)int8, (u)int16, (u)int32, (u)int64, (u)long, (u)longlong, num32, num64, (s)size_t, bool, Str\n"
+                        "  and types with representation: CArray, CPointer, CStruct, CPPStruct and CUnion");
                 }
             }
             else {
@@ -263,15 +279,12 @@ static void compute_allocation_strategy(MVMThreadContext *tc, MVMObject *repr_in
             repr_data->struct_offsets[i] = cur_size;
             cur_size += bits / 8;
 
-            if (align > multiple_of)
-                multiple_of = align;
+            struct_size = round_up_to_multi(struct_size, align) + bits/8;
         }
 
         /* Finally, put computed allocation size in place; it's body size plus
          * header size. Also number of markables and sentinels. */
-        if (multiple_of > sizeof(void *))
-            multiple_of = sizeof(void *);
-        repr_data->struct_size = ceil((double)cur_size / (double)multiple_of) * multiple_of;
+        repr_data->struct_size = round_up_to_multi(struct_size, repr_data->struct_align);
         if (repr_data->initialize_slots)
             repr_data->initialize_slots[cur_init_slot] = -1;
     }
@@ -309,7 +322,7 @@ static MVMint32 try_get_slot(MVMThreadContext *tc, MVMCPPStructREPRData *repr_da
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st  = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st  = MVM_gc_allocate_stable(tc, &CPPStruct_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -325,7 +338,7 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *repr_info) {
     /* Compute allocation strategy. */
     MVMCPPStructREPRData *repr_data = MVM_calloc(1, sizeof(MVMCPPStructREPRData));
     MVMObject *attr_info = MVM_repr_at_key_o(tc, repr_info, tc->instance->str_consts.attribute);
-    compute_allocation_strategy(tc, attr_info, repr_data);
+    compute_allocation_strategy(tc, st, attr_info, repr_data);
     st->REPR_data = repr_data;
 }
 
@@ -673,7 +686,7 @@ static void gc_cleanup(MVMThreadContext *tc, MVMSTable *st, void *data) {
 
 /* Called by the VM in order to free memory associated with this object. */
 static void gc_free(MVMThreadContext *tc, MVMObject *obj) {
-	gc_cleanup(tc, STABLE(obj), OBJECT_BODY(obj));
+    gc_cleanup(tc, STABLE(obj), OBJECT_BODY(obj));
 }
 
 static const MVMStorageSpec storage_spec = {
@@ -695,15 +708,15 @@ static void serialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerializ
     MVMCPPStructREPRData *repr_data = (MVMCPPStructREPRData *)st->REPR_data;
     MVMint32 i, num_classes, num_slots;
 
-    MVM_serialization_write_varint(tc, writer, repr_data->struct_size);
-    MVM_serialization_write_varint(tc, writer, repr_data->struct_align);
-    MVM_serialization_write_varint(tc, writer, repr_data->num_attributes);
-    MVM_serialization_write_varint(tc, writer, repr_data->num_child_objs);
+    MVM_serialization_write_int(tc, writer, repr_data->struct_size);
+    MVM_serialization_write_int(tc, writer, repr_data->struct_align);
+    MVM_serialization_write_int(tc, writer, repr_data->num_attributes);
+    MVM_serialization_write_int(tc, writer, repr_data->num_child_objs);
     for(i = 0; i < repr_data->num_attributes; i++){
-        MVM_serialization_write_varint(tc, writer, repr_data->attribute_locations[i]);
-        MVM_serialization_write_varint(tc, writer, repr_data->struct_offsets[i]);
+        MVM_serialization_write_int(tc, writer, repr_data->attribute_locations[i]);
+        MVM_serialization_write_int(tc, writer, repr_data->struct_offsets[i]);
 
-        MVM_serialization_write_varint(tc, writer, repr_data->flattened_stables[i] != NULL);
+        MVM_serialization_write_int(tc, writer, repr_data->flattened_stables[i] != NULL);
         if (repr_data->flattened_stables[i])
             MVM_serialization_write_stable_ref(tc, writer, repr_data->flattened_stables[i]);
 
@@ -714,7 +727,7 @@ static void serialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerializ
     while (repr_data->name_to_index_mapping[i].class_key)
         i++;
     num_classes = i;
-    MVM_serialization_write_varint(tc, writer, num_classes);
+    MVM_serialization_write_int(tc, writer, num_classes);
     for(i = 0; i < num_classes; i++){
         MVM_serialization_write_ref(tc, writer, repr_data->name_to_index_mapping[i].class_key);
         MVM_serialization_write_ref(tc, writer, repr_data->name_to_index_mapping[i].name_map);
@@ -724,9 +737,9 @@ static void serialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerializ
     while(repr_data->initialize_slots && repr_data->initialize_slots[i] != -1)
         i++;
     num_slots = i;
-    MVM_serialization_write_varint(tc, writer, num_slots);
+    MVM_serialization_write_int(tc, writer, num_slots);
     for(i = 0; i < num_slots; i++){
-        MVM_serialization_write_varint(tc, writer, repr_data->initialize_slots[i]);
+        MVM_serialization_write_int(tc, writer, repr_data->initialize_slots[i]);
     }
 }
 
@@ -735,12 +748,12 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
     MVMCPPStructREPRData *repr_data = (MVMCPPStructREPRData *) MVM_malloc(sizeof(MVMCPPStructREPRData));
     MVMint32 i, num_classes, num_slots;
 
-    repr_data->struct_size    = MVM_serialization_read_varint(tc, reader);
+    repr_data->struct_size    = MVM_serialization_read_int(tc, reader);
     if (reader->root.version >= 17) {
-        repr_data->struct_align = MVM_serialization_read_varint(tc, reader);
+        repr_data->struct_align = MVM_serialization_read_int(tc, reader);
     }
-    repr_data->num_attributes = MVM_serialization_read_varint(tc, reader);
-    repr_data->num_child_objs = MVM_serialization_read_varint(tc, reader);
+    repr_data->num_attributes = MVM_serialization_read_int(tc, reader);
+    repr_data->num_child_objs = MVM_serialization_read_int(tc, reader);
 
     repr_data->attribute_locations = (MVMint32 *)MVM_malloc(sizeof(MVMint32) * repr_data->num_attributes);
     repr_data->struct_offsets      = (MVMint32 *)MVM_malloc(sizeof(MVMint32) * repr_data->num_attributes);
@@ -748,10 +761,10 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
     repr_data->member_types        = (MVMObject **)MVM_malloc(repr_data->num_attributes * sizeof(MVMObject *));
 
     for(i = 0; i < repr_data->num_attributes; i++) {
-        repr_data->attribute_locations[i] = MVM_serialization_read_varint(tc, reader);
-        repr_data->struct_offsets[i] = MVM_serialization_read_varint(tc, reader);
+        repr_data->attribute_locations[i] = MVM_serialization_read_int(tc, reader);
+        repr_data->struct_offsets[i] = MVM_serialization_read_int(tc, reader);
 
-        if(MVM_serialization_read_varint(tc, reader)){
+        if(MVM_serialization_read_int(tc, reader)){
             MVM_ASSIGN_REF(tc, &(st->header), repr_data->flattened_stables[i], MVM_serialization_read_stable_ref(tc, reader));
         }
         else {
@@ -761,7 +774,7 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
         repr_data->member_types[i] = MVM_serialization_read_ref(tc, reader);
     }
 
-    num_classes = MVM_serialization_read_varint(tc, reader);
+    num_classes = MVM_serialization_read_int(tc, reader);
     repr_data->name_to_index_mapping = (MVMCPPStructNameMap *)MVM_malloc(sizeof(MVMCPPStructNameMap) * (1 + num_classes));
     for(i = 0; i < num_classes; i++){
         repr_data->name_to_index_mapping[i].class_key = MVM_serialization_read_ref(tc, reader);
@@ -770,10 +783,10 @@ static void deserialize_repr_data(MVMThreadContext *tc, MVMSTable *st, MVMSerial
     repr_data->name_to_index_mapping[i].class_key = NULL;
     repr_data->name_to_index_mapping[i].name_map = NULL;
 
-    num_slots = MVM_serialization_read_varint(tc, reader);
+    num_slots = MVM_serialization_read_int(tc, reader);
     repr_data->initialize_slots = (MVMint32 *)MVM_malloc(sizeof(MVMint32) * (1 + num_slots));
     for(i = 0; i < num_slots; i++){
-        repr_data->initialize_slots[i] = MVM_serialization_read_varint(tc, reader);
+        repr_data->initialize_slots[i] = MVM_serialization_read_int(tc, reader);
     }
     repr_data->initialize_slots[i] = -1;
 
@@ -786,10 +799,10 @@ static void deserialize_stable_size(MVMThreadContext *tc, MVMSTable *st, MVMSeri
 
 /* Initializes the representation. */
 const MVMREPROps * MVMCPPStruct_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &CPPStruct_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps CPPStruct_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     initialize,
@@ -798,7 +811,8 @@ static const MVMREPROps this_repr = {
         get_attribute,
         bind_attribute,
         hint_for,
-        is_attribute_initialized
+        is_attribute_initialized,
+        MVM_REPR_DEFAULT_ATTRIBUTE_AS_ATOMIC
     },   /* attr_funcs */
     MVM_REPR_DEFAULT_BOX_FUNCS,
     MVM_REPR_DEFAULT_POS_FUNCS,
@@ -820,6 +834,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "CPPStruct", /* name */
     MVM_REPR_ID_MVMCPPStruct,
-    0, /* refs_frames */
     NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

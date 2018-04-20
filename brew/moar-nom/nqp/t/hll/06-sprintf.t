@@ -1,7 +1,5 @@
 #! nqp
 
-# sprintf. This file will be moved to t/hll once it handles everything that parrot's sprintf can.
-
 my $die_message := 'unset';
 
 sub dies_ok(&callable, $description) {
@@ -24,30 +22,28 @@ sub is($actual, $expected, $description) {
     }
 }
 
-plan(265);
+plan(286);
 
 is(nqp::sprintf('Walter Bishop', []), 'Walter Bishop', 'no directives' );
 
 is(nqp::sprintf('Peter %s', ['Bishop']), 'Peter Bishop', 'one %s directive' );
 is(nqp::sprintf('%s %s', ['William', 'Bell']), 'William Bell', 'two %s directives' );
 
-dies_ok({ nqp::sprintf('%s %s', ['Dr.', 'William', 'Bell']) }, 'arguments > directives' );
-is($die_message, 'Your printf-style directives specify 2 arguments, but 3 arguments were supplied',
-    'arguments > directives error message' );
+dies-ok({ nqp::sprintf('%s %s', ['Dr.', 'William', 'Bell']) }, 'arguments > directives',
+ :message('Your printf-style directives specify 2 arguments, but 3 arguments were supplied'));
 
-dies_ok({ nqp::sprintf('%s %s %s', ['Olivia', 'Dunham']) }, 'directives > arguments' );
-is($die_message, 'Your printf-style directives specify 3 arguments, but 2 arguments were supplied',
-    'directives > arguments error message' );
+dies-ok({ nqp::sprintf('%s %s', ['Dr.', 'William', 'Bell']) }, 'arguments > directives',
+  :message('Your printf-style directives specify 2 arguments, but 3 arguments were supplied'));
 
-dies_ok({ nqp::sprintf('%s %s', []) }, 'directives > 0 arguments' );
-is($die_message, 'Your printf-style directives specify 2 arguments, but no argument was supplied',
-    'directives > 0 arguments error message' );
+dies-ok({ nqp::sprintf('%s %s %s', ['Olivia', 'Dunham']) }, 'directives > arguments',
+  :message('Your printf-style directives specify 3 arguments, but 2 arguments were supplied'));
+
+dies-ok({ nqp::sprintf('%s %s', []) }, 'directives > 0 arguments',
+  :message('Your printf-style directives specify 2 arguments, but no argument was supplied'));
 
 is(nqp::sprintf('%% %% %%', []), '% % %', '%% escape' );
 
-dies_ok({ nqp::sprintf('%a', 'Science') }, 'unknown directive' );
-is($die_message, "'a' is not valid in sprintf format sequence '%a'",
-    'unknown directive error message' );
+dies-ok({ nqp::sprintf('%a', 'Science') }, 'unknown directive', :message("'a' is not valid in sprintf format sequence '%a'"));
 
 my class SprintfHandler {
     method mine($x) { try nqp::reprname($x) eq "P6bigint" }
@@ -59,7 +55,7 @@ nqp::sprintfaddargumenthandler(SprintfHandler.new);
 my $large-positive-int := nqp::pow_I(nqp::box_i(33, $knowhow), nqp::box_i(21, $knowhow), $knowhow, $knowhow);
 # my $large-negative-int := fromnum_I(-nqp::pow_n(2.42, 42), $knowhow);
 
-    
+
 is(nqp::sprintf('<%6s>', [12]), '<    12>', 'right-justified %s with space padding');
 is(nqp::sprintf('<%6%>', []), '<     %>', 'right-justified %% with space padding');
 is(nqp::sprintf('<%06s>', ['hi']), '<0000hi>', 'right-justified %s with 0-padding');
@@ -73,7 +69,6 @@ is(nqp::sprintf('<%0*%>', [5]), '<0000%>', 'right-justified %% with 0-padding, s
 is(nqp::sprintf('<%2s>', ['long']), '<long>', '%s string longer than specified size');
 
 is(nqp::sprintf('<%d>', [1]), '<1>', '%d without size or precision');
-is(nqp::sprintf('<%d>', ["lol, I am a string"]), '<0>', '%d on a non-number');
 is(nqp::sprintf('<%d>', [42.18]), '<42>', '%d on a float');
 is(nqp::sprintf('<%d>', [-18.42]), '<-18>', '%d on a negative float');
 is(nqp::sprintf('<%03d>', [1]), '<001>', '%d on decimal with 0-padding');
@@ -92,6 +87,10 @@ is(nqp::sprintf('%o', [12]), '14', 'simple %o');
 is(nqp::sprintf('%o', [22.01]), '26', 'decimal %o');
 is(nqp::sprintf('%06o', [127]), '000177', '%o with 0-padding');
 is(nqp::sprintf('%#6o', [127]), '  0177', '%o with space-padding and leading 0');
+is(nqp::sprintf('%.5o',  [83]),  '00123',  '%o with precision');
+is(nqp::sprintf('%#.5o', [83]),  '00123',  '%o with precision, leading 0 not required');
+is(nqp::sprintf('%.5o',  [5349]), '12345',  '%o with insufficient precision');
+is(nqp::sprintf('%#.5o',  [5349]), '012345', '%o with precision, required leading 0 added');
 
 is(nqp::sprintf('%x', [0]), '0', 'simple %x');
 is(nqp::sprintf('%x', [12]), 'c', 'simple %x');
@@ -299,7 +298,7 @@ is(nqp::sprintf('%17.3g', [2.718281828459e+11]), '         2.72e+11', '%17.3g 2.
 is(nqp::sprintf('%17.3e', [2.718281828459e+12]), '        2.718e+12', '%17.3e 2.718281828459e+12');
 is(nqp::sprintf('%17.3f', [2.718281828459e+12]), '2718281828459.000', '%17.3f 2.718281828459e+12');
 is(nqp::sprintf('%17.3g', [2.718281828459e+12]), '         2.72e+12', '%17.3g 2.718281828459e+12');
-                                                  
+
 is(nqp::sprintf('%17.3g', [3.000000000000e-12]), '            3e-12', '%17.3g 3.000000000000e-12');
 is(nqp::sprintf('%17.3g', [3.000000000000e-11]), '            3e-11', '%17.3g 3.000000000000e-11');
 is(nqp::sprintf('%17.3g', [3.000000000000e-10]), '            3e-10', '%17.3g 3.000000000000e-10');
@@ -328,3 +327,27 @@ is(nqp::sprintf('%17.3g', [3.000000000000e+12]), '            3e+12', '%17.3g 3.
 
 is(nqp::sprintf('%2$d %1$d',    [12, 34]),  '34 12', 'parameter index');
 is(nqp::sprintf('%3$d %d %1$d', [1, 2, 3]), '3 1 1', 'parameter index');
+
+# RT#128821: https://rt.perl.org/Ticket/Display.html?id=128821
+{ # negative/positive zero differentiation
+    is(nqp::sprintf('%f', [-0e0]), '-0.000000',     '%f, -0e0');
+    is(nqp::sprintf('%f', [ 0e0]),  '0.000000',     '%f, +0e0');
+    is(nqp::sprintf('%e', [-0e0]), '-0.000000e+00', '%e, -0e0');
+    is(nqp::sprintf('%e', [ 0e0]),  '0.000000e+00', '%e, +0e0');
+    is(nqp::sprintf('%g', [-0e0]), '-0',            '%g, -0e0');
+    is(nqp::sprintf('%g', [ 0e0]),  '0',            '%g, +0e0');
+}
+
+{ # https://irclog.perlgeek.de/perl6-dev/2017-01-22#i_13966753
+    is(nqp::sprintf( '%.3d', [42]),   '042', '%.3d' );
+    is(nqp::sprintf('%2.4d', [42]),  '0042', '%2.4d');
+    is(nqp::sprintf('%5.3d', [42]), '  042', '%5.3d');
+    is(nqp::sprintf( '%.0d', [42]),    '42', '%.0d (non-zero number)');
+    is(nqp::sprintf( '%.0d', [ 0]),      '', '%.0d (number is zero)' );
+
+    is(nqp::sprintf( '%.*d', [3, 42]),   '042', '%.*d' );
+    is(nqp::sprintf('%2.*d', [4, 42]),  '0042', '%2.*d');
+    is(nqp::sprintf('%5.*d', [3, 42]), '  042', '%5.*d');
+    is(nqp::sprintf( '%.*d', [0, 42]),    '42', '%.*d (non-zero number)');
+    is(nqp::sprintf( '%.*d', [0,  0]),      '', '%.*d (number is zero)' );
+}

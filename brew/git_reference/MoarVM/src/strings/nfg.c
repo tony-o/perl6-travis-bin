@@ -56,8 +56,8 @@ static MVMNFGTrieNode * twiddle_trie_node(MVMThreadContext *tc, MVMNFGTrieNode *
         /* If we had an existing child node... */
         if (idx >= 0) {
             /* Make a copy of the next_codes list. */
-            size_t the_size = current->num_entries * sizeof(MVMNGFTrieNodeEntry);
-            MVMNGFTrieNodeEntry *new_next_codes = MVM_fixed_size_alloc(tc,
+            size_t the_size = current->num_entries * sizeof(MVMNFGTrieNodeEntry);
+            MVMNFGTrieNodeEntry *new_next_codes = MVM_fixed_size_alloc(tc,
                 tc->instance->fsa, the_size);
             memcpy(new_next_codes, current->next_codes, the_size);
 
@@ -78,8 +78,8 @@ static MVMNFGTrieNode * twiddle_trie_node(MVMThreadContext *tc, MVMNFGTrieNode *
             /* Calculate new child node list size and allocate it. */
             MVMint32 orig_entries = current ? current->num_entries : 0;
             MVMint32 new_entries  = orig_entries + 1;
-            size_t new_size       = new_entries * sizeof(MVMNGFTrieNodeEntry);
-            MVMNGFTrieNodeEntry *new_next_codes = MVM_fixed_size_alloc(tc,
+            size_t new_size       = new_entries * sizeof(MVMNFGTrieNodeEntry);
+            MVMNFGTrieNodeEntry *new_next_codes = MVM_fixed_size_alloc(tc,
                 tc->instance->fsa, new_size);
 
             /* Go through original entries, copying those that are for a lower
@@ -104,7 +104,7 @@ static MVMNFGTrieNode * twiddle_trie_node(MVMThreadContext *tc, MVMNFGTrieNode *
             new_node->next_codes  = new_next_codes;
             if (orig_entries)
                 MVM_fixed_size_free_at_safepoint(tc, tc->instance->fsa,
-                    orig_entries * sizeof(MVMNGFTrieNodeEntry),
+                    orig_entries * sizeof(MVMNFGTrieNodeEntry),
                     current->next_codes);
         }
 
@@ -130,7 +130,7 @@ static MVMNFGTrieNode * twiddle_trie_node(MVMThreadContext *tc, MVMNFGTrieNode *
     /* Free any existing node at next safe point, return the new one. */
     if (current)
         MVM_fixed_size_free_at_safepoint(tc, tc->instance->fsa,
-            sizeof(MVMNGFTrieNodeEntry), current);
+            sizeof(MVMNFGTrieNode), current);
     return new_node;
 }
 static void add_synthetic_to_trie(MVMThreadContext *tc, MVMCodepoint *codes, MVMint32 num_codes, MVMGrapheme32 synthetic) {
@@ -148,7 +148,6 @@ static MVMGrapheme32 add_synthetic(MVMThreadContext *tc, MVMCodepoint *codes, MV
     MVMNFGState     *nfg = tc->instance->nfg;
     MVMNFGSynthetic *synth;
     MVMGrapheme32    result;
-    size_t           comb_size;
 
     /* Grow the synthetics table if needed. */
     if (nfg->num_synthetics % MVM_SYNTHETIC_GROW_ELEMS == 0) {
@@ -164,11 +163,43 @@ static MVMGrapheme32 add_synthetic(MVMThreadContext *tc, MVMCodepoint *codes, MV
 
     /* Set up the new synthetic entry. */
     synth            = &(nfg->synthetics[nfg->num_synthetics]);
-    synth->base      = *codes;
-    synth->num_combs = num_codes - 1;
-    comb_size        = synth->num_combs * sizeof(MVMCodepoint);
-    synth->combs     = MVM_fixed_size_alloc(tc, tc->instance->fsa, comb_size);
-    memcpy(synth->combs, codes + 1, comb_size);
+    synth->num_codes = num_codes;
+    /* Find which codepoint is the base codepoint. It is always index 0 unless
+     * there are Prepend codepoints */
+    if (!utf8_c8 && MVM_unicode_codepoint_get_property_int(tc, codes[0], MVM_UNICODE_PROPERTY_GRAPHEME_CLUSTER_BREAK)
+        == MVM_UNICODE_PVALUE_GCB_PREPEND) {
+        MVMint64 i = 0;
+        MVMCodepoint cached = codes[i++];
+        MVMint64 cached_GCB = MVM_UNICODE_PVALUE_GCB_PREPEND;
+        while (i < num_codes) {
+            /* If it's the same codepoint as before, don't need to request
+             * the property value again */
+            if (cached == codes[i] || MVM_UNICODE_PVALUE_GCB_PREPEND ==
+                (cached_GCB = MVM_unicode_codepoint_get_property_int(tc, (cached = codes[i]),
+                    MVM_UNICODE_PROPERTY_GRAPHEME_CLUSTER_BREAK))) {
+            }
+            else {
+                /* If we see an Extend then this is a degenerate without any
+                 * base character, so set i to num_codes so base_index gets set
+                 * to 0 */
+                if (cached_GCB == MVM_UNICODE_PVALUE_GCB_EXTEND)
+                    i = num_codes;
+                break;
+            }
+            i++;
+        }
+        /* If all the codepoints were prepend then we need to set it to 0 */
+        synth->base_index = num_codes == i ? 0 : i;
+
+    }
+    else {
+        synth->base_index = 0;
+    }
+
+
+    synth->codes     = MVM_fixed_size_alloc(tc, tc->instance->fsa,
+        num_codes * sizeof(MVMCodepoint));
+    memcpy(synth->codes, codes, (synth->num_codes * sizeof(MVMCodepoint)));
     synth->case_uc    = 0;
     synth->case_lc    = 0;
     synth->case_tc    = 0;
@@ -181,7 +212,7 @@ static MVMGrapheme32 add_synthetic(MVMThreadContext *tc, MVMCodepoint *codes, MV
     nfg->num_synthetics++;
 
     /* Give the synthetic an ID by negating the new number of synthetics. */
-    result = -nfg->num_synthetics;
+    result = -(nfg->num_synthetics);
 
     /* Make an entry in the lookup trie for the new synthetic, so we can use
      * it in the future when seeing the same codepoint sequence. */
@@ -213,8 +244,10 @@ static MVMGrapheme32 lookup_or_add_synthetic(MVMThreadContext *tc, MVMCodepoint 
 MVMGrapheme32 MVM_nfg_codes_to_grapheme(MVMThreadContext *tc, MVMCodepoint *codes, MVMint32 num_codes) {
     if (num_codes == 1)
         return codes[0];
-    else
+    else if (num_codes < MVM_GRAPHEME_MAX_CODEPOINTS)
         return lookup_or_add_synthetic(tc, codes, num_codes, 0);
+    else
+        MVM_exception_throw_adhoc(tc, "Too many codepoints (%d) in grapheme", num_codes);
 }
 
 /* Does the same as MVM_nfg_codes_to_grapheme, but flags the added grapheme as
@@ -228,8 +261,7 @@ MVMGrapheme32 MVM_nfg_codes_to_grapheme_utf8_c8(MVMThreadContext *tc, MVMCodepoi
 
 /* Gets the \r\n synthetic. */
 MVMGrapheme32 MVM_nfg_crlf_grapheme(MVMThreadContext *tc) {
-    MVMCodepoint codes[2] = { '\r', '\n' };
-    return lookup_or_add_synthetic(tc, codes, 2, 0);
+    return tc->instance->nfg->crlf_grapheme;
 }
 
 /* Does a lookup of information held about a synthetic. The synth parameter
@@ -240,24 +272,23 @@ MVMNFGSynthetic * MVM_nfg_get_synthetic_info(MVMThreadContext *tc, MVMGrapheme32
     MVMNFGState *nfg       = tc->instance->nfg;
     MVMint32     synth_idx = -synth - 1;
     if (synth >= 0)
-        MVM_panic(1, "MVM_nfg_get_synthetic_info illegally called on codepoint >= 0");
+        MVM_oops(tc, "MVM_nfg_get_synthetic_info illegally called on a non-synthetic codepoint.\nRequested codepoint %i.", synth);
     if (synth_idx >= nfg->num_synthetics)
-        MVM_panic(1, "MVM_nfg_get_synthetic_info called with out-of-range synthetic");
+        MVM_oops(tc, "MVM_nfg_get_synthetic_info call requested a synthetic codepoint that does not exist.\nRequested synthetic %i when only %i have been created.", -synth, nfg->num_synthetics);
     return &(nfg->synthetics[synth_idx]);
 }
 
 /* Gets the cached case change if we already computed it, or computes it if
  * this is the first time we're using it. */
 static MVMGrapheme32 CASE_UNCHANGED[1] = {0};
-static void compute_case_change(MVMThreadContext *tc, MVMGrapheme32 synth, MVMNFGSynthetic *synth_info, MVMint32 case_) {
-    MVMGrapheme32 *result;
+static void compute_case_change(MVMThreadContext *tc, MVMGrapheme32 synth_g, MVMNFGSynthetic *synth_info, MVMint32 case_) {
     MVMint32 num_result_graphs;
-
+    MVMGrapheme32          *result = NULL;
+    const MVMCodepoint *result_cps = NULL;
     /* Transform the base character. */
-    const MVMCodepoint *result_cps;
-    MVMuint32     num_result_cps = MVM_unicode_get_case_change(tc, synth_info->base,
-        case_, &result_cps);
-    if (num_result_cps == 0 || *result_cps == synth_info->base) {
+    MVMuint32 num_result_cps = MVM_unicode_get_case_change(tc,
+        synth_info->codes[synth_info->base_index], case_, &result_cps);
+    if (num_result_cps == 0 || (num_result_cps == 1 && result_cps[0] == synth_info->codes[synth_info->base_index])) {
         /* Base character does not change, so grapheme stays the same. We
          * install a non-null sentinel for this case, and set the result
          * grapheme count to zero, which indicates no change. */
@@ -268,20 +299,32 @@ static void compute_case_change(MVMThreadContext *tc, MVMGrapheme32 synth, MVMNF
         /* We can potentially get multiple graphemes back. We may also get
          * into situations where we case change the base and suddenly we
          * can normalize the whole thing to a non-synthetic. So, we take
-         * a trip through the normalizer. Note we push the first thing
-         * we get back from the case change, then our combiners, and
-         * finally anything else the case change produced. This should
+         * a trip through the normalizer. We push any codepoints before the
+         * base in the synthetic (only happens with Prepend codepoints).
+          * We then push the first codepoint we get back from the case change
+         * then the codeponits after the base characters (generally Extend
+         * codepoints).
+         * Finally we push anything else the case change produced. This should
          * do about the right thing for both case changes that produce a
          * base and a combiner, and those that produce a base and a base,
-         * since the normalizer applies Unicode canonical sorting. */
+         * since the normalizer applies canonical combining class sorting. */
         MVMNormalizer norm;
         MVMint32 i;
         MVM_unicode_normalizer_init(tc, &norm, MVM_NORMALIZE_NFG);
+        if (0 < synth_info->base_index)
+            MVM_unicode_normalizer_push_codepoints(tc, &norm,
+                synth_info->codes,
+                synth_info->base_index);
+        /* Push the first result on */
         MVM_unicode_normalizer_push_codepoints(tc, &norm, result_cps, 1);
-        MVM_unicode_normalizer_push_codepoints(tc, &norm, synth_info->combs,
-            synth_info->num_combs);
-        if (num_result_cps > 1)
-            MVM_unicode_normalizer_push_codepoints(tc, &norm, result_cps + 1,
+        /* Push any combiners after that codepoint so the combiners attach to the
+         * first codepoint of the casechange not the second or more */
+        MVM_unicode_normalizer_push_codepoints(tc, &norm,
+            synth_info->codes     + synth_info->base_index + 1,
+            synth_info->num_codes - synth_info->base_index - 1);
+        if (1 < num_result_cps)
+            MVM_unicode_normalizer_push_codepoints(tc, &norm,
+                result_cps     + 1,
                 num_result_cps - 1);
         MVM_unicode_normalizer_eof(tc, &norm);
 
@@ -293,24 +336,24 @@ static void compute_case_change(MVMThreadContext *tc, MVMGrapheme32 synth, MVMNF
     }
 
     switch (case_) {
-    case MVM_unicode_case_change_type_upper:
-        synth_info->case_uc = result;
-        synth_info->case_uc_graphs = num_result_graphs;
-        break;
-    case MVM_unicode_case_change_type_lower:
-        synth_info->case_lc = result;
-        synth_info->case_lc_graphs = num_result_graphs;
-        break;
-    case MVM_unicode_case_change_type_title:
-        synth_info->case_tc = result;
-        synth_info->case_tc_graphs = num_result_graphs;
-        break;
-    case MVM_unicode_case_change_type_fold:
-        synth_info->case_fc = result;
-        synth_info->case_fc_graphs = num_result_graphs;
-        break;
-    default:
-        MVM_panic(1, "NFG: invalid case change %d", case_);
+        case MVM_unicode_case_change_type_upper:
+            synth_info->case_uc        = result;
+            synth_info->case_uc_graphs = num_result_graphs;
+            break;
+        case MVM_unicode_case_change_type_lower:
+            synth_info->case_lc        = result;
+            synth_info->case_lc_graphs = num_result_graphs;
+            break;
+        case MVM_unicode_case_change_type_title:
+            synth_info->case_tc        = result;
+            synth_info->case_tc_graphs = num_result_graphs;
+            break;
+        case MVM_unicode_case_change_type_fold:
+            synth_info->case_fc        = result;
+            synth_info->case_fc_graphs = num_result_graphs;
+            break;
+        default:
+            MVM_panic(1, "NFG: invalid case change %d", case_);
     }
 }
 MVMuint32 MVM_nfg_get_case_change(MVMThreadContext *tc, MVMGrapheme32 synth, MVMint32 case_, MVMGrapheme32 **result) {
@@ -341,17 +384,23 @@ MVMuint32 MVM_nfg_get_case_change(MVMThreadContext *tc, MVMGrapheme32 synth, MVM
     }
 }
 
+MVM_STATIC_INLINE MVMint32 passes_quickcheck_and_zero_ccc(MVMThreadContext *tc, MVMCodepoint cp) {
+    return MVM_unicode_codepoint_get_property_int(tc, cp, MVM_UNICODE_PROPERTY_NFG_QC)
+    &&     MVM_unicode_codepoint_get_property_int(tc, cp,
+               MVM_UNICODE_PROPERTY_CANONICAL_COMBINING_CLASS) <= MVM_UNICODE_PVALUE_CCC_0;
+}
+/* Returns true for cps with Grapheme_Cluster_Break = Control */
+MVM_STATIC_INLINE MVMint32 codepoint_GCB_Control (MVMThreadContext *tc, MVMCodepoint codepoint) {
+    return MVM_unicode_codepoint_get_property_int(tc, codepoint,
+        MVM_UNICODE_PROPERTY_GRAPHEME_CLUSTER_BREAK)
+    ==  MVM_UNICODE_PVALUE_GCB_CONTROL;
+}
 /* Returns non-zero if the result of concatenating the two strings will freely
  * leave us in NFG without any further effort. */
-static MVMint32 passes_quickcheck_and_zero_ccc(MVMThreadContext *tc, MVMCodepoint cp) {
-    const char *qc_str  = MVM_unicode_codepoint_get_property_cstr(tc, cp, MVM_UNICODE_PROPERTY_NFG_QC);
-    const char *ccc_str = MVM_unicode_codepoint_get_property_cstr(tc, cp, MVM_UNICODE_PROPERTY_CANONICAL_COMBINING_CLASS);
-    return qc_str && qc_str[0] == 'Y' &&
-        (!ccc_str || strlen(ccc_str) > 3 || (strlen(ccc_str) == 1 && ccc_str[0] == 0));
-}
 MVMint32 MVM_nfg_is_concat_stable(MVMThreadContext *tc, MVMString *a, MVMString *b) {
     MVMGrapheme32 last_a;
     MVMGrapheme32 first_b;
+    MVMGrapheme32 crlf;
 
     /* If either string is empty, we're good. */
     if (a->body.num_graphs == 0 || b->body.num_graphs == 0)
@@ -360,21 +409,59 @@ MVMint32 MVM_nfg_is_concat_stable(MVMThreadContext *tc, MVMString *a, MVMString 
     /* Get first and last graphemes of the strings. */
     last_a = MVM_string_get_grapheme_at_nocheck(tc, a, a->body.num_graphs - 1);
     first_b = MVM_string_get_grapheme_at_nocheck(tc, b, 0);
+    /* Put the case where we are adding a lf or crlf line ending */
+    if (first_b == '\n')
+        /* If we see \r + \n we need to renormalize. Otherwise we're good */
+        return last_a == '\r' ? 0 : 1;
 
-    /* If either is synthetic, assume we'll have to re-normalize (this is an
-     * over-estimate, most likely). Note if you optimize this that it serves
-     * as a guard for what follows. */
+    crlf = MVM_nfg_crlf_grapheme(tc);
+    /* As a control code we are always going to break if we see one of these.
+     * Check first_b for speeding up line endings */
+    if (first_b == crlf || last_a == crlf)
+        return 0;
+    /* If either is synthetic other than "\r\n", assume we'll have to re-normalize
+     * (this is an over-estimate, most likely). Note if you optimize this that it
+     * serves as a guard for what follows.
+     * TODO get the last codepoint of last_a and first codepoint of first_b and call
+     * MVM_unicode_normalize_should_break */
     if (last_a < 0 || first_b < 0)
         return 0;
 
-    /* If both less than the first significant char for NFC, and the first is
-     * not \r, we're good. */
-    if (last_a != 0x0D && last_a < MVM_NORMALIZE_FIRST_SIG_NFC
-                       && first_b < MVM_NORMALIZE_FIRST_SIG_NFC)
+    /* If both less than the first significant char for NFC we are good */
+    if (last_a < MVM_NORMALIZE_FIRST_SIG_NFC && first_b < MVM_NORMALIZE_FIRST_SIG_NFC) {
         return 1;
+    }
+    else {
+        /* Check if the two codepoints would be joined during normalization.
+         * Returns 1 if they would break and thus is safe under concat, or 0 if
+         * they would be joined. */
+        MVMNormalizer norm;
+        int rtrn;
+        MVM_unicode_normalizer_init(tc, &norm, MVM_NORMALIZE_NFG);
+        rtrn = MVM_unicode_normalize_should_break(tc, last_a, first_b, &norm);
+        MVM_unicode_normalizer_cleanup(tc, &norm);
+        /* If both CCC are non-zero then it may need to be reordered. For now return 0.
+         * This can be optimized. */
+        if (MVM_unicode_relative_ccc(tc, last_a) != 0 && MVM_unicode_relative_ccc(tc, first_b) != 0)
+            return 0;
+        return rtrn;
+    }
+}
 
-    /* If either fail quickcheck or have ccc > 0, have to re-normalize. */
-    return passes_quickcheck_and_zero_ccc(tc, last_a) && passes_quickcheck_and_zero_ccc(tc, first_b);
+/* Initialize NFG subsystem. */
+static void cache_crlf(MVMThreadContext *tc) {
+    MVMCodepoint codes[2] = { '\r', '\n' };
+    tc->instance->nfg->crlf_grapheme = lookup_or_add_synthetic(tc, codes, 2, 0);
+}
+void MVM_nfg_init(MVMThreadContext *tc) {
+    int init_stat;
+    tc->instance->nfg = calloc(1, sizeof(MVMNFGState));
+    if ((init_stat = uv_mutex_init(&(tc->instance->nfg->update_mutex))) < 0) {
+        fprintf(stderr, "MoarVM: Initialization of NFG update mutex failed\n    %s\n",
+            uv_strerror(init_stat));
+        exit(1);
+    }
+    cache_crlf(tc);
 }
 
 /* Free all memory allocated to hold synthetic graphemes. These are global
@@ -392,8 +479,8 @@ void MVM_nfg_destroy(MVMThreadContext *tc) {
 
         for (i = 0; i < nfg->num_synthetics; i++) {
             MVM_fixed_size_free(tc, tc->instance->fsa,
-                nfg->synthetics[i].num_combs * sizeof(MVMCodepoint),
-                nfg->synthetics[i].combs);
+                nfg->synthetics[i].num_codes * sizeof(MVMCodepoint),
+                nfg->synthetics[i].codes);
             if (nfg->synthetics[i].case_uc != CASE_UNCHANGED)
                 MVM_free(nfg->synthetics[i].case_uc);
             if (nfg->synthetics[i].case_lc != CASE_UNCHANGED)

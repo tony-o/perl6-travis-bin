@@ -4,19 +4,19 @@ use MASTNodes;
 use MASTOps;
 use QRegex;
 
-my $MVM_reg_void            := 0; # not really a register; just a result/return kind marker
-my $MVM_reg_int8            := 1;
-my $MVM_reg_int16           := 2;
-my $MVM_reg_int32           := 3;
-my $MVM_reg_int64           := 4;
-my $MVM_reg_num32           := 5;
-my $MVM_reg_num64           := 6;
-my $MVM_reg_str             := 7;
-my $MVM_reg_obj             := 8;
-my $MVM_reg_uint8           := 17;
-my $MVM_reg_uint16          := 18;
-my $MVM_reg_uint32          := 19;
-my $MVM_reg_uint64          := 20;
+my int $MVM_reg_void            := 0; # not really a register; just a result/return kind marker
+my int $MVM_reg_int8            := 1;
+my int $MVM_reg_int16           := 2;
+my int $MVM_reg_int32           := 3;
+my int $MVM_reg_int64           := 4;
+my int $MVM_reg_num32           := 5;
+my int $MVM_reg_num64           := 6;
+my int $MVM_reg_str             := 7;
+my int $MVM_reg_obj             := 8;
+my int $MVM_reg_uint8           := 17;
+my int $MVM_reg_uint16          := 18;
+my int $MVM_reg_uint32          := 19;
+my int $MVM_reg_uint64          := 20;
 
 class QAST::MASTRegexCompiler {
     # The compiler we're working against.
@@ -114,7 +114,6 @@ class QAST::MASTRegexCompiler {
         @!rxjumps := nqp::list($donelabel);
 
         my $shared := $!regalloc.fresh_o();
-        my $sharedclass := $!regalloc.fresh_o();
         my $i19 := $!regalloc.fresh_i(); # yes, I know, inheriting the name from ancestor method
         my $i0 := $!regalloc.fresh_i();
 
@@ -131,6 +130,7 @@ class QAST::MASTRegexCompiler {
             call($method, [ $Arg::obj ], :result($cur), $self )
         ];
 
+        my $sharedclass;
         my int $has_cursor_type := $node.has_cursor_type();
         if $has_cursor_type {
             $!cursor_type := $node.cursor_type();
@@ -142,8 +142,14 @@ class QAST::MASTRegexCompiler {
                     ival(nqp::hintfor($!cursor_type, '$!shared')))
             ]);
             $!regalloc.release_register($wval.result_reg, $MVM_reg_obj);
+
+            my $shared_wval := $!qastcomp.as_mast(
+                QAST::WVal.new( :value($!cursor_type.'!shared_type'()) ));
+            merge_ins(@ins, $shared_wval.instructions);
+            $sharedclass := $shared_wval.result_reg;
         }
         else {
+            $sharedclass := $!regalloc.fresh_o();
             merge_ins(@ins, [
                 op('findmeth', $shared, $self, sval('!shared')),
                 call($shared, [ $Arg::obj ], :result($shared), $self ),
@@ -151,11 +157,10 @@ class QAST::MASTRegexCompiler {
                 op('getattr_o', $curclass, $shared, $sharedclass, sval('$!CUR_CLASS'), ival(-1))
             ]);
         }
-        
+
         merge_ins(@ins, [
             op('getattr_s', $tgt, $shared, $sharedclass, sval('$!target'),
                 ival(nqp::hintfor(ParseShared, '$!target'))),
-            op('flattenropes', $tgt),
             op('getattr_i', $pos, $cur, $curclass, sval('$!from'),
                 ival(nqp::hintfor($!cursor_type, '$!from'))),
             op('getattr_o', $bstack, $cur, $curclass, sval('$!bstack'),
@@ -311,6 +316,7 @@ class QAST::MASTRegexCompiler {
         my $altlabel_index := self.rxjump();
         my $altlabel := @!rxjumps[$altlabel_index];
         my @amast    := self.regex_mast(nqp::shift($iter));
+        self.regex_mark(@ins, $endlabel_index, %!reg<negone>, %!reg<zero>);
         while $iter {
             nqp::push(@ins, $altlabel);
             $altcount++;
@@ -318,6 +324,7 @@ class QAST::MASTRegexCompiler {
             $altlabel := @!rxjumps[$altlabel_index];
             self.regex_mark(@ins, $altlabel_index, %!reg<pos>, %!reg<zero>);
             merge_ins(@ins, @amast);
+            self.regex_commit(@ins, $endlabel_index) if $node.backtrack eq 'r';
             nqp::push(@ins, op('goto', $endlabel));
             @amast := self.regex_mast(nqp::shift($iter));
         }
@@ -504,11 +511,15 @@ class QAST::MASTRegexCompiler {
 	}
         if $node.subtype eq 'ignoremark' || $node.subtype eq 'ignorecase+ignoremark' {
             my $s0 := $!regalloc.fresh_s();
+            my $i1 := $!regalloc.fresh_i();
             merge_ins(@ins, [
                 op('ordbaseat', $i0, %!reg<tgt>, %!reg<pos>),
+                op('lt_i', $i1, $i0, %!reg<zero>),
+                op('if_i', $i1, %!reg<fail>),
                 op('chr', $s0, $i0),
                 op($op, $s0, %!reg<zero>, sval($node[0]), %!reg<fail>),
             ]);
+            $!regalloc.release_register($i1, $MVM_reg_int64);
         }
         else {
             nqp::push(@ins, op($op, %!reg<tgt>, %!reg<pos>, sval($node[0]), %!reg<fail>));
@@ -569,13 +580,13 @@ class QAST::MASTRegexCompiler {
             merge_ins(@ins, [
                 op('substr_s', $s0, %!reg<tgt>, %!reg<pos>, %!reg<one>),
                 op('lc', $s1, $s0),
-                op('ordfirst', $i0, $s1),
+                op('getcp_s', $i0, $s1, %!reg<zero>),  # safe for synthetics
                 op('ge_i', $i1, $i0, $lower),
                 op('le_i', $i2, $i0, $upper),
                 op('band_i', $i1, $i1, $i2),
                 op('if_i', $i1, $goal),
                 op('uc', $s1, $s0),
-                op('ordfirst', $i0, $s1),
+                op('getcp_s', $i0, $s1, %!reg<zero>),  # safe for synthetics
                 op('ge_i', $i1, $i0, $lower),
                 op('le_i', $i2, $i0, $upper),
                 op('band_i', $i1, $i1, $i2),
@@ -608,7 +619,7 @@ class QAST::MASTRegexCompiler {
             my $succeed := label();
             my $goal    := $node.negate ?? $succeed !! %!reg<fail>;
             merge_ins(@ins, [
-                op('ordat', $i0, %!reg<tgt>, %!reg<pos>),
+                op('getcp_s', $i0, %!reg<tgt>, %!reg<pos>),  # safe for synthetics
                 op('gt_i', $i1, $i0, $upper),
                 op('if_i', $i1, $goal),
                 op('lt_i', $i1, $i0, $lower),
@@ -646,25 +657,14 @@ class QAST::MASTRegexCompiler {
         # XXX or make a specialized eqat_sc op that takes a constant string.
         # also, consider making the op branch directly from the comparison
         # instead of storing an integer to a temporary register
-        if $node.subtype eq 'ignorecase+ignoremark' {
-            my $op := $node.negate ?? 'indexnat' !! 'indexat';
-            my $c  := nqp::chr(nqp::ordbaseat($litconst, 0));
-            merge_ins(@ins, [
-                op('ge_i', $i0, %!reg<pos>, %!reg<eos>),
-                op('if_i', $i0, %!reg<fail>),
-                op('ordbaseat', $i0, %!reg<tgt>, %!reg<pos>),
-                op('chr', $s0, $i0),
-                op($op, $s0, %!reg<zero>, sval(nqp::lc($c) ~ nqp::uc($c)), %!reg<fail>),
-            ]);
-        }
-        else {
-            my $eq_op := $node.subtype eq 'ignorecase' ?? 'eqatic_s' !!
-                         $node.subtype eq 'ignoremark' ?? 'eqatim_s' !! 'eqat_s';
-            my $cmpop := $node.negate ?? 'if_i' !! 'unless_i';
-            nqp::push(@ins, op('const_s', $s0, sval($litconst)));
-            nqp::push(@ins, op($eq_op, $i0, %!reg<tgt>, $s0, %!reg<pos>));
-            nqp::push(@ins, op($cmpop, $i0, %!reg<fail>));
-        }
+        my $eq_op := $node.subtype eq 'ignorecase' ?? 'eqatic_s' !!
+                     $node.subtype eq 'ignoremark' ?? 'eqatim_s' !!
+                     $node.subtype eq 'ignorecase+ignoremark' ?? 'eqaticim_s' !! 'eqat_s';
+
+        my $cmpop := $node.negate ?? 'if_i' !! 'unless_i';
+        nqp::push(@ins, op('const_s', $s0, sval($litconst)));
+        nqp::push(@ins, op($eq_op, $i0, %!reg<tgt>, $s0, %!reg<pos>));
+        nqp::push(@ins, op($cmpop, $i0, %!reg<fail>));
         unless $node.subtype eq 'zerowidth' {
             nqp::push(@ins, op('const_i64', $i0, ival(nqp::chars($litconst))));
             nqp::push(@ins, op('add_i', %!reg<pos>, %!reg<pos>, $i0));
@@ -992,6 +992,15 @@ class QAST::MASTRegexCompiler {
             my $lit := $!regalloc.fresh_s();
             nqp::push(@ins, op('const_s', $lit, sval($node[0])));
             nqp::push(@ins, op('index_s', %!reg<pos>, %!reg<tgt>, $lit, %!reg<pos>));
+            nqp::push(@ins, op('eq_i', $ireg0, %!reg<pos>, %!reg<negone>));
+            $!regalloc.release_register($lit, $MVM_reg_str);
+        }
+        elsif $node.list && ($node.subtype eq 'ignorecase' || $node.subtype eq 'ignorecase+ignoremark' || $node.subtype eq 'ignoremark') {
+            my $lit := $!regalloc.fresh_s();
+            my $op  := $node.subtype eq 'ignorecase' ?? 'indexic_s' !!
+                       $node.subtype eq 'ignoremark' ?? 'indexim_s' !! 'indexicim_s';
+            nqp::push(@ins, op('const_s', $lit, sval($node[0])));
+            nqp::push(@ins, op($op, %!reg<pos>, %!reg<tgt>, $lit, %!reg<pos>));
             nqp::push(@ins, op('eq_i', $ireg0, %!reg<pos>, %!reg<negone>));
             $!regalloc.release_register($lit, $MVM_reg_str);
         }

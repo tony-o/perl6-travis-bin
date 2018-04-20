@@ -1,7 +1,7 @@
 /* Exception handler actions. */
-#define MVM_EX_ACTION_GOTO       0
-#define MVM_EX_ACTION_GOTO_OBJ   1
-#define MVM_EX_ACTION_INVOKE     2
+#define MVM_EX_ACTION_GOTO                0
+#define MVM_EX_ACTION_GOTO_WITH_PAYLOAD   1
+#define MVM_EX_ACTION_INVOKE              2
 
 /* Exception categories. */
 #define MVM_EX_CAT_CATCH         1
@@ -24,6 +24,7 @@
 #define MVM_EX_THROW_DYN         0
 #define MVM_EX_THROW_LEX         1
 #define MVM_EX_THROW_LEXOTIC     2
+#define MVM_EX_THROW_LEX_CALLER  3
 
 /* Information associated with an exception handler. */
 struct MVMFrameHandler {
@@ -48,6 +49,12 @@ struct MVMFrameHandler {
     /* Register containing a label in case we have a labeled loop. We need to
      * be able to check for its identity when handling e.g. `next LABEL`. */
     MVMuint16 label_reg;
+
+    /* Is this handler actually a clone of a caller's handler performed during
+     * inlining of something, and is that something not lexically enclosed in
+     * the thing it was inlined into? If yes,this flag will be set. We need to
+     * ignore such handlers when searching for matching lexical handlers only. */
+    MVMuint16 inlined_and_not_lexical;
 };
 
 /* An active (currently executing) exception handler. */
@@ -75,10 +82,8 @@ void MVM_dump_backtrace(MVMThreadContext *tc);
 void MVM_exception_throwcat(MVMThreadContext *tc, MVMuint8 mode, MVMuint32 cat, MVMRegister *resume_result);
 void MVM_exception_die(MVMThreadContext *tc, MVMString *str, MVMRegister *rr);
 void MVM_exception_throwobj(MVMThreadContext *tc, MVMuint8 mode, MVMObject *exObj, MVMRegister *resume_result);
+void MVM_exception_throwpayload(MVMThreadContext *tc, MVMuint8 mode, MVMuint32 cat, MVMObject *payload, MVMRegister *resume_result);
 void MVM_exception_resume(MVMThreadContext *tc, MVMObject *exObj);
-MVMObject * MVM_exception_newlexotic(MVMThreadContext *tc, MVMuint32 offset);
-MVMObject * MVM_exception_newlexotic_from_jit(MVMThreadContext *tc, MVMint32 label);
-void MVM_exception_gotolexotic(MVMThreadContext *tc, MVMint32 handler_idx, MVMStaticFrame *sf);
 MVM_PUBLIC MVM_NO_RETURN void MVM_panic_allocation_failed(size_t len) MVM_NO_RETURN_GCC;
 MVM_PUBLIC MVM_NO_RETURN void MVM_panic(MVMint32 exitCode, const char *messageFormat, ...) MVM_NO_RETURN_GCC MVM_FORMAT(printf, 2, 3);
 MVM_PUBLIC MVM_NO_RETURN void MVM_oops(MVMThreadContext *tc, const char *messageFormat, ...) MVM_NO_RETURN_GCC MVM_FORMAT(printf, 2, 3);
@@ -87,8 +92,7 @@ MVM_NO_RETURN void MVM_exception_throw_adhoc_va(MVMThreadContext *tc, const char
 MVM_PUBLIC MVM_NO_RETURN void MVM_exception_throw_adhoc_free(MVMThreadContext *tc, char **waste, const char *messageFormat, ...) MVM_NO_RETURN_GCC MVM_FORMAT(printf, 3, 4);
 MVM_NO_RETURN void MVM_exception_throw_adhoc_free_va(MVMThreadContext *tc, char **waste, const char *messageFormat, va_list args) MVM_NO_RETURN_GCC;
 MVM_PUBLIC void MVM_crash_on_error(void);
-char * MVM_exception_backtrace_line(MVMThreadContext *tc, MVMFrame *cur_frame, MVMuint16 not_top);
-
+char * MVM_exception_backtrace_line(MVMThreadContext *tc, MVMFrame *cur_frame, MVMuint16 not_top, MVMuint8 *throw_address);
 
 /* Exit codes for panic. */
 #define MVM_exitcode_NYI            12

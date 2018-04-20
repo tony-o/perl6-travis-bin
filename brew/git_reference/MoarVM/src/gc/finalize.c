@@ -13,6 +13,7 @@ void MVM_gc_finalize_set(MVMThreadContext *tc, MVMObject *type, MVMint64 finaliz
 /* Adds an object we've just allocated to the queue of those with finalizers
  * that will need calling upon collection. */
 void MVM_gc_finalize_add_to_queue(MVMThreadContext *tc, MVMObject *obj) {
+    MVM_ASSERT_NOT_FROMSPACE(tc, obj);
     if (tc->num_finalize == tc->alloc_finalize) {
         if (tc->alloc_finalize)
             tc->alloc_finalize *= 2;
@@ -47,13 +48,14 @@ static void finalize_handler_caller(MVMThreadContext *tc, void *sr_data) {
 static void setup_finalize_handler_call(MVMThreadContext *tc) {
     MVMFrame *install_on = tc->cur_frame;
     while (install_on) {
-        if (!install_on->special_return)
+        if (!install_on->extra || !install_on->extra->special_return)
             if (install_on->static_info->body.cu->body.hll_config)
                 break;
         install_on = install_on->caller;
     }
     if (install_on)
-        install_on->special_return = finalize_handler_caller;
+        MVM_frame_special_return(tc, install_on, finalize_handler_caller, NULL,
+            NULL, NULL);
 }
 
 /* Walks through the per-thread finalize queues, identifying objects that

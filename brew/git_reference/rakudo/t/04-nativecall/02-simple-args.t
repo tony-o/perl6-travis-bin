@@ -1,11 +1,11 @@
 use v6;
 
-use lib 't/04-nativecall';
+use lib <lib t/04-nativecall>;
 use CompileTestLib;
 use NativeCall;
 use Test;
 
-plan 13;
+plan 14;
 
 compile_test_lib('02-simple-args');
 
@@ -59,11 +59,13 @@ if $*DISTRO.name eq 'macosx' {
 }
 else {
     is TakeUint8(0xFE),        10, 'passed uint8 0xFE';
-    is TakeUint16(0xFFFE),     11, 'passed uint8 0xFFFE';
+    is TakeUint16(0xFFFE),     11, 'passed uint16 0xFFFE';
 }
-is TakeUint32(0xFFFFFFFE), 12, 'passed uint8 0xFFFFFFFE';
+is TakeUint32(0xFFFFFFFE), 12, 'passed uint32 0xFFFFFFFE';
 
 sub TakeSizeT(size_t) returns int32 is native('./02-simple-args') { * }
 is TakeSizeT(42),     13, 'passed size_t 42';
+sub TakeSSizeT(ssize_t --> int32) is native('./02-simple-args') { * }
+is TakeSSizeT(-42),   14, 'passed ssize_t -42';
 
 # vim:ft=perl6

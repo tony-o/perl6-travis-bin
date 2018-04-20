@@ -5,10 +5,8 @@
 
 #ifdef _WIN32
 #  define IS_SLASH(c)     ((c) == L'\\' || (c) == L'/')
-#  define IS_NOT_SLASH(c) ((c) != L'\\' && (c) != L'/')
 #else
 #  define IS_SLASH(c)     ((c) == '/')
-#  define IS_NOT_SLASH(c) ((c) != '/')
 #endif
 
 #ifdef _WIN32
@@ -32,62 +30,36 @@ static char * UnicodeToUTF8(const wchar_t *str)
      return result;
 }
 
-static int mkdir_p(wchar_t *pathname, MVMint64 mode) {
-    size_t len = wcslen(pathname);
+static int mkdir_p(MVMThreadContext *tc, wchar_t *pathname, MVMint64 mode) {
+    wchar_t *p = pathname, ch;
 #else
-static int mkdir_p(char *pathname, MVMint64 mode) {
-    size_t len = strlen(pathname);
-
+static int mkdir_p(MVMThreadContext *tc, char *pathname, MVMint64 mode) {
+    char *p = pathname, ch;
+    uv_fs_t req;
 #endif
-    ssize_t r;
-    char tmp;
+    int created = 0;
 
-    /* '/' always exists. */
-    if (len == 0)
-        return 0;
-
-    while (len > 0 && IS_SLASH(pathname[len - 1]))
-        len--;
-
-    tmp = pathname[len];
-    pathname[len] = '\0';
+    for (;; ++p)
+        if (!*p || IS_SLASH(*p)) {
+            ch = *p;
+            *p  = '\0';
 #ifdef _WIN32
-    r = CreateDirectoryW(pathname, NULL);
-
-    if (!r && GetLastError() == ERROR_PATH_NOT_FOUND)
+            if (CreateDirectoryW(pathname, NULL)) {
+                created = 1;
+            }
 #else
-    r = mkdir(pathname, mode);
-
-    if (r == -1 && errno == ENOENT)
+            if (uv_fs_stat(tc->loop, &req, pathname, NULL) <= 0) {
+                if (mkdir(pathname, mode) != -1) {
+                    created = 1;
+                }
+            }
 #endif
-    {
-        ssize_t _len = len - 1;
-        char _tmp;
-
-        while (_len >= 0 && IS_NOT_SLASH(pathname[_len]))
-            _len--;
-
-        _tmp = pathname[_len];
-        pathname[_len] = '\0';
-
-        r = mkdir_p(pathname, mode);
-
-        pathname[_len] = _tmp;
-
-#ifdef _WIN32
-        if(r) {
-            r = CreateDirectoryW(pathname, NULL);
+            if (!(*p = ch)) break;
         }
-#else
-        if(r == 0) {
-            r = mkdir(pathname, mode);
-        }
-#endif
-    }
 
-    pathname[len] = tmp;
+    if (!created) return -1;
 
-    return r;
+    return 0;
 }
 
 /* Create a directory recursively. */
@@ -120,7 +92,7 @@ void MVM_dir_mkdir(MVMThreadContext *tc, MVMString *path, MVMint64 mode) {
         wcscat(wpathname, abs_dirname);
     }
 
-    if (!mkdir_p(wpathname, mode)) {
+    if (mkdir_p(tc, wpathname, mode) == -1) {
         DWORD error = GetLastError();
         if (error != ERROR_ALREADY_EXISTS) {
             MVM_free(wpathname);
@@ -130,9 +102,10 @@ void MVM_dir_mkdir(MVMThreadContext *tc, MVMString *path, MVMint64 mode) {
     MVM_free(wpathname);
 #else
 
-    if (mkdir_p(pathname, mode) == -1 && errno != EEXIST) {
+    if (mkdir_p(tc, pathname, mode) == -1 && errno != EEXIST) {
+        int mkdir_error = errno;
         MVM_free(pathname);
-        MVM_exception_throw_adhoc(tc, "Failed to mkdir: %d", errno);
+        MVM_exception_throw_adhoc(tc, "Failed to mkdir: %d", mkdir_error);
     }
 
     MVM_free(pathname);
@@ -165,22 +138,22 @@ MVMString * MVM_dir_cwd(MVMThreadContext *tc) {
 #endif
 
     if ((r = uv_cwd(path, (size_t *)&max_path)) < 0) {
-        MVM_exception_throw_adhoc(tc, "chdir failed: %s", uv_strerror(r));
+        MVM_exception_throw_adhoc(tc, "Failed to determine cwd: %s", uv_strerror(r));
     }
 
     return MVM_string_utf8_c8_decode(tc, tc->instance->VMString, path, strlen(path));
 }
-
+int MVM_dir_chdir_C_string(MVMThreadContext *tc, const char *dirstring) {
+    return uv_chdir(dirstring);
+}
 /* Change directory. */
 void MVM_dir_chdir(MVMThreadContext *tc, MVMString *dir) {
-    char * const dirstring = MVM_string_utf8_c8_encode_C_string(tc, dir);
-
-    if (uv_chdir((const char *)dirstring) != 0) {
-        MVM_free(dirstring);
-        MVM_exception_throw_adhoc(tc, "chdir failed: %s", uv_strerror(errno));
+    const char *dirstring = MVM_string_utf8_c8_encode_C_string(tc, dir);
+    int chdir_error = MVM_dir_chdir_C_string(tc, dirstring);
+    MVM_free((void*)dirstring);
+    if (chdir_error) {
+        MVM_exception_throw_adhoc(tc, "chdir failed: %s", uv_strerror(chdir_error));
     }
-
-    MVM_free(dirstring);
 }
 
 /* Structure to keep track of directory iteration state. */
@@ -191,14 +164,7 @@ typedef struct {
 #else
     DIR     *dir_handle;
 #endif
-    MVMuint8 encoding;
 } MVMIODirIter;
-
-/* Sets the encoding used for reading the directory listing. */
-static void set_encoding(MVMThreadContext *tc, MVMOSHandle *h, MVMint64 encoding) {
-    MVMIODirIter *data = (MVMIODirIter *)h->body.data;
-    data->encoding = encoding;
-}
 
 /* Frees data associated with the directory handle. */
 static void gc_free(MVMThreadContext *tc, MVMObject *h, void *d) {
@@ -207,6 +173,7 @@ static void gc_free(MVMThreadContext *tc, MVMObject *h, void *d) {
 #ifdef _WIN32
         if (data->dir_name)
             MVM_free(data->dir_name);
+
         if (data->dir_handle)
             FindClose(data->dir_handle);
 #else
@@ -217,12 +184,10 @@ static void gc_free(MVMThreadContext *tc, MVMObject *h, void *d) {
     }
 }
 
-/* Ops table for directory iterator; it all works off special ops, so almost
- * no entries. */
-static const MVMIOEncodable encodable = { set_encoding };
+/* Ops table for directory iterator; it all works off special ops, so no entries. */
 static const MVMIOOps op_table = {
     NULL,
-    &encodable,
+    NULL,
     NULL,
     NULL,
     NULL,
@@ -285,15 +250,15 @@ MVMObject * MVM_dir_open(MVMThreadContext *tc, MVMString *dirname) {
 #else
     char * const dir_name = MVM_string_utf8_c8_encode_C_string(tc, dirname);
     DIR * const dir_handle = opendir(dir_name);
+    int opendir_error = errno;
     MVM_free(dir_name);
 
     if (!dir_handle)
-        MVM_exception_throw_adhoc(tc, "Failed to open dir: %d", errno);
+        MVM_exception_throw_adhoc(tc, "Failed to open dir: %d", opendir_error);
 
     data->dir_handle = dir_handle;
 #endif
 
-    data->encoding = MVM_encoding_type_utf8_c8;
     result->body.ops  = &op_table;
     result->body.data = data;
 
@@ -304,7 +269,7 @@ MVMObject * MVM_dir_open(MVMThreadContext *tc, MVMString *dirname) {
 static MVMOSHandle * get_dirhandle(MVMThreadContext *tc, MVMObject *oshandle, const char *msg) {
     MVMOSHandle *handle = (MVMOSHandle *)oshandle;
     if (REPR(oshandle)->ID != MVM_REPR_ID_MVMOSHandle)
-        MVM_exception_throw_adhoc(tc, "%s requires an object with REPR MVMOSHandle", msg);
+        MVM_exception_throw_adhoc(tc, "%s requires an object with REPR MVMOSHandle (got %s with REPR %s)", msg, MVM_6model_get_debug_name(tc, (MVMObject *)handle), REPR(handle)->name);
     if (handle->body.ops != &op_table)
         MVM_exception_throw_adhoc(tc, "%s got incorrect kind of handle", msg);
     return handle;
@@ -336,23 +301,29 @@ MVMString * MVM_dir_read(MVMThreadContext *tc, MVMObject *oshandle) {
     else if (FindNextFileW(data->dir_handle, &ffd) != 0)  {
         dir_str = UnicodeToUTF8(ffd.cFileName);
         result  = MVM_string_decode(tc, tc->instance->VMString, dir_str, strlen(dir_str),
-                                    data->encoding);
+                                    MVM_encoding_type_utf8_c8);
         MVM_free(dir_str);
         return result;
     } else {
         return tc->instance->str_consts.empty;
     }
 #else
-    struct dirent entry;
-    struct dirent *result;
-    int ret;
 
-    ret = readdir_r(data->dir_handle, &entry, &result);
+    struct dirent *entry;
+    errno = 0; /* must reset errno so we won't check old errno */
 
-    if (ret == 0) {
-        if (result == NULL)
-            return tc->instance->str_consts.empty;
-        return MVM_string_decode(tc, tc->instance->VMString, entry.d_name, strlen(entry.d_name), data->encoding);
+    if (!data->dir_handle) {
+        MVM_exception_throw_adhoc(tc, "Cannot read a closed dir handle.");
+    }
+
+    entry = readdir(data->dir_handle);
+
+    if (errno == 0) {
+        MVMString *ret = (entry == NULL)
+                       ? tc->instance->str_consts.empty
+                       : MVM_string_decode(tc, tc->instance->VMString, entry->d_name,
+                               strlen(entry->d_name), MVM_encoding_type_utf8_c8);
+        return ret;
     }
 
     MVM_exception_throw_adhoc(tc, "Failed to read dirhandle: %d", errno);

@@ -19,6 +19,16 @@ static void pass_work_item(MVMThreadContext *tc, WorkToPass *wtp, MVMCollectable
 static void pass_leftover_work(MVMThreadContext *tc, WorkToPass *wtp);
 static void add_in_tray_to_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist);
 
+/* The size of the nursery that a new thread should get. The main thread will
+ * get a full-size one right away. */
+MVMuint32 MVM_gc_new_thread_nursery_size(MVMInstance *i) {
+    return i->main_thread != NULL
+        ? (MVM_NURSERY_SIZE < MVM_NURSERY_THREAD_START
+            ? MVM_NURSERY_SIZE
+            : MVM_NURSERY_THREAD_START)
+        : MVM_NURSERY_SIZE;
+}
+
 /* Does a garbage collection run. Exactly what it does is configured by the
  * couple of arguments that it takes.
  *
@@ -41,7 +51,7 @@ static void add_in_tray_to_worklist(MVMThreadContext *tc, MVMGCWorklist *worklis
  * building up a huge worklist. */
 void MVM_gc_collect(MVMThreadContext *tc, MVMuint8 what_to_do, MVMuint8 gen) {
     /* Create a GC worklist. */
-    MVMGCWorklist *worklist = MVM_gc_worklist_create(tc, gen != MVMGCGenerations_Nursery, 0);
+    MVMGCWorklist *worklist = MVM_gc_worklist_create(tc, gen != MVMGCGenerations_Nursery);
 
     /* Initialize work passing data structure. */
     WorkToPass wtp;
@@ -64,19 +74,37 @@ void MVM_gc_collect(MVMThreadContext *tc, MVMuint8 what_to_do, MVMuint8 gen) {
         process_worklist(tc, worklist, &wtp, gen);
     }
     else {
-        /* Main collection run. Swap fromspace and tospace, allocating the
-         * new tospace if that didn't yet happen (we don't allocate it at
-         * startup, to cut memory use for threads that quit before a GC). */
-        void *fromspace = tc->nursery_tospace;
-        void *tospace   = tc->nursery_fromspace;
-        if (!tospace)
-            tospace = MVM_calloc(1, MVM_NURSERY_SIZE);
-        tc->nursery_fromspace = fromspace;
-        tc->nursery_tospace   = tospace;
+        /* Main collection run. The current tospace becomes fromspace, with
+         * the size of the current tospace becoming stashed as the size of
+         * that fromspace. */
+        void *old_fromspace = tc->nursery_fromspace;
+        MVMuint32 old_fromspace_size = tc->nursery_fromspace_size;
+        tc->nursery_fromspace = tc->nursery_tospace;
+        tc->nursery_fromspace_size = tc->nursery_tospace_size;
+
+        /* Decide on this threads's tospace size. If fromspace was already at
+         * the maximum nursery size, then that is the new tospace size. If
+         * not, then see if this thread caused the current GC run, and grant
+         * it a bigger tospace. Otherwise, new tospace size is left as the
+         * last tospace size. */
+        if (tc->nursery_tospace_size < MVM_NURSERY_SIZE) {
+            if (tc->instance->thread_to_blame_for_gc == tc)
+                tc->nursery_tospace_size *= 2;
+        }
+
+        /* If the old fromspace matches the target size, just re-use it. If
+         * not, free it and allocate a new tospace. */
+        if (old_fromspace_size == tc->nursery_tospace_size) {
+            tc->nursery_tospace = old_fromspace;
+        }
+        else {
+            MVM_free(old_fromspace);
+            tc->nursery_tospace = MVM_calloc(1, tc->nursery_tospace_size);
+        }
 
         /* Reset nursery allocation pointers to the new tospace. */
-        tc->nursery_alloc       = tospace;
-        tc->nursery_alloc_limit = (char *)tc->nursery_alloc + MVM_NURSERY_SIZE;
+        tc->nursery_alloc       = tc->nursery_tospace;
+        tc->nursery_alloc_limit = (char *)tc->nursery_tospace + tc->nursery_tospace_size;
 
         /* Add permanent roots and process them; only one thread will do
         * this, since they are instance-wide. */
@@ -94,10 +122,24 @@ void MVM_gc_collect(MVMThreadContext *tc, MVMuint8 what_to_do, MVMuint8 gen) {
         GCDEBUG_LOG(tc, MVM_GC_DEBUG_COLLECT, "Thread %d run %d : processing %d items from TC objects\n", worklist->items);
         process_worklist(tc, worklist, &wtp, gen);
 
-        /* Add current frame to worklist. */
-        MVM_gc_worklist_add_frame(tc, worklist, tc->cur_frame);
-        GCDEBUG_LOG(tc, MVM_GC_DEBUG_COLLECT, "Thread %d run %d : processing %d items from current frame\n", worklist->items);
-        process_worklist(tc, worklist, &wtp, gen);
+        /* Walk current call stack, following caller chain until we reach a
+         * heap-allocated frame. Note that tc->cur_frame may itself be a heap
+         * frame, in which case we put it directly on the worklist as it can
+         * move. */
+        if (tc->cur_frame && MVM_FRAME_IS_ON_CALLSTACK(tc, tc->cur_frame)) {
+            MVMFrame *cur_frame = tc->cur_frame;
+            while (cur_frame && MVM_FRAME_IS_ON_CALLSTACK(tc, cur_frame)) {
+                MVM_gc_root_add_frame_roots_to_worklist(tc, worklist, cur_frame);
+                GCDEBUG_LOG(tc, MVM_GC_DEBUG_COLLECT, "Thread %d run %d : processing %d items from a stack frame\n", worklist->items);
+                process_worklist(tc, worklist, &wtp, gen);
+                cur_frame = cur_frame->caller;
+            }
+        }
+        else {
+            MVM_gc_worklist_add(tc, worklist, &tc->cur_frame);
+            GCDEBUG_LOG(tc, MVM_GC_DEBUG_COLLECT, "Thread %d run %d : processing %d items from current frame\n", worklist->items);
+            process_worklist(tc, worklist, &wtp, gen);
+        }
 
         /* Add temporary roots and process them (these are per-thread). */
         MVM_gc_root_add_temps_to_worklist(tc, worklist, NULL);
@@ -147,8 +189,6 @@ static void process_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, Work
     /* Grab the second generation allocator; we may move items into the
      * old generation. */
     gen2 = tc->gen2;
-
-    MVM_gc_worklist_mark_frame_roots(tc, worklist);
 
     while ((item_ptr = MVM_gc_worklist_get(tc, worklist))) {
         /* Dereference the object we're considering. */
@@ -222,7 +262,6 @@ static void process_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, Work
             /* Catch NULL stable (always sign of trouble) in debug mode. */
             if (MVM_GC_DEBUG_ENABLED(MVM_GC_DEBUG_COLLECT) && !STABLE(item)) {
                 GCDEBUG_LOG(tc, MVM_GC_DEBUG_COLLECT, "Thread %d run %d : found a zeroed handle %p to object %p\n", item_ptr, item);
-                printf("%d", ((MVMCollectable *)1)->owner);
             }
 
             /* Did we see it in the nursery before, or should we move it to
@@ -235,7 +274,9 @@ static void process_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, Work
                     ? MVM_gc_object_id_use_allocation(tc, item)
                     : MVM_gc_gen2_allocate(gen2, item->size);
 
-                /* Add on to the promoted amount (used by profiler). */
+                /* Add on to the promoted amount (used both to decide when to do
+                 * the next full collection, as well as for profiling). Note we
+                 * add unmanaged size on for objects below. */
                 tc->gc_promoted_bytes += item->size;
 
                 /* Copy the object to the second generation and mark it as
@@ -243,15 +284,21 @@ static void process_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, Work
                 GCDEBUG_LOG(tc, MVM_GC_DEBUG_COLLECT, "Thread %d run %d : copying an object %p of size %d to gen2 %p\n",
                     item, item->size, new_addr);
                 memcpy(new_addr, item, item->size);
-                new_addr->flags ^= MVM_CF_NURSERY_SEEN;
+                if (new_addr->flags & MVM_CF_NURSERY_SEEN)
+                    new_addr->flags ^= MVM_CF_NURSERY_SEEN;
                 new_addr->flags |= MVM_CF_SECOND_GEN;
 
-                /* If it references frames or static frames, we need to keep
-                 * on visiting it. */
-                if (!(new_addr->flags & (MVM_CF_TYPE_OBJECT | MVM_CF_STABLE))) {
+                /* If it's a frame with an active work area, we need to keep
+                 * on visiting it. Also add on object's unmanaged size. */
+                if (new_addr->flags & MVM_CF_FRAME) {
+                    if (((MVMFrame *)new_addr)->work)
+                        MVM_gc_root_gen2_add(tc, (MVMCollectable *)new_addr);
+                }
+                else if (!(new_addr->flags & (MVM_CF_TYPE_OBJECT | MVM_CF_STABLE))) {
                     MVMObject *new_obj_addr = (MVMObject *)new_addr;
-                    if (REPR(new_obj_addr)->refs_frames)
-                        MVM_gc_root_gen2_add(tc, (MVMCollectable *)new_obj_addr);
+                    if (REPR(new_obj_addr)->unmanaged_size)
+                        tc->gc_promoted_bytes += REPR(new_obj_addr)->unmanaged_size(tc,
+                            STABLE(new_obj_addr), OBJECT_BODY(new_obj_addr));
                 }
 
                 /* If we're going to sweep the second generation, also need
@@ -286,18 +333,12 @@ static void process_worklist(MVMThreadContext *tc, MVMGCWorklist *worklist, Work
             item->flags |= MVM_CF_FORWARDER_VALID;
         }
 
-        /* make sure any rooted frames mark their stuff */
-        MVM_gc_worklist_mark_frame_roots(tc, worklist);
-
         /* Finally, we need to mark the collectable (at its moved address).
          * Track how many items we had before we mark it, in case we need
          * to write barrier them post-move to uphold the generational
          * invariant. */
         gen2count = worklist->items;
         MVM_gc_mark_collectable(tc, worklist, new_addr);
-
-        /* make sure any rooted frames mark their stuff */
-        MVM_gc_worklist_mark_frame_roots(tc, worklist);
 
         /* In moving an object to generation 2, we may have left it pointing
          * to nursery objects. If so, make sure it's in the gen2 roots. */
@@ -321,27 +362,11 @@ void MVM_gc_mark_collectable(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMC
 
     assert(!(new_addr->flags & MVM_CF_FORWARDER_VALID));
     /*assert(REPR(new_addr));*/
-    sc_idx = MVM_get_idx_of_sc(new_addr);
+    sc_idx = MVM_sc_get_idx_of_sc(new_addr);
     if (sc_idx > 0)
         MVM_gc_worklist_add(tc, worklist, &(tc->instance->all_scs[sc_idx]->sc));
 
-    if (!(new_addr->flags & (MVM_CF_TYPE_OBJECT | MVM_CF_STABLE))) {
-        /* Need to view it as an object in here. */
-        MVMObject *new_addr_obj = (MVMObject *)new_addr;
-
-        /* Add the STable to the worklist. */
-        MVM_gc_worklist_add(tc, worklist, &new_addr_obj->st);
-
-        /* If needed, mark it. This will add addresses to the worklist
-         * that will need updating. Note that we are passing the address
-         * of the object *after* copying it since those are the addresses
-         * we care about updating; the old chunk of memory is now dead! */
-        if (MVM_GC_DEBUG_ENABLED(MVM_GC_DEBUG_COLLECT) && !STABLE(new_addr_obj))
-            MVM_panic(MVM_exitcode_gcnursery, "Found an outdated reference to address %p", new_addr);
-        if (REPR(new_addr_obj)->gc_mark)
-            REPR(new_addr_obj)->gc_mark(tc, STABLE(new_addr_obj), OBJECT_BODY(new_addr_obj), worklist);
-    }
-    else if (new_addr->flags & MVM_CF_TYPE_OBJECT) {
+    if (new_addr->flags & MVM_CF_TYPE_OBJECT) {
         /* Add the STable to the worklist. */
         MVM_gc_worklist_add(tc, worklist, &((MVMObject *)new_addr)->st);
     }
@@ -382,8 +407,24 @@ void MVM_gc_mark_collectable(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMC
         if (new_addr_st->REPR->gc_mark_repr_data)
             new_addr_st->REPR->gc_mark_repr_data(tc, new_addr_st, worklist);
     }
+    else if (new_addr->flags & MVM_CF_FRAME) {
+        MVM_gc_root_add_frame_roots_to_worklist(tc, worklist, (MVMFrame *)new_addr);
+    }
     else {
-        MVM_panic(MVM_exitcode_gcnursery, "Internal error: impossible case encountered in GC marking");
+        /* Need to view it as an object in here. */
+        MVMObject *new_addr_obj = (MVMObject *)new_addr;
+
+        /* Add the STable to the worklist. */
+        MVM_gc_worklist_add(tc, worklist, &new_addr_obj->st);
+
+        /* If needed, mark it. This will add addresses to the worklist
+         * that will need updating. Note that we are passing the address
+         * of the object *after* copying it since those are the addresses
+         * we care about updating; the old chunk of memory is now dead! */
+        if (MVM_GC_DEBUG_ENABLED(MVM_GC_DEBUG_COLLECT) && !STABLE(new_addr_obj))
+            MVM_panic(MVM_exitcode_gcnursery, "Found an outdated reference to address %p", new_addr);
+        if (REPR(new_addr_obj)->gc_mark)
+            REPR(new_addr_obj)->gc_mark(tc, STABLE(new_addr_obj), OBJECT_BODY(new_addr_obj), worklist);
     }
 }
 
@@ -449,7 +490,7 @@ static void pass_work_item(MVMThreadContext *tc, WorkToPass *wtp, MVMCollectable
 
     /* See if there's a currently active list; create it if not. */
     if (!target_info->work) {
-        target_info->work = MVM_calloc(sizeof(MVMGCPassedWork), 1);
+        target_info->work = MVM_calloc(1, sizeof(MVMGCPassedWork));
     }
 
     /* Add this item to the work list. */
@@ -530,21 +571,7 @@ void MVM_gc_collect_free_nursery_uncopied(MVMThreadContext *tc, void *limit) {
             assert(item->sc_forward_u.forwarder != NULL);
 
         /* Now go by collectable type. */
-        if (!(item->flags & (MVM_CF_TYPE_OBJECT | MVM_CF_STABLE))) {
-            /* Object instance. If dead, call gc_free if needed. Scan is
-             * incremented by object size. */
-            MVMObject *obj = (MVMObject *)item;
-            GCDEBUG_LOG(tc, MVM_GC_DEBUG_COLLECT, "Thread %d run %d : collecting an object %p in the nursery with reprid %d\n", item, REPR(obj)->ID);
-            if (dead && REPR(obj)->gc_free)
-                REPR(obj)->gc_free(tc, obj);
-#ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
-            if (dead && item->flags & MVM_CF_SERIALZATION_INDEX_ALLOCATED)
-                MVM_free(item->sc_forward_u.sci);
-#endif
-            if (dead && item->flags & MVM_CF_HAS_OBJECT_ID)
-                MVM_gc_object_id_clear(tc, item);
-        }
-        else if (item->flags & MVM_CF_TYPE_OBJECT) {
+        if (item->flags & MVM_CF_TYPE_OBJECT) {
             /* Type object */
 #ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
             if (dead && item->flags & MVM_CF_SERIALZATION_INDEX_ALLOCATED)
@@ -568,9 +595,23 @@ void MVM_gc_collect_free_nursery_uncopied(MVMThreadContext *tc, void *limit) {
                 MVM_gc_collect_enqueue_stable_for_deletion(tc, st);
             }
         }
+        else if (item->flags & MVM_CF_FRAME) {
+            if (dead)
+                MVM_frame_destroy(tc, (MVMFrame *)item);
+        }
         else {
-            printf("item flags: %d\n", item->flags);
-            MVM_panic(MVM_exitcode_gcnursery, "Internal error: impossible case encountered in GC free");
+            /* Object instance. If dead, call gc_free if needed. Scan is
+             * incremented by object size. */
+            MVMObject *obj = (MVMObject *)item;
+            GCDEBUG_LOG(tc, MVM_GC_DEBUG_COLLECT, "Thread %d run %d : collecting an object %p in the nursery with reprid %d\n", item, REPR(obj)->ID);
+            if (dead && REPR(obj)->gc_free)
+                REPR(obj)->gc_free(tc, obj);
+#ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
+            if (dead && item->flags & MVM_CF_SERIALZATION_INDEX_ALLOCATED)
+                MVM_free(item->sc_forward_u.sci);
+#endif
+            if (dead && item->flags & MVM_CF_HAS_OBJECT_ID)
+                MVM_gc_object_id_clear(tc, item);
         }
 
         /* Go to the next item. */
@@ -636,17 +677,10 @@ void MVM_gc_collect_free_gen2_unmarked(MVMThreadContext *tc, MVMint32 global_des
                 else {
                     GCDEBUG_LOG(tc, MVM_GC_DEBUG_COLLECT, "Thread %d run %d : collecting an object %p in the gen2\n", col);
                     /* No, it's dead. Do any cleanup. */
-                    if (!(col->flags & (MVM_CF_TYPE_OBJECT | MVM_CF_STABLE))) {
-                        /* Object instance; call gc_free if needed. */
-                        MVMObject *obj = (MVMObject *)col;
-                        if (STABLE(obj) && REPR(obj)->gc_free)
-                            REPR(obj)->gc_free(tc, obj);
-#ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
-                        if (col->flags & MVM_CF_SERIALZATION_INDEX_ALLOCATED)
-                            MVM_free(col->sc_forward_u.sci);
+#if MVM_GC_DEBUG
+                    col->flags |= MVM_CF_DEBUG_IN_GEN2_FREE_LIST;
 #endif
-                    }
-                    else if (col->flags & MVM_CF_TYPE_OBJECT) {
+                    if (col->flags & MVM_CF_TYPE_OBJECT) {
 #ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
                         if (col->flags & MVM_CF_SERIALZATION_INDEX_ALLOCATED)
                             MVM_free(col->sc_forward_u.sci);
@@ -689,9 +723,18 @@ void MVM_gc_collect_free_gen2_unmarked(MVMThreadContext *tc, MVMint32 global_des
                             continue;
                         }
                     }
+                    else if (col->flags & MVM_CF_FRAME) {
+                        MVM_frame_destroy(tc, (MVMFrame *)col);
+                    }
                     else {
-                        printf("item flags: %d\n", col->flags);
-                        MVM_panic(MVM_exitcode_gcnursery, "Internal error: impossible case encountered in gen2 GC free");
+                        /* Object instance; call gc_free if needed. */
+                        MVMObject *obj = (MVMObject *)col;
+                        if (STABLE(obj) && REPR(obj)->gc_free)
+                            REPR(obj)->gc_free(tc, obj);
+#ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
+                        if (col->flags & MVM_CF_SERIALZATION_INDEX_ALLOCATED)
+                            MVM_free(col->sc_forward_u.sci);
+#endif
                     }
 
                     /* Chain in to the free list. */
@@ -720,7 +763,7 @@ void MVM_gc_collect_free_gen2_unmarked(MVMThreadContext *tc, MVMint32 global_des
                 /* Dead over-sized object. We know if it's this big it cannot
                  * be a type object or STable, so only need handle the simple
                  * object case. */
-                if (!(col->flags & (MVM_CF_TYPE_OBJECT | MVM_CF_STABLE))) {
+                if (!(col->flags & (MVM_CF_TYPE_OBJECT | MVM_CF_STABLE | MVM_CF_FRAME))) {
                     MVMObject *obj = (MVMObject *)col;
                     if (REPR(obj)->gc_free)
                         REPR(obj)->gc_free(tc, obj);

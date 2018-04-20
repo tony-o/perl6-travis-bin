@@ -3,6 +3,9 @@
 # for string_to_int
 use QRegex;
 
+my %backendconfig := nqp::backendconfig();
+my $vm := nqp::existskey(%backendconfig, 'moar') ?? 'moar' !!
+          nqp::existskey(%backendconfig, 'runtime.jars') ?? 'jvm' !! '';
 my @files := [
     'rx_captures',
     'rx_qcaps',
@@ -39,7 +42,8 @@ sub test_line($line) {
     $target := '' if $target eq "''";
     $target := unescape($target);
 
-    my $expect_substr := nqp::substr($expect, 0, 1) eq '<'
+    my $expect_error := nqp::eqat($expect, '[', 0);
+    my $expect_substr := (nqp::eqat($expect, '<', 0) || nqp::eqat($expect, '[', 0))
                            ?? nqp::substr($expect, 1, nqp::chars($expect) - 2)
                            !! '';
 
@@ -48,7 +52,11 @@ sub test_line($line) {
         my $rxsub  := $rxcomp.compile($regex);
         my $cursor := NQPCursor."!cursor_init"($target, :c(0));
         my $match  := $rxsub($cursor).MATCH;
-        if $expect_substr {
+
+        if $expect_error {
+            ok(0, "$desc - expected an error");
+        }
+        elsif $expect_substr {
             my $got := ~$match."!dump_str"('mob');
             my $m := nqp::index($got, $expect_substr) >= 0;
             ok($m, $desc);
@@ -58,10 +66,10 @@ sub test_line($line) {
             ok($expect eq 'y' ?? $match !! !$match, $desc);
         }
         CATCH {
-            if $expect_substr {
+            if $expect_error {
                 my $m := nqp::index(~$_, $expect_substr) >= 0;
                 ok($m, $desc);
-                say("#      got: $_\n# expected: $expect") unless $m;
+                say("#      got error: $_\n# expected error: $expect_substr") unless $m;
             }
             else {
                 ok(0, $desc);
@@ -81,9 +89,10 @@ for @files -> $fn {
         !! nqp::split("\n", $contents);
 
     for @lines -> $l {
-        my $m := $l ~~ /'# todo ' .*? ':pge<' (.*?) '>'/;
+        my $m := $l ~~ / ^ '# todo ' .*? (\d+)? .*? ':' (\S+) '<' (.*) '>'/;
         if $m {
-            todo($m[0], 1);
+            my $to-todo := $m[0] ?? nqp::radix(10, $m[0], 0, 0)[0] !! 1;
+            todo($m[2], $to-todo) if $m[1] eq $vm || $m[1] eq 'any';
         }
         else {
             next if $l ~~ /^ \s* '#' | ^ \s* $ /;

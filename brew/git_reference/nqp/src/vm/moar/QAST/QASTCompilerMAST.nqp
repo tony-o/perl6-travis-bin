@@ -85,7 +85,7 @@ my class MASTCompilerInstance {
             elsif $kind == $MVM_reg_uint32 { @arr := @!uint32s; $type := uint32 }
             elsif $kind == $MVM_reg_uint16 { @arr := @!uint16s; $type := uint16 }
             elsif $kind == $MVM_reg_uint8  { @arr := @!uint8s; $type := uint8 }
-            else { nqp::die("unhandled reg kind $kind") }
+            else { nqp::die("Unhandled reg kind $kind") }
 
             my $reg;
             if nqp::elems(@arr) && !$new {
@@ -103,7 +103,7 @@ my class MASTCompilerInstance {
         method release_s($reg) { self.release_register($reg, $MVM_reg_str) }
         method release_o($reg) { self.release_register($reg, $MVM_reg_obj) }
 
-        method release_register($reg, $kind, $force = 0) {
+        method release_register($reg, int $kind, int $force = 0) {
             return 1 if $kind == $MVM_reg_void || !$force && $*BLOCK.is_var($reg)
                 || nqp::existskey(%!released_indexes, $reg.index);
             %!released_indexes{$reg.index} := 1;
@@ -119,7 +119,7 @@ my class MASTCompilerInstance {
             return nqp::push(@!uint32s, $reg) if $kind == $MVM_reg_uint32;
             return nqp::push(@!uint16s, $reg) if $kind == $MVM_reg_uint16;
             return nqp::push(@!uint8s, $reg) if $kind == $MVM_reg_uint8;
-            nqp::die("unhandled reg kind $kind");
+            nqp::die("Unhandled reg kind $kind");
         }
     }
 
@@ -130,8 +130,6 @@ my class MASTCompilerInstance {
         has %!local_names_by_index; # Locals' names by their indexes
         has %!locals;               # Mapping of local names to locals
         has %!local_kinds;          # Mapping of local registers to kinds
-        has %!localrefs;            # Mapping of localref names to locals
-        has %!localref_kinds;       # Mapping of localref registers to kinds
         has %!lexicals;             # Mapping of lexical names to lexicals
         has %!lexical_kinds;        # Mapping of lexical names to kinds
         has %!lexical_params;       # Mapping of lexical param names to their initial result reg
@@ -158,8 +156,6 @@ my class MASTCompilerInstance {
             %!local_names_by_index := nqp::hash();
             %!locals := nqp::hash();
             %!local_kinds := nqp::hash();
-            %!localrefs := nqp::hash();
-            %!localref_kinds := nqp::hash();
             %!lexicals := nqp::hash();
             %!lexical_kinds := nqp::hash();
             %!lexical_params := nqp::hash();
@@ -241,9 +237,9 @@ my class MASTCompilerInstance {
         method register_local($var, :$is_cont) {
             my $name := $var.name;
             my $temporary := ?$*INSTMT;
-            if nqp::existskey(%!locals, $name) || nqp::existskey(%!localrefs, $name) ||
+            if nqp::existskey(%!locals, $name) ||
                     $temporary && nqp::existskey(%*STMTTEMPS, $name) {
-                nqp::die("Local (or localref) '$name' already declared");
+                nqp::die("Local '$name' already declared");
             }
             my $kind := $!compiler.type_to_register_kind($var.returns);
             %!local_kinds{$name} := $kind;
@@ -260,25 +256,6 @@ my class MASTCompilerInstance {
             $local;
         }
 
-        method register_localref($var) {
-            my $name := $var.name;
-            my $temporary := ?$*INSTMT;
-            if nqp::existskey(%!localrefs, $name) || nqp::existskey(%!locals, $name) ||
-                    $temporary && nqp::existskey(%*STMTTEMPS, $name) {
-                nqp::die("Localref (or local) '$name' already declared");
-            }
-            my $kind := $!compiler.type_to_register_kind($var.returns);
-            %!localref_kinds{$name} := $kind;
-            # pass a 1 meaning get a Totally New MAST::Local
-            my $localref := $*REGALLOC.fresh_register($MVM_reg_obj, !$temporary);
-            %!localrefs{$name} := $localref;
-            %!local_names_by_index{$localref.index} := $name;
-            if $temporary {
-                %*STMTTEMPS{$name} := $localref;
-            }
-            $localref;
-        }
-
         # returns whether a MAST::Local is a variable in this block
         method is_var($local) {
             nqp::existskey(%!local_names_by_index, $local.index)
@@ -286,7 +263,7 @@ my class MASTCompilerInstance {
 
         method return_kind(*@value) {
             if @value {
-                nqp::die("inconsistent immediate block return type")
+                nqp::die("Inconsistent immediate block return type")
                     if ($!qast.blocktype eq 'immediate' || $!qast.blocktype eq 'immediate_static') &&
                         nqp::defined($!return_kind) && @value[0] != $!return_kind;
                 $!return_kind := @value[0];
@@ -312,8 +289,6 @@ my class MASTCompilerInstance {
         method lexicalrefs() { %!lexicalrefs }
         method local($name) { %!locals{$name} }
         method local_kind($name) { %!local_kinds{$name} }
-        method localref($name) { %!localrefs{$name} }
-        method localref_kind($name) { %!localref_kinds{$name} }
         method lexical_kind($name) { %!lexical_kinds{$name} }
         method lexical_kinds() { %!lexical_kinds }
         method lexicalref_kind($name) { %!lexicalref_kinds{$name} }
@@ -330,9 +305,9 @@ my class MASTCompilerInstance {
                 $out++;
                 $block := $block.outer;
             }
-            nqp::die("could not resolve lexical $name");
+            nqp::die("Could not resolve lexical $name");
         }
-        
+
         method capture_inner($block) {
             nqp::push(@!captured_inners, $block.cuid)
         }
@@ -375,11 +350,11 @@ my class MASTCompilerInstance {
     method mast_frames() { %!mast_frames }
     method sc() { $!sc }
 
-    method to_mast($qast) {
+    method to_mast($qast, %mast_frames = nqp::hash()) {
         # Set up compilation state.
         $!hll := '';
         $!mast_compunit := MAST::CompUnit.new();
-        %!mast_frames := nqp::hash();
+        %!mast_frames := %mast_frames;
         $!file := nqp::ifnull(nqp::getlexdyn('$?FILES'), "<unknown file>");
         $!sc := NQPMu;
 
@@ -423,7 +398,7 @@ my class MASTCompilerInstance {
             }
             elsif $got == $MVM_reg_num32 {
                 my $grow := self.coercion($res, $MVM_reg_num64);
-                my $box := QAST::MASTOperations.box(self, $!hll, $MVM_reg_num64, 
+                my $box := QAST::MASTOperations.box(self, $!hll, $MVM_reg_num64,
                     $grow.result_reg);
                 $il := $grow.instructions;
                 push_ilist($il, $box);
@@ -431,7 +406,7 @@ my class MASTCompilerInstance {
             }
             elsif $got == $MVM_reg_int32 || $got == $MVM_reg_int16 || $got == $MVM_reg_int8 {
                 my $grow := self.coercion($res, $MVM_reg_int64);
-                my $box := QAST::MASTOperations.box(self, $!hll, $MVM_reg_int64, 
+                my $box := QAST::MASTOperations.box(self, $!hll, $MVM_reg_int64,
                     $grow.result_reg);
                 $il := $grow.instructions;
                 push_ilist($il, $box);
@@ -439,7 +414,7 @@ my class MASTCompilerInstance {
             }
             elsif $got == $MVM_reg_uint32 || $got == $MVM_reg_uint16 || $got == $MVM_reg_uint8 {
                 my $grow := self.coercion($res, $MVM_reg_uint64);
-                my $box := QAST::MASTOperations.box(self, $!hll, $MVM_reg_uint64, 
+                my $box := QAST::MASTOperations.box(self, $!hll, $MVM_reg_uint64,
                     $grow.result_reg);
                 $il := $grow.instructions;
                 push_ilist($il, $box);
@@ -635,8 +610,9 @@ my class MASTCompilerInstance {
         MAST::InstructionList.new($il, $reg, $desired)
     }
 
-    method as_mast($qast, :$want) {
+    method as_mast($qast, :$want, :$want-decont) {
         my $*WANT;
+        my $*WANT-DECONT := $want-decont;
         if nqp::defined($want) {
             $*WANT := $want;
             if nqp::istype($qast, QAST::Want) {
@@ -760,11 +736,17 @@ my class MASTCompilerInstance {
     method register_kind_to_type($kind) { @return_types[$kind] }
 
     proto method compile_node($node, :$want) { * }
-    
+
     multi method compile_node(QAST::CompUnit $cu, :$want) {
-        # Should have a single child which is the outer block.
-        if +@($cu) != 1 || !nqp::istype($cu[0], QAST::Block) {
-            nqp::die("QAST::CompUnit should have one child that is a QAST::Block");
+        # Should have a single child
+        if nqp::elems(@($cu)) != 1 {
+            nqp::die("QAST::CompUnit should have 1 child, got "
+                ~ nqp::elems(@($cu)));
+        }
+
+        # Which is the outer block.
+        if !nqp::istype($cu[0], QAST::Block) {
+            nqp::die("QAST::CompUnit should have 1 child that is a QAST::Block, got " ~ $cu[0].HOW.name($cu[0]));
         }
 
         # Set HLL and serialization context.
@@ -786,6 +768,7 @@ my class MASTCompilerInstance {
         # If we are in compilation mode, or have pre-deserialization or
         # post-deserialization tasks, handle those. Overall, the process
         # is to desugar this into simpler QAST nodes, then compile those.
+        my $is_nested := $cu.is_nested;
         my $comp_mode := $cu.compilation_mode;
         my @pre_des   := $cu.pre_deserialize;
         my @post_des  := $cu.post_deserialize;
@@ -800,9 +783,15 @@ my class MASTCompilerInstance {
             }
 
             # If we need to do deserialization, emit code for that.
-            if $comp_mode {
+            if $comp_mode && !$is_nested {
                 $block.push(self.deserialization_code($cu.sc(), $cu.code_ref_blocks(),
                     $cu.repo_conflict_resolver()));
+            }
+
+            # Provided we have a serialization context,, pop it off the
+            # compiling SC stack.
+            unless $is_nested {
+                nqp::popcompsc() if $cu.sc;
             }
 
             # Add post-deserialization tasks.
@@ -844,15 +833,10 @@ my class MASTCompilerInstance {
         }
     }
 
-    # this method is a hook point so that we can override serialization when cross-compiling
+    # This method is a hook point so that we can override serialization when cross-compiling
     method serialize_sc($sc) {
-        # Serialize it.
         my $sh := nqp::list_s();
         my str $serialized := nqp::serialize($sc, $sh);
-
-        # Now it's serialized, pop this SC off the compiling SC stack.
-        nqp::popcompsc();
-
         [$serialized, nqp::null()];
     }
 
@@ -961,12 +945,15 @@ my class MASTCompilerInstance {
             $frame.set_outer($outer_frame)
                 if $outer_frame && $outer_frame ~~ MAST::Frame;
 
-            # Set exit handler and thunk flags if needed.
+            # Set exit handler, thunk, and no-inline flags if needed.
             if $node.has_exit_handler {
                 $frame.has_exit_handler(1);
             }
             if $node.is_thunk {
                 $frame.is_thunk(1);
+            }
+            if $node.no_inline {
+                $frame.no_inline(1);
             }
 
             # Set code object, if any.
@@ -993,7 +980,7 @@ my class MASTCompilerInstance {
                 # when we enter a QAST::Stmt, the contextual will be cloned, and the locals of
                 # newly declared QAST::Vars of local scope inside the Stmt will be stashed here,
                 # so they can be released at the end of the QAST::Stmt in which they were
-                # declared.  Inability to declare duplicate names is still enfoced, and types are
+                # declared.  Inability to declare duplicate names is still enforced, and types are
                 # still enforced.
                 my %*STMTTEMPS := nqp::hash();
                 my $*INSTMT := 0;
@@ -1113,7 +1100,7 @@ my class MASTCompilerInstance {
                     # build up instructions to bind the params
                     for $block.params -> $var {
                         my $scope := $var.scope;
-                        nqp::die("Param scope must be 'local' or 'lexical'")
+                        nqp::die("Param scope must be 'local' or 'lexical', got '$scope'")
                             if $scope ne 'lexical' && $scope ne 'local';
 
                         my $param_kind := self.type_to_register_kind($var.returns);
@@ -1141,7 +1128,7 @@ my class MASTCompilerInstance {
                             my $name := $var.named;
                             if nqp::islist($name) {
                                 unless nqp::elems($name) == 2 {
-                                    nqp::die("Can only support a single fallback name for a named parameter");
+                                    nqp::die("Can only support 1 fallback name for a named parameter, '" ~ $name[0] ~ "' has " ~ nqp::elems($name) - 1);
                                 }
                                 $val := MAST::SVal.new( :value($name[0]) );
                                 $val2 := MAST::SVal.new( :value($name[1]) );
@@ -1161,39 +1148,48 @@ my class MASTCompilerInstance {
                             ?? $block.lexical_param($var.name)
                             !! $block.local($var.name);
                         my $valreg;
+                        my $valreg_kind;
                         my $truncop;
+
                         if $param_kind == $MVM_reg_obj || $param_kind == $MVM_reg_int64 ||
                                 $param_kind == $MVM_reg_num64 || $param_kind == $MVM_reg_str ||
                                 $param_kind == $MVM_reg_uint64 {
+                            $valreg_kind := $param_kind;
                             $valreg := $targetreg;
                         }
                         elsif $param_kind == $MVM_reg_num32 {
-                            $valreg := $*REGALLOC.fresh_register($MVM_reg_num64);
+                            $valreg_kind := $MVM_reg_num64;
                             $truncop := 'trunc_n32';
                         }
                         elsif $param_kind == $MVM_reg_int32 {
-                            $valreg := $*REGALLOC.fresh_register($MVM_reg_int64);
+                            $valreg_kind := $MVM_reg_int64;
                             $truncop := 'trunc_i32';
                         }
                         elsif $param_kind == $MVM_reg_int16 {
-                            $valreg := $*REGALLOC.fresh_register($MVM_reg_int64);
+                            $valreg_kind := $MVM_reg_int64;
                             $truncop := 'trunc_i16';
                         }
                         elsif $param_kind == $MVM_reg_int8 {
-                            $valreg := $*REGALLOC.fresh_register($MVM_reg_int64);
+                            $valreg_kind := $MVM_reg_int64;
                             $truncop := 'trunc_i8';
                         }
                         elsif $param_kind == $MVM_reg_uint32 {
-                            $valreg := $*REGALLOC.fresh_register($MVM_reg_uint64);
+                            $valreg_kind := $MVM_reg_uint64;
                             $truncop := 'trunc_u32';
                         }
                         elsif $param_kind == $MVM_reg_uint16 {
-                            $valreg := $*REGALLOC.fresh_register($MVM_reg_uint64);
+                            $valreg_kind := $MVM_reg_uint64;
                             $truncop := 'trunc_u16';
                         }
                         elsif $param_kind == $MVM_reg_uint8 {
-                            $valreg := $*REGALLOC.fresh_register($MVM_reg_uint64);
+                            $valreg_kind := $MVM_reg_uint64;
                             $truncop := 'trunc_u8';
+                        }
+
+                        # Get a fresh register to store the result of the
+                        # truncation, but only if needed
+                        if $valreg_kind != $param_kind {
+                            $valreg := $*REGALLOC.fresh_register($valreg_kind);
                         }
 
                         # NQP->QAST always provides a default value for optional NQP params
@@ -1204,7 +1200,7 @@ my class MASTCompilerInstance {
 
                             # generate default initialization code. Could also be
                             # wrapped in another QAST::Block.
-                            my $default_mast := self.as_mast($var.default, :want($param_kind));
+                            my $default_mast := self.as_mast($var.default, :want($valreg_kind));
 
                             # emit param grabbing op
                             $val2
@@ -1329,8 +1325,9 @@ my class MASTCompilerInstance {
 
     multi method compile_node(QAST::Stmts $node, :$want) {
         my $resultchild := $node.resultchild;
-        nqp::die("resultchild out of range")
-            if (nqp::defined($resultchild) && $resultchild >= +@($node));
+        nqp::die("resultchild out of range, max allowed is "
+            ~ nqp::elems(@($node)) - 1 ~ ", got $resultchild")
+        if (nqp::defined($resultchild) && $resultchild >= nqp::elems(@($node)));
         self.compile_all_the_stmts(@($node), $resultchild)
     }
 
@@ -1349,8 +1346,9 @@ my class MASTCompilerInstance {
         my %*STMTTEMPS  := %stmt_temps;
         my $*INSTMT     := 1;
         my $resultchild := $node.resultchild;
-        nqp::die("resultchild out of range")
-            if (nqp::defined($resultchild) && $resultchild >= +@($node));
+        nqp::die("resultchild out of range, max allowed is "
+            ~ nqp::elems(@($node)) - 1 ~ ", got $resultchild")
+        if (nqp::defined($resultchild) && $resultchild >= nqp::elems(@($node)));
         self.compile_all_the_stmts(@($node), $resultchild);
     }
 
@@ -1376,9 +1374,10 @@ my class MASTCompilerInstance {
             # the last statement,
                     || $resultchild == -1 && $result_count == $final_stmt_idx) {
                 # compile $_ with an explicit $want, either what's given or obj
+                my $want-decont := $*WANT-DECONT;
                 $last_stmt := nqp::defined($WANT)
-                    ?? self.as_mast($_, :want($WANT))
-                    !! self.as_mast($_);
+                    ?? self.as_mast($_, :want($WANT), :$want-decont)
+                    !! self.as_mast($_, :$want-decont);
                 if $last_stmt.result_kind == $MVM_reg_void {
                     $last_stmt := self.coerce($last_stmt, $MVM_reg_obj);
                 }
@@ -1391,9 +1390,11 @@ my class MASTCompilerInstance {
             # Annotate with line number if we have one.
             my $node := $_.node;
             if nqp::isconcrete($node) && nqp::can($node,'orig') {
-                my $line := HLL::Compiler.lineof($node.orig(), $node.from(), :cache(1));
+                my @line_file := HLL::Compiler.linefileof($node.orig(), $node.from(), :cache(1), :directives(1));
+                my $line := @line_file[0];
+                my $file := @line_file[1] || $!file;
                 nqp::push(@all_ins, MAST::Annotated.new(
-                    :$!file, :$line, :instructions($last_stmt.instructions) ));
+                    :$file, :$line, :instructions($last_stmt.instructions) ));
             }
             else {
                 nqp::splice(@all_ins, $last_stmt.instructions, +@all_ins, 0);
@@ -1441,7 +1442,7 @@ my class MASTCompilerInstance {
     }
 
     sub check_kinds($a, $b) {
-        nqp::die("register types $a and $b don't match") unless $a == $b;
+        nqp::die("Register types $a and $b don't match") unless $a == $b;
     }
 
     my @lex_n_opnames := [
@@ -1474,22 +1475,6 @@ my class MASTCompilerInstance {
         'getlexref_ns',
         '',
         'getlexref_nu',
-    ];
-
-    my @localref_opnames := [
-        '',
-        'getregref_i8',
-        'getregref_i16',
-        'getregref_i32',
-        'getregref_i',
-        'getregref_n32',
-        'getregref_n',
-        'getregref_s',
-        '', '',  '',  '',  '',  '',  '',  '',  '',
-        'getregref_u8',
-        'getregref_u16',
-        'getregref_u32',
-        'getregref_u'
     ];
 
     my @decont_opnames := [
@@ -1567,16 +1552,13 @@ my class MASTCompilerInstance {
                 elsif $scope eq 'lexicalref' {
                     $*BLOCK.add_lexicalref($node);
                 }
-                elsif $scope eq 'localref' {
-                    $*BLOCK.register_localref($node);
-                }
                 else {
-                    nqp::die("Cannot declare variable with scope '$scope'; use one of 'local', 'lexical', 'localref' or 'lexicalref'");
+                    nqp::die("Cannot declare variable with scope '$scope'; use one of 'local', 'lexical', or 'lexicalref'");
                 }
             }
             elsif $decl eq 'static' {
                 if $scope ne 'lexical' {
-                    nqp::die("Can only use 'static' decl with scope 'lexical'");
+                    nqp::die("Can only use 'static' decl with scope 'lexical', got scope '$scope'");
                 }
                 $*BLOCK.add_lexical($node, :is_static);
             }
@@ -1588,12 +1570,12 @@ my class MASTCompilerInstance {
                     $*BLOCK.add_lexical($node, :is_cont);
                 }
                 else {
-                    nqp::die("Can only use 'contvar' decl with scope 'lexical'");
+                    nqp::die("Can only use 'contvar' decl with scope 'lexical' or 'local', got scope '$scope'");
                 }
             }
             elsif $decl eq 'statevar' {
                 if $scope ne 'lexical' {
-                    nqp::die("Can only use 'statevar' decl with scope 'lexical'");
+                    nqp::die("Can only use 'statevar' decl with scope 'lexical', got scope '$scope'");
                 }
                 $*BLOCK.add_lexical($node, :is_state);
             }
@@ -1618,13 +1600,18 @@ my class MASTCompilerInstance {
             }
         }
 
+        # If we want a decontainerized value, then we don't ever need a
+        # reference in this context either.
+        if $*WANT-DECONT {
+            $scope := 'lexical'   if $scope eq 'lexicalref';
+            $scope := 'attribute' if $scope eq 'attributeref';
+        }
+
         # Now go by scope.
         my $name := $node.name;
         my @ins;
         if $scope eq 'local' {
             my $local := $*BLOCK.local($name);
-            my $localref := $*BLOCK.localref($name);
-
             if $local {
                 $res_kind := $*BLOCK.local_kind($name);
                 if $*BINDVAL {
@@ -1634,42 +1621,6 @@ my class MASTCompilerInstance {
                     $*REGALLOC.release_register($valmast.result_reg, $res_kind);
                 }
                 $res_reg := $local;
-            } elsif $localref {
-                if $*BINDVAL {
-                    nqp::die('Cannot bind to QAST::Var resolving to a localref');
-                }
-                $res_kind := $*BLOCK.localref_kind($name);
-                $res_reg := $*REGALLOC.fresh_register($res_kind);
-                push_op(@ins, @decont_opnames[@kind_to_op_slot[$res_kind]], $res_reg, $localref);
-            }
-            else {
-                nqp::die("Cannot reference undeclared local '$name'");
-            }
-        }
-        elsif $scope eq 'localref' {
-            my $localref := $*BLOCK.localref($name);
-            my $local    := $*BLOCK.local($name);
-            if $localref {
-                $res_kind := $MVM_reg_obj;
-                if $*BINDVAL {
-                    my $valmast := self.as_mast_clear_bindval($*BINDVAL, :want($MVM_reg_obj));
-                    push_ilist(@ins, $valmast);
-                    push_op(@ins, 'set', $localref, $valmast.result_reg);
-                    $*REGALLOC.release_register($valmast.result_reg, $MVM_reg_obj);
-                }
-                $res_reg := $localref;
-            }
-            elsif $local {
-                if $*BINDVAL {
-                    nqp::die('Cannot bind to a local resolving to a localref');
-                }
-                my $local_kind := $*BLOCK.local_kind($name);
-                if $local_kind == $MVM_reg_obj {
-                    nqp::die('Cannot take a reference to non-native local ' ~ $name);
-                }
-                $res_reg := $*REGALLOC.fresh_register($MVM_reg_obj);
-                $res_kind := $MVM_reg_obj;
-                push_op(@ins, @localref_opnames[$local_kind], $res_reg, $local);
             }
             else {
                 nqp::die("Cannot reference undeclared local '$name'");
@@ -1858,7 +1809,7 @@ my class MASTCompilerInstance {
             # Ensure we have object and class handle.
             my @args := $node.list();
             if +@args != 2 {
-                nqp::die("An attribute lookup needs an object and a class handle");
+                nqp::die("An attribute lookup needs 2 args (an object and a class handle), got " ~ +@args);
             }
 
             # Compile object and handle.
@@ -1911,7 +1862,7 @@ my class MASTCompilerInstance {
             # Ensure we have object and class handle, and aren't binding.
             my @args := $node.list();
             if +@args != 2 {
-                nqp::die("An attribute reference needs an object and a class handle");
+                nqp::die("An attribute reference needs 2 args (an object and a class handle), got" ~ +@args);
             }
             if $*BINDVAL {
                 nqp::die("Cannot bind to QAST::Var '{$name}' with scope attributeref");
@@ -1995,13 +1946,19 @@ my class MASTCompilerInstance {
         }
         return self.as_mast_constant(@children[0]);
     }
+    multi method as_mast_constant(QAST::Op $op) {
+        if $op.op eq 'const' && nqp::existskey(%const_map, $op.name) {
+            return MAST::IVal.new( :value(%const_map{$op.name}) );
+        }
+        nqp::die("Expected QAST constant, got op '" ~ $op.op ~ "'");
+    }
     multi method as_mast_constant(QAST::Node $qast) {
-        nqp::die("expected QAST constant; didn't get one");
+        nqp::die("Expected QAST constant, got QAST::Node");
     }
 
     multi method compile_node(QAST::Want $node, :$want) {
         # If we're not in a coercive context, take the default.
-        self.as_mast($node[0])
+        self.as_mast($node[0], :want-decont($*WANT-DECONT))
     }
 
     multi method compile_node(QAST::IVal $iv, :$want) {
@@ -2122,7 +2079,7 @@ my class MASTCompilerInstance {
                     elsif $size == 32 { $MVM_reg_uint32 }
                     elsif $size == 16 { $MVM_reg_uint16 }
                     elsif $size == 8  { $MVM_reg_uint8 }
-                    else { nqp::die("Unknown int size $size") }
+                    else { nqp::die("Unknown uint size $size") }
                 }
                 else {
                     if $size == 64    { $MVM_reg_int64 }
@@ -2147,8 +2104,8 @@ my class MASTCompilerInstance {
 
 # Shim that makes a compiler instance and uses it to drive compilation.
 class QAST::MASTCompiler {
-    method to_mast($qast) {
-        MASTCompilerInstance.new.to_mast($qast)
+    method to_mast($qast, %mast_frames = nqp::hash()) {
+        MASTCompilerInstance.new.to_mast($qast, %mast_frames)
     }
 
     method operations() {
@@ -2183,11 +2140,11 @@ class MASTBytecodeAssembler {
             'HandlerScope',     MAST::HandlerScope
         )
     }
-    
+
     method assemble_to_file($mast, $file) {
         nqp::masttofile($mast, self.node_hash(), $file)
     }
-    
+
     method assemble_and_load($mast) {
         nqp::masttocu($mast, self.node_hash())
     }
@@ -2196,4 +2153,3 @@ class MASTBytecodeAssembler {
 if nqp::isnull(nqp::getcomp('MAST')) {
     nqp::bindcomp('MAST', MASTBytecodeAssembler);
 }
- 

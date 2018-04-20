@@ -1,7 +1,7 @@
 ------------------------------------------------------------------------------
 -- DynASM x86/x64 module.
 --
--- Copyright (C) 2005-2014 Mike Pall. All rights reserved.
+-- Copyright (C) 2005-2015 Mike Pall. All rights reserved.
 -- See dynasm.lua for full copyright notice.
 ------------------------------------------------------------------------------
 
@@ -57,7 +57,9 @@ local action_names = {
   -- action arg (1 byte), no buffer pos.
   "ESC",
   -- no action arg, no buffer pos.
-  "MARK",
+  "MARK", "MARKREX",
+  -- no action arg, 1 buffer pos
+  "OPTREX",
   -- action arg (1 byte), no buffer pos, terminal action:
   "SECTION",
   -- no args, no buffer pos, terminal action:
@@ -460,7 +462,7 @@ local function wputszarg(sz, n)
 end
 
 -- Put multi-byte opcode with operand-size dependent modifications.
-local function wputop(sz, op, rex)
+local function wputop(sz, op, rex, mark_rex)
   local r
   if rex ~= 0 and not x64 then werror("bad operand size") end
   if sz == "w" then wputb(102) end
@@ -471,18 +473,31 @@ local function wputop(sz, op, rex)
     if rex ~= 0 then
       local opc3 = band(op, 0xffff00)
       if opc3 == 0x0f3a00 or opc3 == 0x0f3800 then
-	wputb(64 + band(rex, 15)); rex = 0
+         wputb(64 + band(rex, 15)); rex = 0
+         if mark_rex then waction("MARKREX"); mark_rex = false end
       end
+    elseif mark_rex then
+       waction("OPTREX"); mark_rex = false
     end
     wputb(shr(op, 16)); op = band(op, 0xffff)
   end
   if op >= 256 then
     local b = shr(op, 8)
-    if b == 15 and rex ~= 0 then wputb(64 + band(rex, 15)); rex = 0 end
+    if b == 15 and rex ~= 0 then
+       wputb(64 + band(rex, 15)); rex = 0
+       if mark_rex then waction("MARKREX"); mark_rex = false end
+    elseif mark_rex then
+       waction("OPTREX"); mark_rex = false
+    end
     wputb(b)
     op = band(op, 255)
   end
-  if rex ~= 0 then wputb(64 + band(rex, 15)) end
+  if rex ~= 0 then
+     wputb(64 + band(rex, 15))
+     if mark_rex then waction("MARKREX") end
+  elseif mark_rex then
+     waction("OPTREX")
+  end
   if sz == "b" then op = op - 1 end
   wputb(op)
 end
@@ -504,8 +519,8 @@ local function wputmrmsib(t, imark, s, vsreg)
   -- Register mode.
   if sub(t.mode, 1, 1) == "r" then
     wputmodrm(3, s, reg)
-    if vsreg then waction("VREG", vsreg); wputxb(2) end
-    if vreg then waction("VREG", vreg); wputxb(0) end
+    if vsreg then waction("VREG", vsreg); wputxb(14) end -- 3 << 2 + 2
+    if vreg then waction("VREG", vreg); wputxb(12) end   -- 3 << 2 + 0
     return
   end
 
@@ -519,9 +534,9 @@ local function wputmrmsib(t, imark, s, vsreg)
       -- [xreg*xsc+disp] -> (0, s, esp) (xsc, xreg, ebp)
       wputmodrm(0, s, 4)
       if imark == "I" then waction("MARK") end
-      if vsreg then waction("VREG", vsreg); wputxb(2) end
+      if vsreg then waction("VREG", vsreg); wputxb(2) end -- 0 << 2 + 2
       wputmodrm(t.xsc, xreg, 5)
-      if vxreg then waction("VREG", vxreg); wputxb(3) end
+      if vxreg then waction("VREG", vxreg); wputxb(shl(t.xsc, 2) + 3) end -- t.xsc << 2 + 2
     else
       -- Pure 32 bit displacement.
       if x64 and tdisp ~= "table" then
@@ -533,7 +548,7 @@ local function wputmrmsib(t, imark, s, vsreg)
 	wputmodrm(0, s, 5) -- [disp|rip-label] -> (0, s, ebp)
 	if imark == "I" then waction("MARK") end
       end
-      if vsreg then waction("VREG", vsreg); wputxb(2) end
+      if vsreg then waction("VREG", vsreg); wputxb(2) end -- 0 << 2 + 2
     end
     if riprel then -- Emit rip-relative displacement.
       if match("UWSiI", imark) then
@@ -561,22 +576,24 @@ local function wputmrmsib(t, imark, s, vsreg)
   if xreg or band(reg, 7) == 4 then
     wputmodrm(m or 2, s, 4) -- ModRM.
     if m == nil or imark == "I" then waction("MARK") end
-    if vsreg then waction("VREG", vsreg); wputxb(2) end
+    if vsreg then waction("VREG", vsreg); wputxb(shl(m or 2, 2) + 2) end
     wputmodrm(t.xsc or 0, xreg or 4, reg) -- SIB.
-    if vxreg then waction("VREG", vxreg); wputxb(3) end
-    if vreg then waction("VREG", vreg); wputxb(1) end
+    if vxreg then waction("VREG", vxreg); wputxb(shl(t.xsc or 0, 2) + 3) end
+    if vreg then waction("VREG", vreg); wputxb(shl(t.xsc or 2, 2) + 1) end
   else
     wputmodrm(m or 2, s, reg) -- ModRM.
     if (imark == "I" and (m == 1 or m == 2)) or
        (m == nil and (vsreg or vreg)) then waction("MARK") end
-    if vsreg then waction("VREG", vsreg); wputxb(2) end
-    if vreg then waction("VREG", vreg); wputxb(1) end
+    if vsreg then waction("VREG", vsreg); wputxb(shl(m or 2, 2) + 2) end
+    if vreg then waction("VREG", vreg); wputxb(shl(m or 2, 2) + 0) end
   end
 
   -- Put displacement.
   if m == 1 then wputsbarg(disp)
   elseif m == 2 then wputdarg(disp)
-  elseif m == nil then waction("DISP", disp) end
+  elseif m == nil then
+     waction("DISP", disp)
+  end
 end
 
 ------------------------------------------------------------------------------
@@ -1117,6 +1134,9 @@ local map_op = {
   fucompp_0 =	"DAE9",
   fcompp_0 =	"DED9",
 
+  fldenv_1 =	"x.:D94m",
+  fnstenv_1 =	"x.:D96m",
+  fstenv_1 =	"x.:9BD96m",
   fldcw_1 =	"xw:nD95m",
   fstcw_1 =	"xw:n9BD97m",
   fnstcw_1 =	"xw:nD97m",
@@ -1192,6 +1212,8 @@ local map_op = {
   cvttps2dq_2 =	"rmo:F30F5BrM",
   cvttsd2si_2 =	"rr/do:F20F2CrM|rr/qo:|rx/dq:|rxq:",
   cvttss2si_2 =	"rr/do:F30F2CrM|rr/qo:|rxd:|rx/qd:",
+  fxsave_1 =	"x.:0FAE0m",
+  fxrstor_1 =	"x.:0FAE1m",
   ldmxcsr_1 =	"xd:0FAE2m",
   lfence_0 =	"0FAEE8",
   maskmovdqu_2 = "rro:660FF7rM",
@@ -1499,13 +1521,16 @@ local function dopattern(pat, args, sz, op, needrex)
       addin = args[2]; opcode = opcode + (addin.reg % 8)
       narg = 3
     elseif c == "m" or c == "M" then	-- Encode ModRM/SIB.
-      local s
+      local s, mark_rex = false
       if addin then
 	s = addin.reg
 	opcode = opcode - band(s, 7)	-- Undo regno opcode merge.
       else
 	s = band(opcode, 15)	-- Undo last digit.
 	opcode = shr(opcode, 4)
+      end
+      for i, arg in ipairs(args) do
+         mark_rex = mark_rex or x64 and (arg.vreg or arg.vxreg)
       end
       local nn = c == "m" and 1 or 2
       local t = args[nn]
@@ -1514,8 +1539,17 @@ local function dopattern(pat, args, sz, op, needrex)
       if t.reg and t.reg > 7 then rex = rex + 1 end
       if t.xreg and t.xreg > 7 then rex = rex + 2 end
       if s > 7 then rex = rex + 4 end
+      if args[1].vreg or (#args > 1 and args[2].vreg) then
+         if t.opsize == "b" then
+            -- vregs with bytes always need a rex to signify that they
+            -- use full registers rather than upper parts of lower
+            -- registers...
+            rex = rex + 64
+         end
+      end
       if needrex then rex = rex + 16 end
-      wputop(szov, opcode, rex); opcode = nil
+
+      wputop(szov, opcode, rex, mark_rex); opcode = nil -- mark rex if vreg given
       local imark = sub(pat, -1) -- Force a mark (ugly).
       -- Put ModRM/SIB with regno/last digit as spare.
       wputmrmsib(t, imark, s, addin and addin.vreg)
@@ -1525,11 +1559,11 @@ local function dopattern(pat, args, sz, op, needrex)
 	if szov == "q" and rex == 0 then rex = rex + 8 end
 	if needrex then rex = rex + 16 end
 	if addin and addin.reg == -1 then
-	  wputop(szov, opcode - 7, rex)
+	  wputop(szov, opcode - 7, rex, true)
 	  waction("VREG", addin.vreg); wputxb(0)
 	else
 	  if addin and addin.reg > 7 then rex = rex + 1 end
-	  wputop(szov, opcode, rex)
+	  wputop(szov, opcode, rex, false)
 	end
 	opcode = nil
       end
@@ -1711,7 +1745,7 @@ if x64 then
 	rex = a.reg > 7 and 9 or 8
       end
     end
-    wputop(sz, opcode, rex)
+    wputop(sz, opcode, rex, vreg)
     if vreg then waction("VREG", vreg); wputxb(0) end
     waction("IMM_D", format("(unsigned int)(%s)", op64))
     waction("IMM_D", format("(unsigned int)((%s)>>32)", op64))

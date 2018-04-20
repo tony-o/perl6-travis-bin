@@ -96,10 +96,10 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
     }
 
     method worry(*@args) {
-        nqp::printfh(nqp::getstderr(), nqp::join('', @args) ~ "\n");
+        note(nqp::join('', @args) ~ "\n");
     }
 
-    token ws { [ \s+ | '#' \N* ]* }
+    token ws { [ \s | '#' \N* ]* }
 
     token normspace { <?[\s#]> <.ws> }
 
@@ -153,8 +153,8 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
     regex infixstopper {
         :dba('infix stopper')
         [
-        | <?before <[\) \} \]]> >
-        | <?before '>' <-[>]> >
+        | <?before <.[\) \} \]]> >
+        | <?before '>' <.-[>]> >
         | <?rxstopper>
         ]
     }
@@ -192,8 +192,8 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
         :my $*VARDEF := 0;
         [
         || <noun=.quantified_atom>+
-        || <?before <rxstopper> | <[&|~]> > <.throw_null_pattern>
-        || <?before <infixstopper> > <.throw_null_pattern> # XXX Check if unmatched bracket
+        || <?before <.rxstopper> | <.[&|~]> > <.throw_null_pattern>
+        || <?before <.infixstopper> > <.throw_null_pattern> # XXX Check if unmatched bracket
         || $$ <.throw_regex_not_terminated>
         || (\W) { self.throw_unrecognized_metachar: ~$/[0] }
         || <.throw_regex_not_terminated>
@@ -229,7 +229,7 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
         # :dba('regex atom')
         [
         | \w
-          [ <?before ' ' \w> <!{ %*RX<s> || $*HAS_GOAL }> <.worry("Space is not significant here; please use quotes or :s (:sigspace) modifier (or, to suppress this warning, omit the space, or otherwise change the spacing)")> ]?
+          [ <?before ' ' \w <!before <.quantifier>>  > <!{ %*RX<s> || $*HAS_GOAL }> <.worry("Space is not significant here; please use quotes or :s (:sigspace) modifier (or, to suppress this warning, omit the space, or otherwise change the spacing)")> ]?
           <.SIGOK>
         | <metachar>
         ]
@@ -248,7 +248,7 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
     proto token quantifier { <...> }
     token quantifier:sym<%> {
 	('%''%'?) {
-	    $/.CURSOR.panic("Missing quantifier on the left argument of " ~ $/[0]);
+	    $/.panic("Missing quantifier on the left argument of " ~ $/[0]);
 	}
     }
     token quantifier:sym<*> { <sym> <backmod> }
@@ -273,14 +273,14 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
               ]
               [
               | $<upto>='^'? <max=.integer> {
-                  $/.CURSOR.panic("Negative numbers are not allowed as quantifiers") if $<max>.Str < 0;
+                  $/.panic("Negative numbers are not allowed as quantifiers") if nqp::radix(10, $<max>, 0, 0)[0] < 0;
                 }
               | $<max>=['*']
               | <.throw_malformed_range>
               ]
             ]?
           ]
-          { $/.CURSOR.panic("Negative numbers are not allowed as quantifiers") if $<min>.Str < 0 }
+          { $/.panic("Negative numbers are not allowed as quantifiers") if nqp::radix(10, $<min>, 0, 0)[0] < 0 }
         | <?[{]> <codeblock>
         ]
     }
@@ -353,7 +353,6 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
 
     proto token backslash { <...> }
     token backslash:sym<s> { $<sym>=[<[dDnNsSwW]>] }
-    token backslash:sym<b> { $<sym>=[<[bB]>] }
     token backslash:sym<e> { $<sym>=[<[eE]>] }
     token backslash:sym<f> { $<sym>=[<[fF]>] }
     token backslash:sym<h> { $<sym>=[<[hH]>] }
@@ -364,6 +363,18 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
     token backslash:sym<x> { $<sym>=[<[xX]>] [ <hexint> | '[' <hexints> ']' ] }
     token backslash:sym<c> { $<sym>=[<[cC]>] <charspec> }
     token backslash:sym<0> { $<sym>=['0'] }
+    token backslash:sym<B> { 'B' <.obs:
+        '\\B', '<!|w> for negated word boundary. If you meant a negated'
+        ~ ' backspace character, use it in a negated character class (<-[\b]>).'
+    >}
+    token backslash:sym<b> { 'b' <.obs:
+        '\\b', '<|w> for word boundary (or « and » for left/right boundaries).'
+        ~ ' If you meant the backspace character, quote it ("\b") or use it as'
+        ~ ' inside a character class (<[\b]>)'
+    >}
+    token backslash:sym<K> { 'K' <.obs:
+        '\\K', '<( for discarding text before the capture marker or )> for discarding text after.'
+    >}
     token backslash:sym<A> { 'A' <.obs: '\\A as beginning-of-string matcher', '^'> }
     token backslash:sym<z> { 'z' <.obs: '\\z as end-of-string matcher', '$'> }
     token backslash:sym<Z> { 'Z' <.obs: '\\Z as end-of-string matcher', '\\n?$'> }
@@ -468,7 +479,7 @@ grammar QRegex::P6Regex::Grammar is HLL::Grammar {
         ]
         {
             if !$<quote_EXPR> {
-                my $n := $<n>[0] gt '' ?? +$<n>[0] !! 1;
+                my $n := $<n>[0] gt '' ?? ($<n>[0] eq '!' ?? 0 !! +$<n>[0]) !! 1;
                 %*RX{ ~$<mod_ident><sym> } := $n;
             }
         }

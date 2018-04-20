@@ -1,22 +1,16 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
-
-/* Invocation protocol handler. */
-static void invoke_handler(MVMThreadContext *tc, MVMObject *invokee, MVMCallsite *callsite, MVMRegister *args) {
-    MVM_exception_throw_adhoc(tc, "Cannot invoke static frame object");
-}
+static const MVMREPROps MVMStaticFrame_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. Also sets the invocation protocol handler in the STable. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st = MVM_gc_allocate_stable(tc, &MVMStaticFrame_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
         MVM_ASSIGN_REF(tc, &(st->header), st->WHAT, obj);
-        st->invoke = invoke_handler;
         st->size = sizeof(MVMStaticFrame);
     });
 
@@ -59,7 +53,9 @@ static void copy_to(MVMThreadContext *tc, MVMSTable *st, void *src, MVMObject *d
         MVMuint16 *local_types = MVM_malloc(sizeof(MVMuint16) * src_body->num_locals);
         MVMuint16 *lexical_types = MVM_malloc(sizeof(MVMuint16) * src_body->num_lexicals);
         memcpy(local_types, src_body->local_types, sizeof(MVMuint16) * src_body->num_locals);
-        memcpy(lexical_types, src_body->lexical_types, sizeof(MVMuint16) * src_body->num_lexicals);
+        if (src_body->num_lexicals)
+            memcpy(lexical_types, src_body->lexical_types,
+                sizeof(MVMuint16) * src_body->num_lexicals);
         dest_body->local_types = local_types;
         dest_body->lexical_types = lexical_types;
     }
@@ -69,16 +65,11 @@ static void copy_to(MVMThreadContext *tc, MVMSTable *st, void *src, MVMObject *d
 
         /* NOTE: if we really wanted to, we could avoid rehashing... */
         HASH_ITER(hash_handle, src_body->lexical_names, current, tmp, bucket_tmp) {
-            size_t klen;
-            void *kdata;
             MVMLexicalRegistry *new_entry = MVM_malloc(sizeof(MVMLexicalRegistry));
-
             /* don't need to clone the string */
             MVM_ASSIGN_REF(tc, &(dest_root->header), new_entry->key, current->key);
             new_entry->value = current->value;
-
-            MVM_HASH_EXTRACT_KEY(tc, &kdata, &klen, current->key, "really broken")
-            HASH_ADD_KEYPTR(hash_handle, dest_body->lexical_names, kdata, klen, new_entry);
+            MVM_HASH_BIND(tc, dest_body->lexical_names, current->key, new_entry);
         }
     }
 
@@ -110,9 +101,10 @@ static void copy_to(MVMThreadContext *tc, MVMSTable *st, void *src, MVMObject *d
 
     dest_body->num_handlers = src_body->num_handlers;
     dest_body->handlers     = MVM_malloc(src_body->num_handlers * sizeof(MVMFrameHandler));
-    memcpy(dest_body->handlers, src_body->handlers, src_body->num_handlers * sizeof(MVMFrameHandler));
+    if (src_body->num_handlers)
+        memcpy(dest_body->handlers, src_body->handlers,
+            src_body->num_handlers * sizeof(MVMFrameHandler));
     dest_body->instrumentation_level = 0;
-    dest_body->pool_index            = src_body->pool_index;
     dest_body->num_annotations       = src_body->num_annotations;
     dest_body->annotations_data      = src_body->annotations_data;
     dest_body->fully_deserialized    = 1;
@@ -137,6 +129,7 @@ static void gc_mark(MVMThreadContext *tc, MVMSTable *st, void *data, MVMGCWorkli
 
     /* lexical names hash keys */
     HASH_ITER(hash_handle, body->lexical_names, current, tmp, bucket_tmp) {
+        MVM_gc_worklist_add(tc, worklist, &current->hash_handle.key);
         MVM_gc_worklist_add(tc, worklist, &current->key);
     }
 
@@ -150,30 +143,14 @@ static void gc_mark(MVMThreadContext *tc, MVMSTable *st, void *data, MVMGCWorkli
                 MVM_gc_worklist_add(tc, worklist, &body->static_env[i].o);
     }
 
-    /* Spesh slots. */
-    if (body->num_spesh_candidates) {
-        MVMint32 i, j;
-        for (i = 0; i < body->num_spesh_candidates; i++) {
-            for (j = 0; j < body->spesh_candidates[i].num_guards; j++)
-                MVM_gc_worklist_add(tc, worklist, &body->spesh_candidates[i].guards[j].match);
-            for (j = 0; j < body->spesh_candidates[i].num_spesh_slots; j++)
-                MVM_gc_worklist_add(tc, worklist, &body->spesh_candidates[i].spesh_slots[j]);
-            if (body->spesh_candidates[i].log_slots)
-                for (j = 0; j < body->spesh_candidates[i].num_log_slots * MVM_SPESH_LOG_RUNS; j++)
-                    MVM_gc_worklist_add(tc, worklist, &body->spesh_candidates[i].log_slots[j]);
-            for (j = 0; j < body->spesh_candidates[i].num_inlines; j++)
-                MVM_gc_worklist_add(tc, worklist, &body->spesh_candidates[i].inlines[j].code);
-            if (body->spesh_candidates[i].sg)
-                MVM_spesh_graph_mark(tc, body->spesh_candidates[i].sg, worklist);
-        }
-    }
+    /* Spesh. */
+    MVM_gc_worklist_add(tc, worklist, &body->spesh);
 }
 
 /* Called by the VM in order to free memory associated with this object. */
 static void gc_free(MVMThreadContext *tc, MVMObject *obj) {
     MVMStaticFrame *sf = (MVMStaticFrame *)obj;
     MVMStaticFrameBody *body = &sf->body;
-    MVMint32 i;
     if (body->orig_bytecode != body->bytecode) {
         MVM_free(body->bytecode);
         body->bytecode = body->orig_bytecode;
@@ -184,16 +161,13 @@ static void gc_free(MVMThreadContext *tc, MVMObject *obj) {
     if (!body->fully_deserialized)
         return;
     MVM_free(body->handlers);
+    MVM_free(body->work_initial);
     MVM_free(body->static_env);
     MVM_free(body->static_env_flags);
     MVM_free(body->local_types);
     MVM_free(body->lexical_types);
     MVM_free(body->lexical_names_list);
     MVM_HASH_DESTROY(hash_handle, MVMLexicalRegistry, body->lexical_names);
-
-    for (i = 0; i < body->num_spesh_candidates; i++)
-        MVM_spesh_candidate_destroy(tc, &body->spesh_candidates[i]);
-    MVM_free(body->spesh_candidates);
 }
 
 static const MVMStorageSpec storage_spec = {
@@ -217,12 +191,93 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info) {
     /* Nothing to do for this REPR. */
 }
 
-/* Initializes the representation. */
-const MVMREPROps * MVMStaticFrame_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+/* Calculates the non-GC-managed memory we hold on to. */
+static MVMuint64 unmanaged_size(MVMThreadContext *tc, MVMSTable *st, void *data) {
+    MVMStaticFrameBody *body = (MVMStaticFrameBody *)data;
+    MVMuint64 size = 0;
+
+    if (body->fully_deserialized) {
+        size += sizeof(MVMuint16) * body->num_locals;
+        size += sizeof(MVMuint16) * body->num_lexicals;
+
+        if (body->bytecode != body->orig_bytecode)
+            size += body->bytecode_size;
+
+        size += sizeof(MVMLexicalRegistry *) * body->num_lexicals;
+
+        size += sizeof(MVMLexicalRegistry) * HASH_CNT(hash_handle, body->lexical_names);
+
+        size += sizeof(MVMFrameHandler) * body->num_handlers;
+
+        /* XXX i *think* the annotations are just a pointer into the serialized
+         * blob, so don't actually count it towards the unmanaged size. */
+        /*
+        size += sizeof(MVMuint8) * body->num_annotations
+        */
+        size += body->env_size; /* static_env */
+        size += body->num_lexicals; /* static_env_flags */
+
+        if (body->instrumentation) {
+            size += body->instrumentation->uninstrumented_bytecode_size;
+            size += body->instrumentation->instrumented_bytecode_size;
+
+            /* XXX not 100% sure if num_handlers from the body is also the
+             * number of handlers in instrumented version. should be, though. */
+            size += sizeof(MVMFrameHandler) * body->num_handlers * 2;
+        }
+    }
+
+    return size;
 }
 
-static const MVMREPROps this_repr = {
+static void describe_refs(MVMThreadContext *tc, MVMHeapSnapshotState *ss, MVMSTable *st, void *data) {
+    MVMStaticFrameBody *body = (MVMStaticFrameBody *)data;
+    MVMLexicalRegistry *current, *tmp;
+    unsigned bucket_tmp;
+
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->cu, "Compilation Unit");
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->cuuid, "Compilation Unit Unique ID");
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->name, "Name");
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->outer, "Outer static frame");
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->static_code, "Static code object");
+
+    /* If it's not fully deserialized, none of the following can apply. */
+    if (!body->fully_deserialized)
+        return;
+
+    /* lexical names hash keys */
+    HASH_ITER(hash_handle, body->lexical_names, current, tmp, bucket_tmp) {
+        MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+            (MVMCollectable *)current->key, "Lexical name");
+    }
+
+    /* static env */
+    if (body->static_env) {
+        MVMuint16 *type_map = body->lexical_types;
+        MVMuint16  count    = body->num_lexicals;
+        MVMuint16  i;
+        for (i = 0; i < count; i++)
+            if (type_map[i] == MVM_reg_str || type_map[i] == MVM_reg_obj)
+                MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+                    (MVMCollectable *)body->static_env[i].o, "Static Environment Entry");
+    }
+
+    /* Spesh data */
+    MVM_profile_heap_add_collectable_rel_const_cstr(tc, ss,
+        (MVMCollectable *)body->spesh, "Specializer Data");
+}
+
+/* Initializes the representation. */
+const MVMREPROps * MVMStaticFrame_initialize(MVMThreadContext *tc) {
+    return &MVMStaticFrame_this_repr;
+}
+
+static const MVMREPROps MVMStaticFrame_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     NULL, /* initialize */
@@ -248,6 +303,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "MVMStaticFrame", /* name */
     MVM_REPR_ID_MVMStaticFrame,
-    0, /* refs_frames */
-    NULL, /* unmanaged_size */
+    unmanaged_size, /* unmanaged_size */
+    describe_refs,
 };

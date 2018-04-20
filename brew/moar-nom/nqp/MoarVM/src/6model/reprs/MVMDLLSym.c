@@ -1,9 +1,9 @@
 #include "moar.h"
 
-static const MVMREPROps this_repr;
+static const MVMREPROps MVMDLLSym_this_repr;
 
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st = MVM_gc_allocate_stable(tc, &MVMDLLSym_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -43,7 +43,7 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info) {
 }
 
 const MVMREPROps * MVMDLLSym_initialize(MVMThreadContext *tc) {
-    MVMSTable *st = MVM_gc_allocate_stable(tc, &this_repr, NULL);
+    MVMSTable *st = MVM_gc_allocate_stable(tc, &MVMDLLSym_this_repr, NULL);
 
     MVMROOT(tc, st, {
         MVMObject *WHAT = MVM_gc_allocate_type_object(tc, st);
@@ -52,13 +52,14 @@ const MVMREPROps * MVMDLLSym_initialize(MVMThreadContext *tc) {
         st->size = sizeof(MVMDLLSym);
     });
 
-    MVM_gc_root_add_permanent(tc,
-            (MVMCollectable **)&tc->instance->raw_types.RawDLLSym);
+    MVM_gc_root_add_permanent_desc(tc,
+        (MVMCollectable **)&tc->instance->raw_types.RawDLLSym,
+        "RawDLLSym");
 
-    return &this_repr;
+    return &MVMDLLSym_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps MVMDLLSym_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     NULL, /* initialize */
@@ -84,5 +85,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "MVMDLLSym",
     MVM_REPR_ID_MVMDLLSym,
-    0, /* refs_frames */
+    NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

@@ -8,6 +8,7 @@ MVMint64 MVM_sc_find_object_idx(MVMThreadContext *tc, MVMSerializationContext *s
 MVMint64 MVM_sc_find_object_idx_jit(MVMThreadContext *tc, MVMObject *sc, MVMObject *obj);
 MVMint64 MVM_sc_find_stable_idx(MVMThreadContext *tc, MVMSerializationContext *sc, MVMSTable *st);
 MVMint64 MVM_sc_find_code_idx(MVMThreadContext *tc, MVMSerializationContext *sc, MVMObject *obj);
+MVMuint8 MVM_sc_is_object_immediately_available(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint64 idx);
 MVMObject * MVM_sc_get_object(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint64 idx);
 MVMObject * MVM_sc_try_get_object(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint64 idx);
 void MVM_sc_set_object(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint64 idx, MVMObject *obj);
@@ -17,11 +18,18 @@ void MVM_sc_set_stable(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint
 void MVM_sc_push_stable(MVMThreadContext *tc, MVMSerializationContext *sc, MVMSTable *st);
 MVMObject * MVM_sc_get_code(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint64 idx);
 MVMSerializationContext * MVM_sc_find_by_handle(MVMThreadContext *tc, MVMString *handle);
-MVMSerializationContext * MVM_sc_get_sc(MVMThreadContext *tc, MVMCompUnit *cu, MVMint16 dep);
+MVMSerializationContext * MVM_sc_get_sc_slow(MVMThreadContext *tc, MVMCompUnit *cu, MVMint16 dep);
 MVMObject * MVM_sc_get_sc_object(MVMThreadContext *tc, MVMCompUnit *cu,
-                                 MVMint16 dep, MVMint64 idx);
+                                 MVMuint16 dep, MVMuint64 idx);
 void MVM_sc_disclaim(MVMThreadContext *tc, MVMSerializationContext *sc);
-MVM_STATIC_INLINE MVMuint32 MVM_get_idx_of_sc(MVMCollectable *col) {
+
+MVM_STATIC_INLINE MVMSerializationContext * MVM_sc_get_sc(MVMThreadContext *tc,
+                                                          MVMCompUnit *cu, MVMint16 dep) {
+    MVMSerializationContext *sc = cu->body.scs[dep];
+    return sc ? sc : MVM_sc_get_sc_slow(tc, cu, dep);
+}
+
+MVM_STATIC_INLINE MVMuint32 MVM_sc_get_idx_of_sc(MVMCollectable *col) {
     assert(!(col->flags & MVM_CF_FORWARDER_VALID));
 #ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
     if (col->flags & MVM_CF_SERIALZATION_INDEX_ALLOCATED)
@@ -30,7 +38,7 @@ MVM_STATIC_INLINE MVMuint32 MVM_get_idx_of_sc(MVMCollectable *col) {
     return col->sc_forward_u.sc.sc_idx;
 }
 
-MVM_STATIC_INLINE MVMuint32 MVM_get_idx_in_sc(MVMCollectable *col) {
+MVM_STATIC_INLINE MVMuint32 MVM_sc_get_idx_in_sc(MVMCollectable *col) {
     assert(!(col->flags & MVM_CF_FORWARDER_VALID));
 #ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
     if (col->flags & MVM_CF_SERIALZATION_INDEX_ALLOCATED)
@@ -41,7 +49,7 @@ MVM_STATIC_INLINE MVMuint32 MVM_get_idx_in_sc(MVMCollectable *col) {
     return col->sc_forward_u.sc.idx;
 }
 
-MVM_STATIC_INLINE void MVM_set_idx_in_sc(MVMCollectable *col, MVMuint32 i) {
+MVM_STATIC_INLINE void MVM_sc_set_idx_in_sc(MVMCollectable *col, MVMuint32 i) {
     assert(!(col->flags & MVM_CF_FORWARDER_VALID));
     assert(i >= 0);
 #ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
@@ -64,9 +72,8 @@ MVM_STATIC_INLINE void MVM_set_idx_in_sc(MVMCollectable *col, MVMuint32 i) {
 /* Gets a collectable's SC. */
 MVM_STATIC_INLINE MVMSerializationContext * MVM_sc_get_collectable_sc(MVMThreadContext *tc, MVMCollectable *col) {
     MVMuint32 sc_idx;
-    assert(!(col->flags & MVM_CF_GEN2_LIVE));
     assert(!(col->flags & MVM_CF_FORWARDER_VALID));
-    sc_idx = MVM_get_idx_of_sc(col);
+    sc_idx = MVM_sc_get_idx_of_sc(col);
     assert(sc_idx != ~0);
     return sc_idx > 0 ? tc->instance->all_scs[sc_idx]->sc : NULL;
 }
@@ -76,6 +83,11 @@ MVM_STATIC_INLINE MVMSerializationContext * MVM_sc_get_obj_sc(MVMThreadContext *
     return MVM_sc_get_collectable_sc(tc, &obj->header);
 }
 
+/* Gets a frame's SC. */
+MVM_STATIC_INLINE MVMSerializationContext * MVM_sc_get_frame_sc(MVMThreadContext *tc, MVMFrame *f) {
+    return MVM_sc_get_collectable_sc(tc, &f->header);
+}
+
 /* Gets an STables's SC. */
 MVM_STATIC_INLINE MVMSerializationContext * MVM_sc_get_stable_sc(MVMThreadContext *tc, MVMSTable *st) {
     return MVM_sc_get_collectable_sc(tc, &st->header);
@@ -83,7 +95,6 @@ MVM_STATIC_INLINE MVMSerializationContext * MVM_sc_get_stable_sc(MVMThreadContex
 
 /* Sets a collectable's SC. */
 MVM_STATIC_INLINE void MVM_sc_set_collectable_sc(MVMThreadContext *tc, MVMCollectable *col, MVMSerializationContext *sc) {
-    assert(!(col->flags & MVM_CF_GEN2_LIVE));
     assert(!(col->flags & MVM_CF_FORWARDER_VALID));
 #ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX
     if (col->flags & MVM_CF_SERIALZATION_INDEX_ALLOCATED) {
@@ -114,6 +125,11 @@ MVM_STATIC_INLINE void MVM_sc_set_obj_sc(MVMThreadContext *tc, MVMObject *obj, M
     MVM_sc_set_collectable_sc(tc, &obj->header, sc);
 }
 
+/* Sets an frame's SC. */
+MVM_STATIC_INLINE void MVM_sc_set_frame_sc(MVMThreadContext *tc, MVMFrame *f, MVMSerializationContext *sc) {
+    MVM_sc_set_collectable_sc(tc, &f->header, sc);
+}
+
 /* Sets an STable's SC. */
 MVM_STATIC_INLINE void MVM_sc_set_stable_sc(MVMThreadContext *tc, MVMSTable *st, MVMSerializationContext *sc) {
     MVM_sc_set_collectable_sc(tc, &st->header, sc);
@@ -123,8 +139,8 @@ MVM_STATIC_INLINE void MVM_sc_set_stable_sc(MVMThreadContext *tc, MVMSTable *st,
 MVM_STATIC_INLINE void MVM_sc_set_code(MVMThreadContext *tc, MVMSerializationContext *sc, MVMint64 idx, MVMObject *code) {
     MVMObject *roots = sc->body->root_codes;
     MVM_repr_bind_pos_o(tc, roots, idx, code);
-    if (MVM_get_idx_of_sc(&code->header) == sc->body->sc_idx)
-        MVM_set_idx_in_sc(&code->header, idx);
+    if (MVM_sc_get_idx_of_sc(&code->header) == sc->body->sc_idx)
+        MVM_sc_set_idx_in_sc(&code->header, idx);
 }
 
 /* Sets the full list of code refs. */
@@ -141,26 +157,19 @@ MVM_STATIC_INLINE MVMuint64 MVM_sc_get_object_count(MVMThreadContext *tc, MVMSer
 MVM_STATIC_INLINE void MVM_sc_push_object(MVMThreadContext *tc, MVMSerializationContext *sc, MVMObject *obj) {
     MVMuint32 idx = sc->body->num_objects;
     MVM_sc_set_object(tc, sc, idx, obj);
-    if (MVM_get_idx_of_sc(&obj->header) == sc->body->sc_idx)
-        MVM_set_idx_in_sc(&obj->header, idx);
+    if (MVM_sc_get_idx_of_sc(&obj->header) == sc->body->sc_idx)
+        MVM_sc_set_idx_in_sc(&obj->header, idx);
 }
 
 /* SC repossession write barriers. */
 void MVM_sc_wb_hit_obj(MVMThreadContext *tc, MVMObject *obj);
 void MVM_sc_wb_hit_st(MVMThreadContext *tc, MVMSTable *st);
 
-MVM_STATIC_INLINE void MVM_SC_WB_OBJ(MVMThreadContext *tc, MVMObject *obj) {
-    assert(!(obj->header.flags & MVM_CF_GEN2_LIVE));
-    assert(!(obj->header.flags & MVM_CF_FORWARDER_VALID));
-    assert(MVM_get_idx_of_sc(&obj->header) != ~0);
-    if (MVM_get_idx_of_sc(&obj->header) > 0)
-        MVM_sc_wb_hit_obj(tc, obj);
-}
+void MVM_SC_WB_OBJ(MVMThreadContext *tc, MVMObject *obj);
 
 MVM_STATIC_INLINE void MVM_SC_WB_ST(MVMThreadContext *tc, MVMSTable *st) {
-    assert(!(st->header.flags & MVM_CF_GEN2_LIVE));
     assert(!(st->header.flags & MVM_CF_FORWARDER_VALID));
-    assert(MVM_get_idx_of_sc(&st->header) != ~0);
-    if (MVM_get_idx_of_sc(&st->header) > 0)
+    assert(MVM_sc_get_idx_of_sc(&st->header) != ~0);
+    if (MVM_sc_get_idx_of_sc(&st->header) > 0)
         MVM_sc_wb_hit_st(tc, st);
 }

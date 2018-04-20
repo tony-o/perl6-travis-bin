@@ -6,7 +6,7 @@
 # IMPORTANT NOTE: MoarVM is meant to be able to read bytecode files
 # from some number of versions back. This means that new ops should,
 # in general, always be added *at the end* of this file, so they get
-# new numbers. Similarly, do not remove an op; rename it DEPCRATED_n
+# new numbers. Similarly, do not remove an op; rename it DEPRECATED_n
 # (where n is unique for each one). Otherwise the numbering of those
 # after it will be broken. The alternative is writing a bunch of very
 # boring mapping code and rendering old bytecode impossible to simply
@@ -33,9 +33,20 @@
 # '-a' for invoke_o with ops like arg_i or arg_o annotated as '*a'
 # inbetween. Note that '*' ops must not appear outside such blocks.
 #
-# Some operations may have no side-effects, and so if their result is
-# never used they can be tossed. Such operations may be marked with
-# :pure.
+# A number of adverbs may follow an operation:
+# * :pure means that the op has no side-effects and so can safely be
+#   thrown away if the result is unused
+# * :logged means type or value logging for specialization happens at this
+#   op
+# * :deoptonepoint means that we may deoptimize (fall back to slow-path code)
+#   after this instruction, but just locally within the current frame
+# * :predeoptonepoint means that we may deoptimize (fall back to slow-path
+#   code) before this instruction, but just locally within the current frame
+# * :deoptallpoint means that we may globally deoptimize (this goes only on an
+#   invoke; the callsite address will be rewritten)
+# * :noinline means it is never safe to inline this op
+# * :invokish means the op may invoke (used by the JIT)
+# * :throwish means the op may throw (used by the JIT)
 
 no_op
 const_i8            w(int8) int8 :pure
@@ -69,15 +80,15 @@ if_s                r(str) ins
 unless_s            r(str) ins
 if_s0               r(str) ins
 unless_s0           r(str) ins
-if_o                r(obj) ins
-unless_o            r(obj) ins
+if_o                r(obj) ins :invokish
+unless_o            r(obj) ins :invokish
 jumplist         :j int64 r(int64)
-getlex              w(`1) rl(`1) :pure :deoptonepoint
+getlex              w(`1) rl(`1) :pure :deoptonepoint :logged
 bindlex             wl(`1) r(`1)
 getlex_ni           w(int64) str :pure :noinline
 getlex_nn           w(num64) str :pure :noinline
 getlex_ns           w(str) str :pure :noinline
-getlex_no           w(obj) str :pure :deoptonepoint :noinline
+getlex_no           w(obj) str :pure :deoptonepoint :logged :noinline
 bindlex_ni          str r(int64) :noinline
 bindlex_nn          str r(num64) :noinline
 bindlex_ns          str r(str) :noinline
@@ -164,7 +175,7 @@ coerce_si           w(int64) r(str) :pure
 coerce_sn           w(num64) r(str) :pure
 smrt_numify         w(num64) r(obj) :pure :invokish
 smrt_strify         w(str) r(obj) :pure :invokish
-prepargs         +a callsite
+prepargs         +a callsite :predeoptonepoint
 arg_i            *a int16 r(int64)
 arg_n            *a int16 r(num64)
 arg_s            *a int16 r(str)
@@ -176,16 +187,16 @@ invoke_v         -a r(obj) :deoptallpoint
 invoke_i         -a w(int64) r(obj) :deoptallpoint
 invoke_n         -a w(num64) r(obj) :deoptallpoint
 invoke_s         -a w(str) r(obj) :deoptallpoint
-invoke_o         -a w(obj) r(obj) :deoptallpoint :deoptonepoint
+invoke_o         -a w(obj) r(obj) :deoptallpoint :deoptonepoint :logged
 checkarity          int16 int16
-param_rp_i          w(int64) int16 :pure :noinline
-param_rp_n          w(num64) int16 :pure :noinline
-param_rp_s          w(str) int16 :pure :noinline
-param_rp_o          w(obj) int16 :pure :noinline
-param_op_i          w(int64) int16 ins :pure :noinline
-param_op_n          w(num64) int16 ins :pure :noinline
-param_op_s          w(str) int16 ins :pure :noinline
-param_op_o          w(obj) int16 ins :pure :noinline
+param_rp_i       .p w(int64) int16 :pure :noinline
+param_rp_n       .p w(num64) int16 :pure :noinline
+param_rp_s       .p w(str) int16 :pure :noinline
+param_rp_o       .p w(obj) int16 :pure :noinline
+param_op_i       .p w(int64) int16 ins :pure :noinline
+param_op_n       .p w(num64) int16 ins :pure :noinline
+param_op_s       .p w(str) int16 ins :pure :noinline
+param_op_o       .p w(obj) int16 ins :pure :noinline
 param_rn_i          w(int64) str :noinline
 param_rn_n          w(num64) str :noinline
 param_rn_s          w(str) str :noinline
@@ -194,7 +205,7 @@ param_on_i          w(int64) str ins :noinline
 param_on_n          w(num64) str ins :noinline
 param_on_s          w(str) str ins :noinline
 param_on_o          w(obj) str ins :noinline
-param_sp            w(obj) int16 :pure :noinline
+param_sp         .p w(obj) int16 :pure :noinline
 param_sn            w(obj) :noinline
 getcode             w(obj) coderef :pure
 caller              w(obj) r(int64) :pure :noinline
@@ -217,8 +228,8 @@ die                 w(obj) r(str) :throwish
 rethrow             r(obj) :throwish
 resume              r(obj) :throwish
 takehandlerresult   w(obj)
-newlexotic          w(obj) ins
-lexoticresult       w(obj) r(obj)
+DEPRECATED_33       w(obj) ins
+DEPRECATED_34       w(obj) r(obj)
 backtracestrings    w(obj) r(obj) :pure
 usecapture          w(obj) :noinline
 savecapture         w(obj) :noinline
@@ -273,7 +284,7 @@ ordat               w(int64) r(str) r(int64) :pure
 rindexfrom          w(int64) r(str) r(str) r(int64) :pure
 escape              w(str) r(str) :pure
 flip                w(str) r(str) :pure
-flattenropes        r(str)
+setbuffersize_fh    r(obj) r(int64)
 iscclass            w(int64) r(int64) r(str) r(int64) :pure
 findcclass          w(int64) r(int64) r(str) r(int64) r(int64) :pure
 findnotcclass       w(int64) r(int64) r(str) r(int64) r(int64) :pure
@@ -295,7 +306,7 @@ can_s               w(int64) r(obj) r(str) :pure :invokish
 create              w(obj) r(obj) :pure
 clone               w(obj) r(obj) :pure
 isconcrete          w(int64) r(obj) :pure
-rebless             w(obj) r(obj) r(obj)
+rebless             w(obj) r(obj) r(obj) :deoptonepoint
 istype              w(int64) r(obj) r(obj) :pure :invokish
 objprimspec         w(int64) r(obj) :pure
 gethow              w(obj) r(obj) :pure
@@ -316,11 +327,11 @@ bindattrs_o         r(obj) r(obj) r(str) r(obj)
 getattr_i           w(int64) r(obj) r(obj) str int16
 getattr_n           w(num64) r(obj) r(obj) str int16
 getattr_s           w(str) r(obj) r(obj) str int16
-getattr_o           w(obj) r(obj) r(obj) str int16 :deoptonepoint
+getattr_o           w(obj) r(obj) r(obj) str int16 :deoptonepoint :logged
 getattrs_i          w(int64) r(obj) r(obj) r(str)
 getattrs_n          w(num64) r(obj) r(obj) r(str)
 getattrs_s          w(str) r(obj) r(obj) r(str)
-getattrs_o          w(obj) r(obj) r(obj) r(str) :deoptonepoint
+getattrs_o          w(obj) r(obj) r(obj) r(str) :deoptonepoint :logged
 attrinited          w(int64) r(obj) r(obj) r(str)
 box_i               w(obj) r(int64) r(obj) :pure
 box_n               w(obj) r(num64) r(obj) :pure
@@ -429,7 +440,7 @@ takedispatcher      w(obj)
 assign              r(obj) r(obj) :invokish
 assignunchecked     r(obj) r(obj) :invokish
 iscont              w(int64) r(obj) :pure
-decont              w(obj) r(obj) :pure :invokish
+decont              w(obj) r(obj) :pure :invokish :deoptonepoint
 setcontspec         r(obj) r(str) r(obj)
 sha1                w(str) r(str) :pure
 createsc            w(obj) r(str)
@@ -451,9 +462,9 @@ scwbenable          w(int64)
 pushcompsc          r(obj)
 popcompsc           w(obj)
 scgetdesc           w(str) r(obj)
-loadbytecode        w(str) r(str)
+loadbytecode        w(str) r(str) :invokish
 masttofile          r(obj) r(obj) r(str)
-masttocu            w(obj) r(obj) r(obj)
+masttocu            w(obj) r(obj) r(obj) :invokish
 iscompunit          w(int64) r(obj) :pure
 compunitmainline    w(obj) r(obj)
 compunitcodes       w(obj) r(obj)
@@ -511,10 +522,10 @@ read_dir            w(str) r(obj)
 close_dir           r(obj)
 open_fh             w(obj) r(str) r(str)
 close_fh            r(obj)
-read_fhs            w(str) r(obj) r(int64)
-slurp               w(str) r(str) r(str)
-spew                r(str) r(str) r(str)
-write_fhs           w(int64) r(obj) r(str)
+DEPRECATED_23       w(str) r(obj) r(int64)
+DEPRECATED_27       w(str) r(str) r(str)
+DEPRECATED_28       r(str) r(str) r(str)
+DEPRECATED_18       w(int64) r(obj) r(str)
 seek_fh             r(obj) r(int64) r(int64)
 lock_fh             w(int64) r(obj) r(int64)
 unlock_fh           r(obj)
@@ -527,18 +538,18 @@ getstderr           w(obj) :pure
 connect_sk          r(obj) r(str) r(int64)
 socket              w(obj) r(int64)
 bind_sk             r(obj) r(str) r(int64) r(int64)
-setinputlinesep_fh  r(obj) r(str)
+DEPRECATED_24       r(obj) r(str)
 accept_sk           w(obj) r(obj)
 decodetocodes       r(obj) r(str) r(int64) r(obj)
 encodefromcodes     r(obj) r(str) r(obj)
-setencoding         r(obj) r(str)
+DEPRECATED_17       r(obj) r(str)
 print               r(str)
 say                 r(str)
-readall_fh          w(str) r(obj)
+DEPRECATED_22       w(str) r(obj)
 tell_fh             w(int64) r(obj)
 stat                w(int64) r(str) r(int64)
-readline_fh         w(str) r(obj)
-readlineint_fh      w(str) r(obj) r(str)
+DEPRECATED_20       w(str) r(obj)
+DEPRECATED_26       w(str) r(obj) r(str)
 chdir               r(str)
 srand               r(int64)
 rand_i              w(int64)
@@ -549,7 +560,7 @@ newthread           w(obj) r(obj) r(int64)
 threadjoin          r(obj)
 time_n              w(num64)
 exit                r(int64)
-shell               w(int64) r(str) r(str) r(obj) r(obj) r(obj) r(obj) r(int64)
+DEPRECATED_30       w(int64) r(str) r(str) r(obj) r(obj) r(obj) r(obj) r(int64)
 cwd                 w(str)
 clargs              w(obj)
 getenvhash          w(obj)
@@ -563,7 +574,7 @@ getlexouter         w(obj) r(str) :pure :noinline
 getlexrel           w(obj) r(obj) r(str) :pure
 getlexreldyn        w(obj) r(obj) r(str) :pure
 getlexrelcaller     w(obj) r(obj) r(str) :pure
-getlexcaller        w(obj) r(str) :pure
+getlexcaller        w(obj) r(str) :pure :noinline
 bitand_s            w(str) r(str) r(str) :pure
 bitor_s             w(str) r(str) r(str) :pure
 bitxor_s            w(str) r(str) r(str) :pure
@@ -572,27 +583,27 @@ inf                 w(num64) :pure
 neginf              w(num64) :pure
 nan                 w(num64) :pure
 getpid              w(int64) :pure
-spawn               w(int64) r(obj) r(str) r(obj) r(obj) r(obj) r(obj) r(int64)
+DEPRECATED_29       w(int64) r(obj) r(str) r(obj) r(obj) r(obj) r(obj) r(int64)
 filereadable        w(int64) r(str)
 filewritable        w(int64) r(str)
 fileexecutable      w(int64) r(str)
-say_fhs             w(int64) r(obj) r(str)
+DEPRECATED_19       w(int64) r(obj) r(str)
 capturenamedshash   w(obj) r(obj) :pure
 read_fhb            r(obj) r(obj) r(int64)
 write_fhb           r(obj) r(obj)
 replace             w(str) r(str) r(int64) r(int64) r(str)
 newexception        w(obj)
-DEPRECATED_0        w(obj)
+permit              r(obj) r(int64) r(int64)
 backtrace           w(obj) r(obj)
 symlink             r(str) r(str)
 link                r(str) r(str)
 gethostname         w(str)
 exreturnafterunwind r(obj)
-continuationclone   w(obj) r(obj)
+DEPRECATED_13       w(obj) r(obj)
 continuationreset   w(obj) r(obj) r(obj) :invokish
 # this op isn't actually invokish, but it requires the cur_op to be set before doing its work
 continuationcontrol w(obj) r(int64) r(obj) r(obj) :invokish
-continuationinvoke  w(obj) r(obj) r(obj)
+continuationinvoke  w(obj) r(obj) r(obj) :invokish
 randscale_n         w(num64) r(num64) :pure
 uniisblock          w(int64) r(str) r(int64) r(str) :pure
 assertparamcheck    r(int64) :noinline :invokish
@@ -603,7 +614,7 @@ getuniprop_int      w(int64) r(int64) r(int64)
 getuniprop_bool     w(int64) r(int64) r(int64)
 getuniprop_str      w(str) r(int64) r(int64)
 matchuniprop        w(int64) r(int64) r(int64) r(int64)
-nativecallbuild     r(obj) r(str) r(str) r(str) r(obj) r(obj)
+nativecallbuild     w(int64) r(obj) r(str) r(str) r(str) r(obj) r(obj)
 nativecallinvoke    w(obj) r(obj) r(obj) r(obj)
 nativecallrefresh   r(obj)
 threadrun           r(obj)
@@ -629,12 +640,12 @@ signal              w(obj) r(obj) r(obj) r(int64) r(obj)
 watchfile           w(obj) r(obj) r(obj) r(str) r(obj)
 asyncconnect        w(obj) r(obj) r(obj) r(str) r(int64) r(obj)
 asynclisten         w(obj) r(obj) r(obj) r(str) r(int64) r(int64) r(obj)
-asyncwritestr       w(obj) r(obj) r(obj) r(obj) r(str) r(obj)
+DEPRECATED_14       w(obj) r(obj) r(obj) r(obj) r(str) r(obj)
 asyncwritebytes     w(obj) r(obj) r(obj) r(obj) r(obj) r(obj)
-asyncreadchars      w(obj) r(obj) r(obj) r(obj) r(obj)
+DEPRECATED_16       w(obj) r(obj) r(obj) r(obj) r(obj)
 asyncreadbytes      w(obj) r(obj) r(obj) r(obj) r(obj) r(obj)
-getlexstatic_o      w(obj) r(str) :pure :noinline
-getlexperinvtype_o  w(obj) r(str) :pure :noinline
+getlexstatic_o      w(obj) r(str) :pure :noinline :logged
+getlexperinvtype_o  w(obj) r(str) :pure :noinline :logged
 execname            w(str)
 const_i64_16        w(int64) int16 :pure
 const_i64_32        w(int64) int32 :pure
@@ -657,9 +668,9 @@ objectid            w(int64) r(obj)
 settypefinalize     r(obj) r(int64)
 force_gc
 nativecallglobal    w(obj) r(str) r(str) r(obj) r(obj)
-close_fhi           w(int64) r(obj)
+DEPRECATED_32       w(int64) r(obj)
 setparameterizer    r(obj) r(obj)
-parameterizetype    w(obj) r(obj) r(obj)
+parameterizetype    w(obj) r(obj) r(obj) :invokish
 typeparameterized   w(obj) r(obj)
 typeparameters      w(obj) r(obj)
 typeparameterat     w(obj) r(obj) r(int64)
@@ -674,9 +685,9 @@ assign_s            r(obj) r(str) :invokish
 decont_i            w(int64) r(obj) :pure :invokish
 decont_n            w(num64) r(obj) :pure :invokish
 decont_s            w(str) r(obj) :pure :invokish
-getregref_i         w(obj) r(int64) :pure :noinline
-getregref_n         w(obj) r(num64) :pure :noinline
-getregref_s         w(obj) r(str) :pure :noinline
+getrusage           w(obj) :pure
+threadlockcount     w(int64) r(obj)
+DEPRECATED_4        w(obj) r(str) :pure :noinline
 getlexref_i         w(obj) rl(int64) :pure :noinline
 getlexref_n         w(obj) rl(num64) :pure :noinline
 getlexref_s         w(obj) rl(str) :pure :noinline
@@ -702,7 +713,7 @@ eqatim_s            w(int64) r(str) r(str) r(int64) :pure
 ordbaseat           w(int64) r(str) r(int64) :pure
 neverrepossess      r(obj)
 scdisclaim          r(obj)
-syncpipe            w(obj)
+DEPRECATED_31       w(obj)
 atpos2d_i           w(int64) r(obj) r(int64) r(int64) :pure
 atpos2d_n           w(num64) r(obj) r(int64) r(int64) :pure
 atpos2d_s           w(str) r(obj) r(int64) r(int64) :pure
@@ -733,8 +744,8 @@ numdimensions       w(int64) r(obj) :pure
 ctxcode             w(obj) r(obj)
 isrwcont            w(int64) r(obj) :pure
 fc                  w(str) r(str) :pure
-setinputlineseps_fh r(obj) r(obj)
-readlinechomp_fh    w(str) r(obj)
+DEPRECATED_25       r(obj) r(obj)
+DEPRECATED_21       w(str) r(obj)
 encoderep           w(obj) r(str) r(str) r(str) r(obj)
 istty_fh            w(int64) r(obj) :pure
 multidimref_i       w(obj) r(obj) r(obj) :pure
@@ -742,14 +753,14 @@ multidimref_n       w(obj) r(obj) r(obj) :pure
 multidimref_s       w(obj) r(obj) r(obj) :pure
 fileno_fh           w(int64) r(obj) :pure
 asyncudp            w(obj) r(obj) r(obj) r(str) r(int64) r(int64) r(obj)
-asyncwritestrto     w(obj) r(obj) r(obj) r(obj) r(str) r(obj) r(str) r(int64)
+DEPRECATED_15       w(obj) r(obj) r(obj) r(obj) r(str) r(obj) r(str) r(int64)
 asyncwritebytesto   w(obj) r(obj) r(obj) r(obj) r(obj) r(obj) r(str) r(int64)
 objprimbits         w(int64) r(obj)
 objprimunsigned     w(int64) r(obj)
-getregref_i32       w(obj) r(int32) :pure :noinline
-getregref_i16       w(obj) r(int16) :pure :noinline
-getregref_i8        w(obj) r(int8) :pure :noinline
-getregref_n32       w(obj) r(num32) :pure :noinline
+DEPRECATED_5        w(obj) r(int32) :pure :noinline
+DEPRECATED_6        w(obj) r(int16) :pure :noinline
+DEPRECATED_7        w(obj) r(int8) :pure :noinline
+DEPRECATED_8        w(obj) r(num32) :pure :noinline
 getlexref_i32       w(obj) rl(int32) :pure :noinline
 getlexref_i16       w(obj) rl(int16) :pure :noinline
 getlexref_i8        w(obj) rl(int8) :pure :noinline
@@ -761,10 +772,10 @@ coerce_ui           w(int64) r(uint64) :pure
 coerce_nu           w(uint64) r(num64) :pure
 coerce_un           w(num64) r(uint64) :pure
 decont_u            w(uint64) r(obj) :pure :invokish
-getregref_u         w(obj) r(uint64) :pure :noinline
-getregref_u32       w(obj) r(uint32) :pure :noinline
-getregref_u16       w(obj) r(uint16) :pure :noinline
-getregref_u8        w(obj) r(uint8) :pure :noinline
+DEPRECATED_9        w(obj) r(uint64) :pure :noinline
+DEPRECATED_10       w(obj) r(uint32) :pure :noinline
+DEPRECATED_11       w(obj) r(uint16) :pure :noinline
+DEPRECATED_12       w(obj) r(uint8) :pure :noinline
 getlexref_u         w(obj) rl(uint64) :pure :noinline
 getlexref_u32       w(obj) rl(uint32) :pure :noinline
 getlexref_u16       w(obj) rl(uint16) :pure :noinline
@@ -778,36 +789,86 @@ param_on2_u         w(uint64) str str ins :noinline
 stat_time           w(num64) r(str) r(int64)
 lstat_time          w(num64) r(str) r(int64)
 setdebugtypename    r(obj) r(str)
+loadbytecodebuffer  r(obj) :invokish
+loadbytecodefh      r(obj) r(str) :invokish
+throwpayloadlex     w(obj) int64 r(obj) :noinline :throwish
+throwpayloadlexcaller w(obj) int64 r(obj) :throwish
+lastexpayload       w(obj) :noinline
+cancelnotify        r(obj) r(obj) r(obj)
+decoderconfigure    r(obj) r(str) r(obj)
+decodersetlineseps  r(obj) r(obj)
+decoderaddbytes     r(obj) r(obj)
+decodertakechars    w(str) r(obj) r(int64)
+decodertakeallchars w(str) r(obj)
+decodertakeavailablechars w(str) r(obj)
+decodertakeline     w(str) r(obj) r(int64) r(int64)
+decoderbytesavailable w(int64) r(obj) :pure
+decodertakebytes    w(obj) r(obj) r(obj) r(int64)
+decoderempty        w(int64) r(obj) :pure
+indexingoptimized   w(str) r(str) :pure
+captureinnerlex     r(obj) :noinline
+unicmp_s            w(int64) r(str) r(str) r(int64) r(int64) r(int64) :pure
+setdispatcherfor    r(obj) r(obj)
+getstrfromname      w(str) r(str) :pure
+indexic_s           w(int64) r(str) r(str) r(int64) :pure
+getport_sk          w(int64) r(obj)
+cpucores            w(int64) :pure
+eqaticim_s          w(int64) r(str) r(str) r(int64) :pure
+indexicim_s         w(int64) r(str) r(str) r(int64) :pure
+decodertakecharseof w(str) r(obj) r(int64)
+indexim_s           w(int64) r(str) r(str) r(int64) :pure
+cas_o               w(obj) r(obj) r(obj) r(obj) :invokish
+cas_i               w(int64) r(obj) r(int64) r(int64)
+atomicinc_i         w(int64) r(obj)
+atomicdec_i         w(int64) r(obj)
+atomicadd_i         w(int64) r(obj) r(int64)
+# Following two are *not* :pure (even though just loads); their memory barrier
+# counts as a side-effect that should be retained.
+atomicload_o        w(obj) r(obj)
+atomicload_i        w(int64) r(obj)
+atomicstore_o       r(obj) r(obj) :invokish
+atomicstore_i       r(obj) r(int64)
+barrierfull
+coveragecontrol     r(int64)
+nativeinvoke_v       -a r(obj) r(obj)
+nativeinvoke_i       -a w(int64) r(obj) r(obj)
+nativeinvoke_n       -a w(num64) r(obj) r(obj)
+nativeinvoke_s       -a w(str) r(obj) r(obj)
+nativeinvoke_o       -a w(obj) r(obj) r(obj)
 
 # Spesh ops. Naming convention: start with sp_. Must all be marked .s, which
 # is how the validator knows to exclude them.
 
-# Used for logging what objects we saw during execution, which is used to do
-# speculative optimizations.
-sp_log           .s r(obj) int16
+# Type guard operations. Trigger de-optimization if the guard is violated.
+#   guard = guard on type only; index is spesh slot with type
+#   guardconc = guard on type + concrete; index is spesh slot with type
+#   guardtype = guard on type + type object; index is spesh slot with type
+sp_guard         .s r(obj) sslot uint32
+sp_guardconc     .s r(obj) sslot uint32
+sp_guardtype     .s r(obj) sslot uint32
 
-# If we're doing OSR, the logging phase replaces the osrpoint with this op, to
-# trigger the finalization of the optimization process once we do enough loops
-# to gather logging information.
-sp_osrfinalize   .s
+# Code guard operations. Trigger de-optimization if the guard is violated.
+#   guardsf = guard on being an MVMCode with specified static frame inside
+#   guardsfouter = as with guardsf but also ensures its ->outer is equal to
+#   the currently executing frame
+sp_guardsf       .s r(obj) sslot uint32
+sp_guardsfouter  .s r(obj) sslot uint32
 
-# Guard operations. Trigger de-optimization if the guard is violated.
-#   guardconc = guard on concrete type; index is spesh slot with type
-#   guardtype = guard on type object; index is spesh slot with type
-#   guardcontconc = guard on container holding concrete type; indexes are
-#                   spesh slots with container type and then value type
-#   guardconttype = guard on container holding type object; indexes are
-#                   spesh slots with container type and then value type
-#   guardrwconc   = guard on rw container holding concrete type; indexes are
-#                   spesh slots with container type and then value type
-#   guardrwtype   = guard on rw container holding type object; indexes are
-#                   spesh slots with container type and then value type
-sp_guardconc     .s r(obj) sslot
-sp_guardtype     .s r(obj) sslot
-sp_guardcontconc .s r(obj) sslot sslot
-sp_guardconttype .s r(obj) sslot sslot
-sp_guardrwconc   .s r(obj) sslot sslot
-sp_guardrwtype   .s r(obj) sslot sslot
+# Specialized form of rebless that will always do a deopt one out of the
+# current code as well as a deopt all.
+sp_rebless       .s w(obj) r(obj) r(obj) uint32
+
+# Resolves an invokee into an MVMCode object, or returns VMNull when that is
+# not possible. Doesn't do multiple dispatch cache handling (since that needs
+# the args buffer set up).
+sp_resolvecode   .s w(obj) r(obj)
+
+# These are variants of the normal interpreted ops that do not log. Used for
+# the case where we can't JIT-compile, but don't want to keep on logging.
+sp_decont        .s w(obj) r(obj) :pure :invokish
+sp_getlex_o      .s w(obj) rl(obj) :pure
+sp_getlex_ins    .s w(`1) rl(`1) :pure
+sp_getlex_no     .s w(obj) str :pure :noinline
 
 # Following are for fast, unchecked grabbing of args from the arg buffer.
 sp_getarg_o      .s w(obj) int16 :pure
@@ -822,8 +883,8 @@ sp_fastinvoke_n  .s w(num64) r(obj) int16
 sp_fastinvoke_s  .s w(str) r(obj) int16
 sp_fastinvoke_o  .s w(obj) r(obj) int16
 
-# Marking named params used.
-sp_namedarg_used .s int16
+# Error generation if a named param is unused (name goes in spesh slot).
+sp_paramnamesused   sslot
 
 # Look up a spesh slot.
 sp_getspeshslot  .s w(obj) sslot :pure
@@ -872,6 +933,12 @@ sp_deref_get_n        .s w(num64) r(obj) int16 :pure
 sp_deref_bind_i64     .s r(obj) r(int64) int16
 sp_deref_bind_n       .s r(obj) r(num64) int16
 
+# These read a lexical via. a code ref held in a register. Used for closure
+# inlining. The outers count must be at least 1 (e.g. these must never be used
+# for lexicals that are in the current scope).
+sp_getlexvia_o        .s w(obj) int16 int16 r(obj) :pure
+sp_getlexvia_ins      .s w(`1) int16 int16 r(obj) :pure
+
 # Enter the JIT
 sp_jit_enter     .s w(obj)
 
@@ -879,6 +946,12 @@ sp_jit_enter     .s w(obj)
 sp_boolify_iter       .s w(int64) r(obj) :pure
 sp_boolify_iter_arr   .s w(int64) r(obj) :pure
 sp_boolify_iter_hash  .s w(int64) r(obj) :pure
+
+# Unguarded atomic ops (when we know it's a concrete target that certainly
+# has the operation).
+sp_cas_o            w(obj) r(obj) r(obj) r(obj) :invokish
+sp_atomicload_o     w(obj) r(obj)
+sp_atomicstore_o    r(obj) r(obj) :invokish
 
 # Profiler recording ops. Naming convention: start with prof_. Must all be
 # marked .s, which is how the validator knows to exclude them. (For that
@@ -901,3 +974,5 @@ prof_allocated   .s r(obj)
 
 # Cross-thread write analysis logging instruction.
 ctw_check        .s r(obj) int16
+
+coverage_log     .s str int32 int32 int64

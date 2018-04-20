@@ -74,11 +74,6 @@ public class GlobalContext {
     public SixModelObject Continuation;
 
     /**
-     * Lexotic type; a basic, method-less type with the Lexotic REPR.
-     */
-    public SixModelObject Lexotic;
-    
-    /**
      * ContextRef type; a basic, method-less type with the ContextRef REPR.
      */
     public SixModelObject ContextRef;
@@ -266,7 +261,7 @@ public class GlobalContext {
 
         neverRepossess = new WeakHashMap<SixModelObject, Object>();
 
-        byteClassLoader = new ByteClassLoader();
+        byteClassLoader = new ByteClassLoader(getClass().getClassLoader());
     }
     
     /**

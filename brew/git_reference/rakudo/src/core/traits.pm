@@ -16,7 +16,18 @@ multi sub trait_mod:<is>(Mu:U $child, Mu:U $parent) {
         $child.^add_parent($parent);
     }
     elsif $parent.HOW.archetypes.inheritalizable() {
-        $child.^add_parent($parent.^inheritalize)
+        if my @required-methods = $parent.^methods.grep({$_.yada}) {
+            my $type = $child.HOW.archetypes.inheritable()
+                ?? 'Class '
+                !! $child.HOW.archetypes.inheritalizable()
+                    ?? 'Role '
+                    !! '';
+            die $type ~ "{$child.^name} can't pun role {$parent.^name} because it has required methods: "
+                ~ @required-methods.map({$_.name}).join(', ') ~ '. Did you mean to use "does" instead?';
+        }
+        else {
+            $child.^add_parent($parent.^inheritalize)
+        }
     }
     else {
         X::Inheritance::Unsupported.new(
@@ -81,10 +92,14 @@ multi sub trait_mod:<is>(Attribute:D $attr, :$readonly!) {
     warn "useless use of 'is readonly' on $attr.name()" unless $attr.has_accessor;
 }
 multi sub trait_mod:<is>(Attribute $attr, :$required!) {
-    $attr.set_required();
+    die "'is required' must be Cool" unless nqp::istype($required,Cool);
+    $attr.set_required(
+      nqp::istype($required,Bool) ?? +$required !! $required
+    );
 }
-multi sub trait_mod:<is>(Attribute $attr, :$default!) {
+multi sub trait_mod:<is>(Attribute $attr, Mu :$default!) {
     $attr.container_descriptor.set_default(nqp::decont($default));
+    $attr.container = nqp::decont($default) if nqp::iscont($attr.container);
 }
 multi sub trait_mod:<is>(Attribute:D $attr, :$box_target!) {
     $attr.set_box_target();
@@ -126,7 +141,7 @@ multi sub trait_mod:<is>(Routine:D $r, :$raw!) {
     $r.set_rw(); # for now, until we have real raw handling
 }
 multi sub trait_mod:<is>(Routine:D $r, :$default!) {
-    $r does role { method default() { True } }
+    $r.^mixin: role { method default(--> True) { } }
 }
 multi sub trait_mod:<is>(Routine:D $r, :$DEPRECATED!) {
     my $new := nqp::istype($DEPRECATED,Bool)
@@ -142,7 +157,15 @@ multi sub trait_mod:<is>(Routine:D $r, :$onlystar!) {
 }
 multi sub trait_mod:<is>(Routine:D $r, :prec(%spec)!) {
     my role Precedence {
-        has %.prec;
+        has %!prec;
+        proto method prec(|) { * }
+        multi method prec() is raw { %!prec }
+        multi method prec(Str:D $key) {
+            nqp::ifnull(
+              nqp::atkey(nqp::getattr(%!prec,Map,'$!storage'),$key),
+              ''
+            )
+        }
     }
     if nqp::istype($r, Precedence) {
         for %spec {
@@ -160,6 +183,7 @@ multi sub trait_mod:<is>(Routine $r, :&equiv!) {
     nqp::can(&equiv, 'prec')
         ?? trait_mod:<is>($r, :prec(&equiv.prec))
         !! die "Routine given to equiv does not appear to be an operator";
+    $r.prec<assoc>:delete;
 }
 multi sub trait_mod:<is>(Routine $r, :&tighter!) {
     die "Routine given to tighter does not appear to be an operator"
@@ -228,13 +252,12 @@ my $!;
 my $/;
 my $_;
 
-multi sub trait_mod:<is>(Routine:D \r, :$export!) {
+multi sub trait_mod:<is>(Routine:D \r, :$export!, :$SYMBOL = '&' ~ r.name) {
     my $to_export := r.multi ?? r.dispatcher !! r;
-    my $exp_name  := '&' ~ r.name;
     my @tags = flat 'ALL', (nqp::istype($export,Pair) ?? $export.key() !!
                             nqp::istype($export,Positional) ?? @($export)>>.key !!
                             'DEFAULT');
-    Rakudo::Internals.EXPORT_SYMBOL($exp_name, @tags, $to_export);
+    Rakudo::Internals.EXPORT_SYMBOL(nqp::decont($SYMBOL), @tags, $to_export);
 }
 multi sub trait_mod:<is>(Mu:U \type, :$export!) {
     my $exp_name := type.^shortname;
@@ -314,25 +337,27 @@ multi sub trait_mod:<of>(Routine:D $target, Mu:U $type) {
 }
 
 multi sub trait_mod:<is>(Routine:D $r, :$hidden-from-backtrace!) {
-    $r.^mixin( role { method is-hidden-from-backtrace { True } } );
+    $r.^mixin( role is-hidden-from-backtrace {
+        method is-hidden-from-backtrace(--> True) { }
+    }) if $hidden-from-backtrace;
 }
 
 multi sub trait_mod:<is>(Routine:D $r, :$hidden-from-USAGE!) {
-    $r.^mixin( role {
-        method is-hidden-from-USAGE { True }
-    });
+    $r.^mixin( role is-hidden-from-USAGE {
+        method is-hidden-from-USAGE(--> True) { }
+    }) if $hidden-from-USAGE;
 }
 
 multi sub trait_mod:<is>(Routine:D $r, :$pure!) {
-    $r.^mixin( role {
-        method IS_PURE { True }
-    });
+    $r.^mixin( role is-pure {
+        method is-pure (--> True) { }
+    }) if $pure;
 }
 
 multi sub trait_mod:<is>(Routine:D $r, :$nodal!) {
-    $r.^mixin( role {
-        method nodal { True }
-    });
+    $r.^mixin( role is-nodal {
+        method nodal(--> True) { }
+    }) if $nodal;
 }
 
 proto sub trait_mod:<returns>(|) { * }
@@ -451,7 +476,7 @@ multi sub trait_mod:<will>(Attribute:D $attr, |c ) {
       highexpect => <lazy>,
     ).throw;
 }
-multi sub trait_mod:<will>(Attribute $attr, Block :$build!) {  # internal usage
+multi sub trait_mod:<will>(Attribute $attr, Mu :$build!) {  # internal usage
     $attr.set_build($build)
 }
 

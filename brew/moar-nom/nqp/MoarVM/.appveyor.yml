@@ -1,0 +1,36 @@
+## Appveyor configuration for MoarVM
+
+# We manually build and don't use MSVC's build process so disable it
+build: off
+
+platform:
+  - x64
+  - x86
+
+install:
+  - dir "C:\Program Files\Microsoft SDKs\Windows"
+  - '"C:\Program Files\Microsoft SDKs\Windows\v7.1\Bin\SetEnv.cmd" /x64'
+  - appveyor-retry choco install strawberryperl --version 5.20.1.1 --allow-empty-checksums
+  - SET PATH=C:\strawberry\c\bin;C:\strawberry\perl\site\bin;C:\strawberry\perl\bin;%PATH%
+  - perl Configure.pl --prefix=%APPVEYOR_BUILD_FOLDER%\buildprefix
+  - nmake install
+  - git clone https://github.com/perl6/nqp %APPVEYOR_BUILD_FOLDER%\nqp
+  - cd %APPVEYOR_BUILD_FOLDER%\nqp
+  - perl Configure.pl --prefix=%APPVEYOR_BUILD_FOLDER%\buildprefix
+  - nmake
+  - nmake install
+
+environment:
+  matrix:
+  - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2015
+# Wasn't able to determine where SetEnv.cmd is for VS2017
+#  - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2017
+
+branches:
+  only:
+    - master
+
+
+#test_script:
+#  - cd %APPVEYOR_BUILD_FOLDER%\nqp
+#  - nmake m-test

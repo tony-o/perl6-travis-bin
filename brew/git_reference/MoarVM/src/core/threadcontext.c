@@ -4,17 +4,33 @@
 /* Initializes a new thread context. Note that this doesn't set up a
  * thread itself, it just creates the data structure that exists in
  * MoarVM per thread. */
-MVMThreadContext * MVM_tc_create(MVMInstance *instance) {
+MVMThreadContext * MVM_tc_create(MVMThreadContext *parent, MVMInstance *instance) {
     MVMThreadContext *tc = MVM_calloc(1, sizeof(MVMThreadContext));
 
     /* Associate with VM instance. */
     tc->instance = instance;
 
+    /* Use default loop for main thread; create a new one for others. */
+    if (instance->main_thread) {
+        int r;
+
+        tc->loop = MVM_calloc(1, sizeof(uv_loop_t));
+        r = uv_loop_init(tc->loop);
+        if (r < 0) {
+            MVM_free(tc->loop);
+            MVM_free(tc);
+            MVM_exception_throw_adhoc(parent, "Could not create a new Thread: %s", uv_strerror(r));
+        }
+    } else {
+        tc->loop = uv_default_loop();
+    }
+
     /* Set up GC nursery. We only allocate tospace initially, and allocate
      * fromspace the first time this thread GCs, provided it ever does. */
-    tc->nursery_tospace     = MVM_calloc(1, MVM_NURSERY_SIZE);
+    tc->nursery_tospace_size = MVM_gc_new_thread_nursery_size(instance);
+    tc->nursery_tospace     = MVM_calloc(1, tc->nursery_tospace_size);
     tc->nursery_alloc       = tc->nursery_tospace;
-    tc->nursery_alloc_limit = (char *)tc->nursery_alloc + MVM_NURSERY_SIZE;
+    tc->nursery_alloc_limit = (char *)tc->nursery_alloc + tc->nursery_tospace_size;
 
     /* Set up temporary root handling. */
     tc->num_temproots   = 0;
@@ -29,11 +45,22 @@ MVMThreadContext * MVM_tc_create(MVMInstance *instance) {
     /* Set up the second generation allocator. */
     tc->gen2 = MVM_gc_gen2_create(instance);
 
-    /* Use default loop for main thread; create a new one for others. */
-    tc->loop = instance->main_thread ? uv_loop_new() : uv_default_loop();
+    /* The fixed size allocator also keeps pre-thread state. */
+    MVM_fixed_size_create_thread(tc);
+
+    /* Allocate an initial call stack region for the thread. */
+    MVM_callstack_region_init(tc);
 
     /* Initialize random number generator state. */
     MVM_proc_seed(tc, (MVM_platform_now() / 10000) * MVM_proc_getpid(tc));
+
+    /* Initialize frame sequence numbers */
+    tc->next_frame_nr = 0;
+    tc->current_frame_nr = 0;
+
+    /* Initialize last_payload, so we can be sure it's never NULL and don't
+     * need to check. */
+    tc->last_payload = instance->VMNull;
 
     return tc;
 }
@@ -47,17 +74,28 @@ void MVM_tc_destroy(MVMThreadContext *tc) {
     /* We run once again (non-blocking) to eventually close filehandles. */
     uv_run(tc->loop, UV_RUN_NOWAIT);
 
-    /* Free the nursery. */
+    /* Free specialization state. */
+    MVM_spesh_sim_stack_destroy(tc, tc->spesh_sim_stack);
+
+    /* Free the nursery and finalization queue. */
     MVM_free(tc->nursery_fromspace);
     MVM_free(tc->nursery_tospace);
+    MVM_free(tc->finalizing);
 
     /* Destroy the second generation allocator. */
     MVM_gc_gen2_destroy(tc->instance, tc->gen2);
+
+    /* Destory the per-thread fixed size allocator state. */
+    MVM_fixed_size_destroy_thread(tc);
+
+    /* Destroy all callstack regions. */
+    MVM_callstack_region_destroy_all(tc);
 
     /* Free the thread-specific storage */
     MVM_free(tc->gc_work);
     MVM_free(tc->temproots);
     MVM_free(tc->gen2roots);
+    MVM_free(tc->finalize);
 
     /* Free any memory allocated for NFAs and multi-dim indices. */
     MVM_free(tc->nfa_done);
@@ -66,9 +104,6 @@ void MVM_tc_destroy(MVMThreadContext *tc) {
     MVM_free(tc->nfa_fates);
     MVM_free(tc->nfa_longlit);
     MVM_free(tc->multi_dim_indices);
-
-    /* Free per-thread lexotic cache. */
-    MVM_free(tc->lexotic_cache);
 
     /* Destroy the libuv event loop */
     uv_loop_delete(tc->loop);

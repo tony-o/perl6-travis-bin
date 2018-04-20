@@ -1,4 +1,5 @@
 #include "moar.h"
+#include "math/grisu.h"
 
 #if defined(_MSC_VER)
 #define strtoll _strtoi64
@@ -14,7 +15,7 @@ typedef struct {
 } BoolMethReturnData;
 
 MVMint64 MVM_coerce_istrue_s(MVMThreadContext *tc, MVMString *str) {
-    return str == NULL || !IS_CONCRETE(str) || MVM_string_graphs(tc, str) == 0 ? 0 : 1;
+    return str == NULL || !IS_CONCRETE(str) || MVM_string_graphs_nocheck(tc, str) == 0 ? 0 : 1;
 }
 
 /* Tries to do the boolification. It may be that a method call is needed. In
@@ -41,10 +42,9 @@ void MVM_coerce_istrue(MVMThreadContext *tc, MVMObject *obj, MVMRegister *res_re
                      * the register. */
                     MVM_args_setup_thunk(tc, res_reg, MVM_RETURN_INT, inv_arg_callsite);
                     tc->cur_frame->args[0].o = obj;
-                    if (flip) {
-                        tc->cur_frame->special_return      = flip_return;
-                        tc->cur_frame->special_return_data = res_reg;
-                    }
+                    if (flip)
+                        MVM_frame_special_return(tc, tc->cur_frame, flip_return, NULL,
+                            res_reg, NULL);
                     STABLE(code)->invoke(tc, code, inv_arg_callsite, tc->cur_frame->args);
                 }
                 else {
@@ -53,8 +53,7 @@ void MVM_coerce_istrue(MVMThreadContext *tc, MVMObject *obj, MVMRegister *res_re
                     data->true_addr  = true_addr;
                     data->false_addr = false_addr;
                     data->flip       = flip;
-                    tc->cur_frame->special_return      = boolify_return;
-                    tc->cur_frame->special_return_data = data;
+                    MVM_frame_special_return(tc, tc->cur_frame, boolify_return, NULL, data, NULL);
                     MVM_args_setup_thunk(tc, &data->res_reg, MVM_RETURN_INT, inv_arg_callsite);
                     tc->cur_frame->args[0].o = obj;
                     STABLE(code)->invoke(tc, code, inv_arg_callsite, tc->cur_frame->args);
@@ -79,14 +78,22 @@ void MVM_coerce_istrue(MVMThreadContext *tc, MVMObject *obj, MVMRegister *res_re
             }
             case MVM_BOOL_MODE_UNBOX_STR_NOT_EMPTY_OR_ZERO: {
                 MVMString *str;
+                MVMint64 chars;
                 if (!IS_CONCRETE(obj)) {
                     result = 0;
                     break;
                 }
                 str = REPR(obj)->box_funcs.get_str(tc, STABLE(obj), obj, OBJECT_BODY(obj));
-                result = str == NULL ||
-                        !IS_CONCRETE(str) ||
-                        (MVM_string_graphs(tc, str) == 1 && MVM_string_get_grapheme_at_nocheck(tc, str, 0) == 48)
+
+                if (str == NULL || !IS_CONCRETE(str)) {
+                    result = 0;
+                    break;
+                }
+
+                chars = MVM_string_graphs_nocheck(tc, str);
+
+                result = chars == 0 ||
+                        (chars == 1 && MVM_string_get_grapheme_at_nocheck(tc, str, 0) == 48)
                         ? 0 : 1;
                 break;
             }
@@ -143,9 +150,8 @@ static void flip_return(MVMThreadContext *tc, void *sr_data) {
 MVMString * MVM_coerce_i_s(MVMThreadContext *tc, MVMint64 i) {
     char buffer[64];
     int len;
-
     /* See if we can hit the cache. */
-    int cache = i >= 0 && i < MVM_INT_TO_STR_CACHE_SIZE;
+    int cache = 0 <= i && i < MVM_INT_TO_STR_CACHE_SIZE;
     if (cache) {
         MVMString *cached = tc->instance->int_to_str_cache[i];
         if (cached)
@@ -153,8 +159,8 @@ MVMString * MVM_coerce_i_s(MVMThreadContext *tc, MVMint64 i) {
     }
 
     /* Otherwise, need to do the work; cache it if in range. */
-    len = snprintf(buffer, 64, "%lld", (long long int)i);
-    if (len >= 0) {
+    len = snprintf(buffer, 64, "%"PRIi64"", i);
+    if (0 <= len) {
         MVMString *result = MVM_string_ascii_decode(tc, tc->instance->VMString, buffer, len);
         if (cache)
             tc->instance->int_to_str_cache[i] = result;
@@ -178,16 +184,8 @@ MVMString * MVM_coerce_n_s(MVMThreadContext *tc, MVMnum64 n) {
     else {
         char buf[64];
         int i;
-        if (snprintf(buf, 64, "%.15g", n) < 0)
+        if (dtoa_grisu3(n, buf, 64) < 0)
             MVM_exception_throw_adhoc(tc, "Could not stringify number");
-        if (strstr(buf, ".")) {
-            MVMint64 is_not_scientific = !strstr(buf, "e");
-            i = strlen(buf);
-            while (i > 1 && ((buf[--i] == '0'  && is_not_scientific) || buf[i] == ' '))
-                buf[i] = '\0';
-            if (buf[i] == '.')
-                buf[i] = '\0';
-        }
         return MVM_string_ascii_decode(tc, tc->instance->VMString, buf, strlen(buf));
     }
 }
@@ -210,8 +208,11 @@ void MVM_coerce_smart_stringify(MVMThreadContext *tc, MVMObject *obj, MVMRegiste
     }
 
     /* Check if there is a Str method. */
-    strmeth = MVM_6model_find_method_cache_only(tc, obj,
-        tc->instance->str_consts.Str);
+    MVMROOT(tc, obj, {
+        strmeth = MVM_6model_find_method_cache_only(tc, obj,
+            tc->instance->str_consts.Str);
+    });
+
     if (!MVM_is_null(tc, strmeth)) {
         /* We need to do the invocation; just set it up with our result reg as
          * the one for the call. */
@@ -246,23 +247,6 @@ MVMint64 MVM_coerce_s_i(MVMThreadContext *tc, MVMString *s) {
     return i;
 }
 
-MVMnum64 MVM_coerce_s_n(MVMThreadContext *tc, MVMString *s) {
-    char     *enc = MVM_string_ascii_encode(tc, s, NULL, 0);
-    MVMnum64  n;
-    if (strcmp(enc, "NaN") == 0)
-        n = MVM_num_nan(tc);
-    else if (strcmp(enc, "Inf") == 0)
-        n = MVM_num_posinf(tc);
-    else if (strcmp(enc, "+Inf") == 0)
-        n = MVM_num_posinf(tc);
-    else if (strcmp(enc, "-Inf") == 0)
-        n = MVM_num_neginf(tc);
-    else
-        n = atof(enc);
-    MVM_free(enc);
-    return n;
-}
-
 void MVM_coerce_smart_numify(MVMThreadContext *tc, MVMObject *obj, MVMRegister *res_reg) {
     MVMObject *nummeth;
 
@@ -273,8 +257,11 @@ void MVM_coerce_smart_numify(MVMThreadContext *tc, MVMObject *obj, MVMRegister *
     }
 
     /* Check if there is a Num method. */
-    nummeth = MVM_6model_find_method_cache_only(tc, obj,
-        tc->instance->str_consts.Num);
+    MVMROOT(tc, obj, {
+        nummeth = MVM_6model_find_method_cache_only(tc, obj,
+            tc->instance->str_consts.Num);
+    });
+
     if (!MVM_is_null(tc, nummeth)) {
         /* We need to do the invocation; just set it up with our result reg as
          * the one for the call. */
@@ -299,7 +286,7 @@ void MVM_coerce_smart_numify(MVMThreadContext *tc, MVMObject *obj, MVMRegister *
             res_reg->n64 = REPR(obj)->box_funcs.get_num(tc, STABLE(obj), obj, OBJECT_BODY(obj));
         else if (ss->can_box & MVM_STORAGE_SPEC_CAN_BOX_STR)
             res_reg->n64 = MVM_coerce_s_n(tc, REPR(obj)->box_funcs.get_str(tc, STABLE(obj), obj, OBJECT_BODY(obj)));
-        else if (REPR(obj)->ID == MVM_REPR_ID_MVMArray)
+        else if (REPR(obj)->ID == MVM_REPR_ID_VMArray)
             res_reg->n64 = (MVMnum64)REPR(obj)->elems(tc, STABLE(obj), obj, OBJECT_BODY(obj));
         else if (REPR(obj)->ID == MVM_REPR_ID_MVMHash)
             res_reg->n64 = (MVMnum64)REPR(obj)->elems(tc, STABLE(obj), obj, OBJECT_BODY(obj));
@@ -323,7 +310,7 @@ MVMint64 MVM_coerce_simple_intify(MVMThreadContext *tc, MVMObject *obj) {
             return (MVMint64)REPR(obj)->box_funcs.get_num(tc, STABLE(obj), obj, OBJECT_BODY(obj));
         else if (ss->can_box & MVM_STORAGE_SPEC_CAN_BOX_STR)
             return MVM_coerce_s_i(tc, REPR(obj)->box_funcs.get_str(tc, STABLE(obj), obj, OBJECT_BODY(obj)));
-        else if (REPR(obj)->ID == MVM_REPR_ID_MVMArray)
+        else if (REPR(obj)->ID == MVM_REPR_ID_VMArray)
             return REPR(obj)->elems(tc, STABLE(obj), obj, OBJECT_BODY(obj));
         else if (REPR(obj)->ID == MVM_REPR_ID_MVMHash)
             return REPR(obj)->elems(tc, STABLE(obj), obj, OBJECT_BODY(obj));
@@ -363,17 +350,17 @@ MVMObject * MVM_radix(MVMThreadContext *tc, MVMint64 radix, MVMString *str, MVMi
         else if (ch >= 'A' && ch <= 'Z') ch = ch - 'A' + 10;
         else if (ch >= 0xFF21 && ch <= 0xFF3A) ch = ch - 0xFF21 + 10; /* uppercase fullwidth */
         else if (ch >= 0xFF41 && ch <= 0xFF5A) ch = ch - 0xFF41 + 10; /* lowercase fullwidth */
-        else if (ch > 0 && MVM_unicode_codepoint_has_property_value(tc, ch, MVM_UNICODE_PROPERTY_GENERAL_CATEGORY, 
-                MVM_unicode_cname_to_property_value_code(tc, MVM_UNICODE_PROPERTY_GENERAL_CATEGORY, STR_WITH_LEN("Nd")))) {
-            /* As of Unicode 6.0.0, we know that Nd category numerals are within
-             * the range 0..9
+        else if (ch > 0 && MVM_unicode_codepoint_get_property_int(tc, ch, MVM_UNICODE_PROPERTY_NUMERIC_TYPE)
+         == MVM_UNICODE_PVALUE_Numeric_Type_DECIMAL) {
+            /* as of Unicode 9.0.0, characters with the 'de' Numeric Type (and are
+             * thus also of General Category Nd, since 4.0.0) are contiguous
+             * sequences of 10 chars whose Numeric Values ascend from 0 through 9.
              */
 
-            /* the string returned for NUMERIC_VALUE contains a floating point
-             * value, so atoi will stop on the . in the string. This is fine
-             * though, since we'd have to truncate the float regardless.
-             */
-            ch = atoi(MVM_unicode_codepoint_get_property_cstr(tc, ch, MVM_UNICODE_PROPERTY_NUMERIC_VALUE));
+            /* the string returned for NUMERIC_VALUE_NUMERATOR contains an integer
+             * value. We can use numerator because they all are from 0-9 and have
+             * denominator of 1 */
+            ch = fast_atoi(MVM_unicode_codepoint_get_property_cstr(tc, ch, MVM_UNICODE_PROPERTY_NUMERIC_VALUE_NUMERATOR));
         }
         else break;
         if (ch >= radix) break;

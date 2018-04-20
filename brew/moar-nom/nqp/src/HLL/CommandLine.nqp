@@ -18,11 +18,11 @@ HLL::CommandLine - command line parsing tools
 
     # -e "program" also treats everything after it as arguments
     # to the program:
-    $paser.add-stopper('-e');
+    $parser.add-stopper('-e');
 
     my $results := $parser.parse(@*ARGS);
     my %options := $parser.options;
-    my @args    := $pasre.arguments; # remaining arguments from @*ARGS
+    my @args    := $parser.arguments; # remaining arguments from @*ARGS
 
 =head1 DESCRIPTION
 
@@ -171,13 +171,12 @@ class HLL::CommandLine::Parser {
 
     method is-option($x) {
         return 0 if $x eq '-' || $x eq '--';
-        return 1 if nqp::substr($x, 0, 1) eq '-';
-        0;
+        nqp::eqat($x, '-', 0);
     }
 
     method wants-value($x) {
         my $spec := %!options{$x};
-        nqp::substr($spec, 0, 1) eq 's';
+        nqp::eqat($spec, 's', 0);
     }
 
     method optional-value($x) {
@@ -215,7 +214,7 @@ class HLL::CommandLine::Parser {
         while $i < $arg-count {
             my $cur := @args[$i];
             if self.is-option($cur) {
-                if nqp::substr($cur, 0, 2) eq '--' {
+                if nqp::eqat($cur, '--', 0) {
                     # long option
                     my $opt := nqp::substr(@args[$i], 2);
                     my $idx := nqp::index($opt, '=');

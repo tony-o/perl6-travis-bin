@@ -198,6 +198,7 @@ class MAST::Frame is MAST::Node {
     my int $FRAME_FLAG_EXIT_HANDLER := 1;
     my int $FRAME_FLAG_IS_THUNK     := 2;
     my int $FRAME_FLAG_HAS_CODE_OBJ := 4;
+    my int $FRAME_FLAG_NO_INLINE    := 8;
     my int $FRAME_FLAG_HAS_INDEX    := 32768; # Can go after a rebootstrap.
     my int $FRAME_FLAG_HAS_SLV      := 65536; # Can go after a rebootstrap.
     has int $!flags;
@@ -302,6 +303,13 @@ class MAST::Frame is MAST::Node {
             $!flags := nqp::bitor_i($!flags, $FRAME_FLAG_IS_THUNK);
         }
         nqp::bitand_i($!flags, $FRAME_FLAG_IS_THUNK)
+    }
+
+    method no_inline($value = -1) {
+        if $value > 0 {
+            $!flags := nqp::bitor_i($!flags, $FRAME_FLAG_NO_INLINE);
+        }
+        nqp::bitand_i($!flags, $FRAME_FLAG_NO_INLINE)
     }
 
     method set_code_object_idxs(int $sc_dep_idx, int $sc_idx) {
@@ -542,14 +550,16 @@ class MAST::Call is MAST::Node {
     has @!flags;
     has @!args;
     has $!result;
+    has int $!op;
 
-    method new(:$target!, :@flags!, :$result = MAST::Node, *@args) {
+    method new(:$target!, :@flags!, :$result = MAST::Node, :$op = 0, *@args) {
         sanity_check(@flags, @args);
         my $obj := nqp::create(self);
         nqp::bindattr($obj, MAST::Call, '$!target', $target);
         nqp::bindattr($obj, MAST::Call, '@!flags', @flags);
         nqp::bindattr($obj, MAST::Call, '@!args', @args);
         nqp::bindattr($obj, MAST::Call, '$!result', $result);
+        nqp::bindattr_i($obj, MAST::Call, '$!op', $op);
         $obj
     }
 
@@ -619,9 +629,9 @@ class MAST::Annotated is MAST::Node {
 
 # Handler constants.
 module HandlerAction {
-    our $unwind_and_goto      := 0;
-    our $unwind_and_goto_obj  := 1;
-    our $invoke_and_we'll_see := 2;
+    our $unwind_and_goto              := 0;
+    our $unwind_and_goto_with_payload := 1;
+    our $invoke_and_we'll_see         := 2;
 }
 
 # Category constants.
@@ -672,7 +682,7 @@ class MAST::HandlerScope is MAST::Node {
             }
         }
         elsif $action != $HandlerAction::unwind_and_goto &&
-              $action != $HandlerAction::unwind_and_goto_obj {
+              $action != $HandlerAction::unwind_and_goto_with_payload {
             nqp::die("Unknown handler action");
         }
         if $category_mask +& $HandlerCategory::labeled {

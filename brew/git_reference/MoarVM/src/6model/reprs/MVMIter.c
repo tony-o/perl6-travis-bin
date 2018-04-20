@@ -1,12 +1,12 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps MVMIter_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st = MVM_gc_allocate_stable(tc, &MVMIter_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -146,10 +146,10 @@ static void deserialize_stable_size(MVMThreadContext *tc, MVMSTable *st, MVMSeri
 
 /* Initializes the representation. */
 const MVMREPROps * MVMIter_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &MVMIter_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps MVMIter_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     NULL, /* initialize */
@@ -169,7 +169,9 @@ static const MVMREPROps this_repr = {
         MVM_REPR_DEFAULT_BIND_POS_MULTIDIM,
         MVM_REPR_DEFAULT_DIMENSIONS,
         MVM_REPR_DEFAULT_SET_DIMENSIONS,
-        get_elem_storage_spec
+        get_elem_storage_spec,
+        MVM_REPR_DEFAULT_POS_AS_ATOMIC,
+        MVM_REPR_DEFAULT_POS_AS_ATOMIC_MULTIDIM
     },    /* pos_funcs */
     MVM_REPR_DEFAULT_ASS_FUNCS,
     MVM_REPR_DEFAULT_ELEMS,
@@ -189,14 +191,17 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "VMIter", /* name */
     MVM_REPR_ID_MVMIter,
-    0, /* refs_frames */
     NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };
 
 MVMObject * MVM_iter(MVMThreadContext *tc, MVMObject *target) {
     MVMIter *iterator;
+    if (!IS_CONCRETE(target)) {
+        MVM_exception_throw_adhoc(tc, "Cannot iterate over a %s type object", MVM_6model_get_debug_name(tc, target));
+    }
     MVMROOT(tc, target, {
-        if (REPR(target)->ID == MVM_REPR_ID_MVMArray) {
+        if (REPR(target)->ID == MVM_REPR_ID_VMArray) {
             iterator = (MVMIter *)MVM_repr_alloc_init(tc,
                 MVM_hll_current(tc)->array_iterator_type);
             iterator->body.array_state.index = -1;
@@ -232,64 +237,90 @@ MVMObject * MVM_iter(MVMThreadContext *tc, MVMObject *target) {
                 MVMStaticFrame      *sf     = frame->static_info;
                 MVMLexicalRegistry **lexreg = sf->body.lexical_names_list;
                 MVMuint32 i;
-                for (i = 0; i < sf->body.num_lexicals; i++) {
-                    MVMuint32 idx  = lexreg[i]->value;
-                    MVMuint16 type = sf->body.lexical_types[idx];
-                    switch (type) {
-                        case MVM_reg_obj: {
-                            MVMObject *obj = frame->env[idx].o;
-                            if (!obj)
-                                obj = MVM_frame_vivify_lexical(tc, frame, idx);
-                            MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, obj);
-                            break;
+                MVMROOT2(tc, frame, sf, {
+                    for (i = 0; i < sf->body.num_lexicals; i++) {
+                        MVMuint32 idx  = lexreg[i]->value;
+                        MVMuint16 type = sf->body.lexical_types[idx];
+                        switch (type) {
+                            case MVM_reg_obj: {
+                                MVMObject *obj = frame->env[idx].o;
+                                if (!obj)
+                                    obj = MVM_frame_vivify_lexical(tc, frame, idx);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, obj);
+                                break;
+                            }
+                            case MVM_reg_str: {
+                                MVMObject *bs = MVM_repr_box_str(tc, hll->str_box_type,
+                                    frame->env[idx].s);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bs);
+                                break;
+                            }
+                            case MVM_reg_int8: {
+                                MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
+                                    frame->env[idx].i8);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
+                                break;
+                            }
+                            case MVM_reg_uint8: {
+                                MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
+                                    frame->env[idx].u8);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
+                                break;
+                            }
+                            case MVM_reg_int16: {
+                                MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
+                                    frame->env[idx].i16);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
+                                break;
+                            }
+                            case MVM_reg_uint16: {
+                                MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
+                                    frame->env[idx].u16);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
+                                break;
+                            }
+                            case MVM_reg_int32: {
+                                MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
+                                    frame->env[idx].i32);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
+                                break;
+                            }
+                            case MVM_reg_uint32: {
+                                MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
+                                    frame->env[idx].u32);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
+                                break;
+                            }
+                            case MVM_reg_int64: {
+                                MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
+                                    frame->env[idx].i64);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
+                                break;
+                            }
+                            case MVM_reg_uint64: {
+                                MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
+                                    frame->env[idx].u64);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
+                                break;
+                            }
+                            case MVM_reg_num32: {
+                                MVMObject *bn = MVM_repr_box_num(tc, hll->num_box_type,
+                                    frame->env[idx].n32);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bn);
+                                break;
+                            }
+                            case MVM_reg_num64: {
+                                MVMObject *bn = MVM_repr_box_num(tc, hll->num_box_type,
+                                    frame->env[idx].n64);
+                                MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bn);
+                                break;
+                            }
+                            default:
+                                MVM_exception_throw_adhoc(tc,
+                                    "%s lexical type encountered while building context iterator", MVM_reg_get_debug_name(tc, type));
                         }
-                        case MVM_reg_str: {
-                            MVMObject *bs = MVM_repr_box_str(tc, hll->str_box_type,
-                                frame->env[idx].s);
-                            MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bs);
-                            break;
-                        }
-                        case MVM_reg_int8: {
-                            MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
-                                frame->env[idx].i8);
-                            MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
-                            break;
-                        }
-                        case MVM_reg_int16: {
-                            MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
-                                frame->env[idx].i16);
-                            MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
-                            break;
-                        }
-                        case MVM_reg_int32: {
-                            MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
-                                frame->env[idx].i32);
-                            MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
-                            break;
-                        }
-                        case MVM_reg_int64: {
-                            MVMObject *bi = MVM_repr_box_int(tc, hll->int_box_type,
-                                frame->env[idx].i64);
-                            MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bi);
-                            break;
-                        }
-                        case MVM_reg_num32: {
-                            MVMObject *bn = MVM_repr_box_num(tc, hll->num_box_type,
-                                frame->env[idx].n32);
-                            MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bn);
-                            break;
-                        }
-                        case MVM_reg_num64: {
-                            MVMObject *bn = MVM_repr_box_num(tc, hll->num_box_type,
-                                frame->env[idx].n64);
-                            MVM_repr_bind_key_o(tc, ctx_hash, lexreg[i]->key, bn);
-                            break;
-                        }
-                        default:
-                            MVM_exception_throw_adhoc(tc,
-                                "Unknown lexical type encountered while building context iterator");
                     }
-                }
+                });
             });
 
             /* Call ourselves recursively to get the iterator for this
@@ -297,8 +328,8 @@ MVMObject * MVM_iter(MVMThreadContext *tc, MVMObject *target) {
             iterator = (MVMIter *)MVM_iter(tc, ctx_hash);
         }
         else {
-            MVM_exception_throw_adhoc(tc, "Cannot iterate object with %s representation",
-                REPR(target)->name);
+            MVM_exception_throw_adhoc(tc, "Cannot iterate object with %s representation (%s)",
+                REPR(target)->name, MVM_6model_get_debug_name(tc, target));
         }
     });
     return (MVMObject *)iterator;
@@ -323,10 +354,10 @@ MVMint64 MVM_iter_istrue(MVMThreadContext *tc, MVMIter *iter) {
 MVMString * MVM_iterkey_s(MVMThreadContext *tc, MVMIter *iterator) {
     if (REPR(iterator)->ID != MVM_REPR_ID_MVMIter
             || iterator->body.mode != MVM_ITER_MODE_HASH)
-        MVM_exception_throw_adhoc(tc, "This is not a hash iterator");
+        MVM_exception_throw_adhoc(tc, "This is not a hash iterator, it's a %s (%s)", REPR(iterator)->name, MVM_6model_get_debug_name(tc, (MVMObject *)iterator));
     if (!iterator->body.hash_state.curr)
         MVM_exception_throw_adhoc(tc, "You have not advanced to the first item of the hash iterator, or have gone past the end");
-    return (MVMString *)iterator->body.hash_state.curr->key;
+    return MVM_HASH_KEY(iterator->body.hash_state.curr);
 }
 
 MVMObject * MVM_iterval(MVMThreadContext *tc, MVMIter *iterator) {
@@ -334,7 +365,7 @@ MVMObject * MVM_iterval(MVMThreadContext *tc, MVMIter *iterator) {
     MVMObject *target;
     MVMRegister result;
     if (REPR(iterator)->ID != MVM_REPR_ID_MVMIter)
-        MVM_exception_throw_adhoc(tc, "This is not an iterator");
+        MVM_exception_throw_adhoc(tc, "This is not an iterator, it's a %s (%s)", REPR(iterator)->name, MVM_6model_get_debug_name(tc, (MVMObject *)iterator));
     if (iterator->body.mode == MVM_ITER_MODE_ARRAY) {
         body = &iterator->body;
         if (body->array_state.index == -1)

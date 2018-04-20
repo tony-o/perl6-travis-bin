@@ -59,7 +59,9 @@ public abstract class SyncHandle implements IIOClosable, IIOEncodable,
             int read;
             if (readBuffer != null) {
                 total = readBuffer.limit() - readBuffer.position();
-                buffers.add(ByteBuffer.wrap(readBuffer.array(), readBuffer.position(), total));
+                byte[] newBytes = new byte[total];
+                readBuffer.get(newBytes);
+                buffers.add(ByteBuffer.wrap(newBytes));
                 readBuffer = null;
             }
             while ((read = chan.read(curBuffer)) != -1) {
@@ -167,49 +169,58 @@ public abstract class SyncHandle implements IIOClosable, IIOEncodable,
         return dec.decode(allBytes).toString();
     }
 
-    public synchronized String getc(ThreadContext tc) {
+    public synchronized String readchars(ThreadContext tc, int chars) {
         try {
-            int maxBytes = (int)enc.maxBytesPerChar();
-            ByteBuffer toDecode = ByteBuffer.allocate(maxBytes);
-            CharBuffer decoded = CharBuffer.allocate(1);
-            for (int i = 0; i < maxBytes; i++) {
-                /* Ensure we have a read buffer available. */
-                if (readBuffer == null) {
-                    readBuffer = ByteBuffer.allocate(32768);
-                    if (chan.read(readBuffer) == -1) {
-                        /* End of file. */
-                        eof = true;
-                        if (i == 0) {
-                            /* Fine, just no char. */
-                            return "";
-                        }
-                        else {
-                            /* Malformed; following will likely throw. */
-                            toDecode.position(0);
-                            dec.decode(toDecode, decoded, true).throwException();
-                            return decoded.toString();
-                        }
-                    }
-                    readBuffer.flip();
+            dec.reset();
+
+            CharBuffer decoded = CharBuffer.allocate(chars);
+
+            boolean needMoreChars = true;
+
+            if (readBuffer != null) {
+                CoderResult result = dec.decode(readBuffer, decoded, true);
+
+                if (result.isError()) {
+                    result.throwException();
                 }
 
-                /* Get a character from the read buffer. */
-                toDecode.position(i);
-                toDecode.put(readBuffer.get());
-                if (readBuffer.remaining() == 0)
-                    readBuffer = null;
-
-                /* Try to decode; if we fail, try another byte. */
-                toDecode.position(0);
-                CoderResult cr = dec.decode(toDecode, decoded, false);
-                if (!cr.isError()) {
-                    decoded.rewind();
-                    return decoded.toString();
-                }
+                needMoreChars = result.isUnderflow();
             }
-            throw new MalformedInputException(maxBytes);
-        }
-        catch (IOException e) {
+
+            while (needMoreChars && !eof) {
+                ByteBuffer oldReadBuffer = readBuffer;
+
+                readBuffer = ByteBuffer.allocate(32768);
+
+                if (oldReadBuffer != null) {
+                    readBuffer.put(oldReadBuffer);
+                }
+
+                eof = chan.read(readBuffer) == -1;
+
+                readBuffer.flip();
+
+                CoderResult result = dec.decode(readBuffer, decoded, eof);
+
+                if (eof) {
+                    dec.flush(decoded);
+                }
+
+                if (result.isError()) {
+                    result.throwException();
+                }
+
+                needMoreChars = result.isUnderflow();
+
+            }
+
+            decoded.flip();
+
+            String ret = decoded.toString();
+
+            return ret;
+
+        } catch (IOException e) {
             throw ExceptionHandling.dieInternal(tc, e);
         }
     }
@@ -220,12 +231,21 @@ public abstract class SyncHandle implements IIOClosable, IIOEncodable,
 
     public byte[] read(ThreadContext tc, int bytes) {
         try {
-            ByteBuffer buffer = ByteBuffer.allocate(bytes);
-            chan.read(buffer);
-            buffer.flip();
-            byte[] res = new byte[buffer.limit()];
-            buffer.get(res);
-            return res;
+            // look in readBuffer for data from previous read, e.g. via readline
+            if ( readBuffer != null ) {
+                byte[] res = new byte[readBuffer.limit() - readBuffer.position()];
+                readBuffer.get(res);
+                readBuffer = null;
+                return res;
+            }
+            else {
+                ByteBuffer buffer = ByteBuffer.allocate(bytes);
+                eof = chan.read(buffer) == -1;
+                buffer.flip();
+                byte[] res = new byte[buffer.limit()];
+                buffer.get(res);
+                return res;
+            }
         } catch (IOException e) {
             throw ExceptionHandling.dieInternal(tc, e);
         }

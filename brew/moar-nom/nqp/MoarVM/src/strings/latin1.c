@@ -7,19 +7,38 @@ MVMString * MVM_string_latin1_decode(MVMThreadContext *tc, const MVMObject *resu
                                      char *latin1_c, size_t bytes) {
     MVMuint8  *latin1 = (MVMuint8 *)latin1_c;
     MVMString *result = (MVMString *)REPR(result_type)->allocate(tc, STABLE(result_type));
-    size_t i, result_graphs;
+    size_t i, k, result_graphs;
 
-    result->body.storage_type    = MVM_STRING_GRAPHEME_32;
-    result->body.storage.blob_32 = MVM_malloc(sizeof(MVMint32) * bytes);
+    MVMuint8 writing_32bit = 0;
+
+    result->body.storage_type   = MVM_STRING_GRAPHEME_8;
+    result->body.storage.blob_8 = MVM_malloc(sizeof(MVMint8) * bytes);
 
     result_graphs = 0;
     for (i = 0; i < bytes; i++) {
         if (latin1[i] == '\r' && i + 1 < bytes && latin1[i + 1] == '\n') {
-            result->body.storage.blob_32[result_graphs++] = MVM_nfg_crlf_grapheme(tc);
+            if (writing_32bit)
+                result->body.storage.blob_32[result_graphs++] = MVM_nfg_crlf_grapheme(tc);
+            else
+                result->body.storage.blob_8[result_graphs++] = MVM_nfg_crlf_grapheme(tc);
             i++;
         }
         else {
-            result->body.storage.blob_32[result_graphs++] = latin1[i];
+            if (latin1[i] > 127 && !writing_32bit) {
+                MVMGrapheme8 *old_storage = result->body.storage.blob_8;
+
+                result->body.storage.blob_32 = MVM_malloc(sizeof(MVMGrapheme32) * bytes);
+                result->body.storage_type = MVM_STRING_GRAPHEME_32;
+                writing_32bit = 1;
+
+                for (k = 0; k < i; k++)
+                    result->body.storage.blob_32[k] = old_storage[k];
+                MVM_free(old_storage);
+            }
+            if (writing_32bit)
+                result->body.storage.blob_32[result_graphs++] = latin1[i];
+            else
+                result->body.storage.blob_8[result_graphs++] = latin1[i];
         }
     }
     result->body.num_graphs = result_graphs;
@@ -29,7 +48,7 @@ MVMString * MVM_string_latin1_decode(MVMThreadContext *tc, const MVMObject *resu
 
 /* Decodes using a decodestream. Decodes as far as it can with the input
  * buffers, or until a stopper is reached. */
-void MVM_string_latin1_decodestream(MVMThreadContext *tc, MVMDecodeStream *ds,
+MVMuint32 MVM_string_latin1_decodestream(MVMThreadContext *tc, MVMDecodeStream *ds,
                                     const MVMint32 *stopper_chars,
                                     MVMDecodeStreamSeparators *seps) {
     MVMint32 count = 0, total = 0;
@@ -38,23 +57,24 @@ void MVM_string_latin1_decodestream(MVMThreadContext *tc, MVMDecodeStream *ds,
     MVMDecodeStreamBytes *cur_bytes;
     MVMDecodeStreamBytes *last_accept_bytes = ds->bytes_head;
     MVMint32 last_accept_pos, last_was_cr;
+    MVMuint32 reached_stopper;
 
     /* If there's no buffers, we're done. */
     if (!ds->bytes_head)
-        return;
+        return 0;
     last_accept_pos = ds->bytes_head_pos;
 
     /* If we're asked for zero chars, also done. */
     if (stopper_chars && *stopper_chars == 0)
-        return;
+        return 1;
 
-    /* Take length of head buffer as initial guess. */
-    bufsize = ds->bytes_head->length;
+    bufsize = ds->result_size_guess;
     buffer = MVM_malloc(bufsize * sizeof(MVMGrapheme32));
 
     /* Decode each of the buffers. */
     cur_bytes = ds->bytes_head;
     last_was_cr = 0;
+    reached_stopper = 0;
     while (cur_bytes) {
         /* Process this buffer. */
         MVMint32  pos = cur_bytes == ds->bytes_head ? ds->bytes_head_pos : 0;
@@ -64,7 +84,7 @@ void MVM_string_latin1_decodestream(MVMThreadContext *tc, MVMDecodeStream *ds,
             MVMGrapheme32 graph;
             if (last_was_cr) {
                 if (codepoint == '\n') {
-                    graph = MVM_nfg_crlf_grapheme(tc);
+                    graph = MVM_unicode_normalizer_translated_crlf(tc, &(ds->norm));
                 }
                 else {
                     graph = '\r';
@@ -90,10 +110,14 @@ void MVM_string_latin1_decodestream(MVMThreadContext *tc, MVMDecodeStream *ds,
             last_accept_bytes = cur_bytes;
             last_accept_pos = pos;
             total++;
-            if (stopper_chars && *stopper_chars == total)
+            if (MVM_string_decode_stream_maybe_sep(tc, seps, codepoint)) {
+                reached_stopper = 1;
                 goto done;
-            if (MVM_string_decode_stream_maybe_sep(tc, seps, codepoint))
+            }
+            else if (stopper_chars && *stopper_chars == total) {
+                reached_stopper = 1;
                 goto done;
+            }
         }
         cur_bytes = cur_bytes->next;
     }
@@ -105,9 +129,11 @@ void MVM_string_latin1_decodestream(MVMThreadContext *tc, MVMDecodeStream *ds,
         MVM_string_decodestream_add_chars(tc, ds, buffer, count);
     }
     else {
-	MVM_free(buffer);
+        MVM_free(buffer);
     }
     MVM_string_decodestream_discard_to(tc, ds, last_accept_bytes, last_accept_pos);
+
+    return reached_stopper;
 }
 
 /* Encodes the specified substring to latin-1. Anything outside of latin-1 range
@@ -117,9 +143,8 @@ char * MVM_string_latin1_encode_substr(MVMThreadContext *tc, MVMString *str, MVM
         MVMString *replacement, MVMint32 translate_newlines) {
     /* Latin-1 is a single byte encoding, but \r\n is a 2-byte grapheme, so we
      * may have to resize as we go. */
-    MVMuint32 startu = (MVMuint32)start;
     MVMStringIndex strgraphs = MVM_string_graphs(tc, str);
-    MVMuint32 lengthu = (MVMuint32)(length == -1 ? strgraphs - startu : length);
+    MVMuint32 lengthu = (MVMuint32)(length == -1 ? strgraphs - (MVMuint32)start : length);
     MVMuint8 *result;
     size_t result_alloc;
     MVMuint8 *repl_bytes = NULL;
@@ -147,7 +172,7 @@ char * MVM_string_latin1_encode_substr(MVMThreadContext *tc, MVMString *str, MVM
     else {
         MVMuint32 i = 0;
         MVMCodepointIter ci;
-        MVM_string_ci_init(tc, &ci, str, translate_newlines);
+        MVM_string_ci_init(tc, &ci, str, translate_newlines, 0);
         while (MVM_string_ci_has_more(tc, &ci)) {
             MVMCodepoint ord = MVM_string_ci_get_codepoint(tc, &ci);
             if (i == result_alloc) {

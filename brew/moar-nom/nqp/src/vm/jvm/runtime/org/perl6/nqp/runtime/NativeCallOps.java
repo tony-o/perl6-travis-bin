@@ -6,6 +6,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 
 import com.sun.jna.Callback;
+import com.sun.jna.Function;
 import com.sun.jna.NativeLibrary;
 import com.sun.jna.NativeLong;
 import com.sun.jna.Memory;
@@ -63,10 +64,17 @@ public final class NativeCallOps {
         try {
             /* Load the library and locate the symbol. */
             /* TODO: Error handling! */
-            NativeLibrary library = libname == null || libname.equals("")
-                ? NativeLibrary.getProcess()
-                : NativeLibrary.getInstance(libname);
-            call.entry_point = library.getFunction(symbol);
+            SixModelObject entry_point = Ops.atkey(returns, "entry_point", tc);
+            if (Ops.isnull(entry_point) == 0) {
+                /* TODO: Set the calling convention? */
+                call.entry_point = Function.getFunction(new Pointer(Ops.unbox_i(entry_point, tc)));
+            }
+            else {
+                NativeLibrary library = libname == null || libname.equals("")
+                    ? NativeLibrary.getProcess()
+                    : NativeLibrary.getInstance(libname);
+                call.entry_point = library.getFunction(symbol);
+            }
     
             /* TODO: Set the calling convention. */
     
@@ -130,16 +138,28 @@ public final class NativeCallOps {
                     SixModelObject o = arguments.at_pos_boxed(tc, i);
                     switch (call.arg_types[i]) {
                         case CHAR_RW:
-                        case UCHAR_RW:
                             ((NativeRefInstance) o).store_i(tc, ((Memory) cArgs[i]).getByte(0));
                             break;
+                        case UCHAR_RW:
+                            short bval = ((Memory) cArgs[i]).getByte(0);
+                            bval += bval < 0 ? 0x100 : 0;
+                            ((NativeRefInstance) o).store_i(tc, bval);
+                            break;
                         case SHORT_RW:
-                        case USHORT_RW:
                             ((NativeRefInstance) o).store_i(tc, ((Memory) cArgs[i]).getShort(0));
                             break;
+                        case USHORT_RW:
+                            int sval = ((Memory) cArgs[i]).getShort(0);
+                            sval += sval < 0 ? 0x10000 : 0;
+                            ((NativeRefInstance) o).store_i(tc, sval);
+                            break;
                         case INT_RW:
-                        case UINT_RW:
                             ((NativeRefInstance) o).store_i(tc, ((Memory) cArgs[i]).getInt(0));
+                            break;
+                        case UINT_RW:
+                            long ival = ((Memory) cArgs[i]).getInt(0);
+                            ival += ival < 0 ? 0x100000000L : 0;
+                            ((NativeRefInstance) o).store_i(tc, ival);
                             break;
                         case LONG_RW:
                         case ULONG_RW:
@@ -477,7 +497,7 @@ public final class NativeCallOps {
             /* TODO: Handle encodings. */
             o = Ops.decont(o, tc);
             if (Ops.isconcrete(o, tc) == 0) return null;
-            SixModelObject meth = Ops.findmethod(o, "cstr", tc);
+            SixModelObject meth = Ops.findmethodNonFatal(o, "cstr", tc);
             if (meth != null) {
                 Ops.invokeDirect(tc, meth, new CallSiteDescriptor(new byte[] { ARG_OBJ }, null), new Object[] { o });
                 CStrInstance cstr = (CStrInstance) Ops.decont(Ops.result_o(tc.resultFrame()), tc);
@@ -665,7 +685,7 @@ public final class NativeCallOps {
         }
         case USHORT: {
             nqpobj = type.st.REPR.allocate(tc, type.st);
-            long val = ((Short) o).byteValue();
+            long val = ((Short) o).shortValue();
             if (val < 0)
                 val += 0x10000;
             nqpobj.set_int(tc, val);
@@ -673,7 +693,7 @@ public final class NativeCallOps {
         }
         case UINT: {
             nqpobj = type.st.REPR.allocate(tc, type.st);
-            long val = ((Integer) o).byteValue();
+            long val = ((Integer) o).intValue();
             if (val < 0)
                 val += 0x100000000L;
             nqpobj.set_int(tc, val);
@@ -701,7 +721,7 @@ public final class NativeCallOps {
         }
         case DOUBLE: {
             nqpobj = type.st.REPR.allocate(tc, type.st);
-            double val = ((Double) o).floatValue();
+            double val = ((Double) o).doubleValue();
             nqpobj.set_num(tc, val);
             break;
         }

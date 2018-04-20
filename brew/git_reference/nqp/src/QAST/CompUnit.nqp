@@ -29,8 +29,11 @@ class QAST::CompUnit is QAST::Node does QAST::Children {
     # What to run if this is the main entry point.
     has $!main;
 
+    has $!is_nested;
+
     method new(*@children, *%options) {
         my $node := nqp::create(self);
+        nqp::bindattr_i($node, QAST::Node, '$!flags', 0);
         nqp::bindattr($node, QAST::CompUnit, '@!children', @children);
         $node.set(%options) if %options;
         $node
@@ -58,11 +61,16 @@ class QAST::CompUnit is QAST::Node does QAST::Children {
     method code_ref_blocks($value = NO_VALUE) {
         $!code_ref_blocks := $value unless $value =:= NO_VALUE; $!code_ref_blocks
     }
+    method is_nested($value = NO_VALUE) {
+        $!is_nested := $value unless $value =:= NO_VALUE; $!is_nested
+    }
 
     method extra_children() {
         [
             'pre_deserialize', self.pre_deserialize,
-            'post_deserialize', self.post_deserialize
+            'post_deserialize', self.post_deserialize,
+            'main', self.main ?? [self.main] !! [],
+            'load', self.load ?? [self.load] !! [],
         ];
     }
 }

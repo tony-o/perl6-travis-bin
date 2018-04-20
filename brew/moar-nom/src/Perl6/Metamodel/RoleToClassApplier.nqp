@@ -20,7 +20,7 @@ my class RoleToClassApplier {
             return 0;
         }
     }
-    
+
     sub has_private_method($target, $name) {
         my %pmt := $target.HOW.private_method_table($target);
         return nqp::existskey(%pmt, $name)
@@ -108,9 +108,18 @@ my class RoleToClassApplier {
                 if $yada {
                     unless has_method($target, $name, 0)
                             || has_public_attribute($target, $name) {
+                        my @needed;
+                        for @roles {
+                            for $_.HOW.method_table($_) -> $m {
+                                if $m.key eq $name {
+                                    nqp::push(@needed, $_.HOW.name($_));
+                                }
+                            }
+                        }
                         nqp::die("Method '$name' must be implemented by " ~
-                            $target.HOW.name($target) ~
-                            " because it is required by a role");
+                                 $target.HOW.name($target) ~
+                                 " because it is required by roles: " ~
+                                 nqp::join(", ", @needed) ~ ".");
                     }
                 }
                 elsif !has_method($target, $name, 1) {
@@ -128,7 +137,7 @@ my class RoleToClassApplier {
                 }
             }
         }
-        
+
         # Compose in any multi-methods, looking for any requirements and
         # ensuring they are met.
         if nqp::can($to_compose_meta, 'multi_methods_to_incorporate') {
@@ -184,7 +193,7 @@ my class RoleToClassApplier {
             }
             $target.HOW.add_attribute($target, $_);
         }
-        
+
         # Compose in any parents.
         if nqp::can($to_compose_meta, 'parents') {
             my @parents := $to_compose_meta.parents($to_compose, :local(1));
@@ -192,7 +201,7 @@ my class RoleToClassApplier {
                 $target.HOW.add_parent($target, $_);
             }
         }
-        
+
         # Copy any array_type.
         if nqp::can($target.HOW, 'is_array_type') && !$target.HOW.is_array_type($target) {
             if nqp::can($to_compose_meta, 'is_array_type') {
@@ -201,7 +210,7 @@ my class RoleToClassApplier {
                 }
             }
         }
-        
+
         1;
     }
 }

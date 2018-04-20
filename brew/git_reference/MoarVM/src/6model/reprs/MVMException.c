@@ -1,12 +1,12 @@
 #include "moar.h"
 
 /* This representation's function pointer table. */
-static const MVMREPROps this_repr;
+static const MVMREPROps MVMException_this_repr;
 
 /* Creates a new type object of this representation, and associates it with
  * the given HOW. Also sets the invocation protocol handler in the STable. */
 static MVMObject * type_object_for(MVMThreadContext *tc, MVMObject *HOW) {
-    MVMSTable *st = MVM_gc_allocate_stable(tc, &this_repr, HOW);
+    MVMSTable *st = MVM_gc_allocate_stable(tc, &MVMException_this_repr, HOW);
 
     MVMROOT(tc, st, {
         MVMObject *obj = MVM_gc_allocate_type_object(tc, st);
@@ -27,15 +27,7 @@ static void gc_mark(MVMThreadContext *tc, MVMSTable *st, void *data, MVMGCWorkli
     MVMExceptionBody *body = (MVMExceptionBody *)data;
     MVM_gc_worklist_add(tc, worklist, &body->message);
     MVM_gc_worklist_add(tc, worklist, &body->payload);
-    MVM_gc_worklist_add_frame(tc, worklist, body->origin);
-}
-
-/* Called by the VM in order to free memory associated with this object. */
-static void gc_free(MVMThreadContext *tc, MVMObject *obj) {
-    MVMException *ctx = (MVMException *)obj;
-    if (ctx->body.origin) {
-        ctx->body.origin = MVM_frame_dec_ref(tc, ctx->body.origin);
-    }
+    MVM_gc_worklist_add(tc, worklist, &body->origin);
 }
 
 static const MVMStorageSpec storage_spec = {
@@ -60,10 +52,10 @@ static void compose(MVMThreadContext *tc, MVMSTable *st, MVMObject *info) {
 
 /* Initializes the representation. */
 const MVMREPROps * MVMException_initialize(MVMThreadContext *tc) {
-    return &this_repr;
+    return &MVMException_this_repr;
 }
 
-static const MVMREPROps this_repr = {
+static const MVMREPROps MVMException_this_repr = {
     type_object_for,
     MVM_gc_allocate_object,
     NULL, /* initialize */
@@ -81,7 +73,7 @@ static const MVMREPROps this_repr = {
     NULL, /* deserialize_repr_data */
     NULL, /* deserialize_stable_size */
     gc_mark,
-    gc_free,
+    NULL, /* gc_free */
     NULL, /* gc_cleanup */
     NULL, /* gc_mark_repr_data */
     NULL, /* gc_free_repr_data */
@@ -89,6 +81,6 @@ static const MVMREPROps this_repr = {
     NULL, /* spesh */
     "VMException", /* name */
     MVM_REPR_ID_MVMException,
-    1, /* refs_frames */
     NULL, /* unmanaged_size */
+    NULL, /* describe_refs */
 };

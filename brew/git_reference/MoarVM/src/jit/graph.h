@@ -5,22 +5,20 @@ struct MVMJitGraph {
     MVMJitNode    *first_node;
     MVMJitNode    *last_node;
 
-    /* total number of labels, including deopt labels, handler labels,
-       and inline start-stops labels */
+    /* Number of instruction+bb+graph labels, but excluding the expression labels */
     MVMint32       num_labels;
-    /* bb labels are all basic block label numbers, indexed by basic
-       block number */
-    MVMint32       num_bbs;
-    MVMint32      *bb_labels;
-    
-    MVMint32       num_deopts;
-    MVMJitDeopt   *deopts;
+    /* Offset for instruction labels */
+    MVMint32       obj_label_ofs;
 
-    MVMint32       num_handlers;
-    MVMJitHandler *handlers;
-    
-    MVMint32       num_inlines;
-    MVMJitInline  *inlines;
+    /* Sequence number for expr trees */
+    MVMuint32      expr_seq_nr;
+
+    /* All labeled things */
+    MVM_VECTOR_DECL(void*, obj_labels);
+    MVM_VECTOR_DECL(MVMJitDeopt, deopts);
+    MVM_VECTOR_DECL(MVMJitHandler, handlers);
+    MVM_VECTOR_DECL(MVMJitInline, inlines);
+    MVM_VECTOR_DECL(MVMJitNode*, label_nodes);
 };
 
 struct MVMJitDeopt {
@@ -59,10 +57,11 @@ struct MVMJitGuard {
 #define MVM_JIT_INFO_THROWISH 2
 
 typedef enum {
-    MVM_JIT_CONTROL_INVOKISH,
+    MVM_JIT_CONTROL_INVOKISH = 1,
     MVM_JIT_CONTROL_DYNAMIC_LABEL,
     MVM_JIT_CONTROL_THROWISH_PRE,
     MVM_JIT_CONTROL_THROWISH_POST,
+    MVM_JIT_CONTROL_CHECK_RETURN,
     MVM_JIT_CONTROL_BREAKPOINT,
 } MVMJitControlType;
 
@@ -73,7 +72,7 @@ struct MVMJitControl {
 
 /* Special branch target for the exit */
 #define MVM_JIT_BRANCH_EXIT -1
-#define MVM_JIT_BRANCH_OUT  -2
+
 
 /* What does a branch need? a label to go to, an instruction to read */
 struct MVMJitBranch {
@@ -101,6 +100,31 @@ typedef enum {
     MVM_JIT_LITERAL_PTR,
     MVM_JIT_REG_STABLE,
     MVM_JIT_REG_OBJBODY,
+    /* Take from register relative to cur_op. Usually code is JIT compiled by
+       spesh which already known the indexes of the registers an op uses.
+       Compilation of native calls however happens ahead of time when the code
+       that will call the ncinvoke op may not even exist yet. In that case
+       we need to do the same as interp.c and address registers relative to
+       cur_op. */
+    MVM_JIT_REG_DYNIDX,
+    MVM_JIT_DATA_LABEL,
+    MVM_JIT_SAVED_RV,
+    /* The MVM_JIT_ARG_* types are used when the offset into the WORK array is
+       not known yet, i.e. for ahead of time compiled native calls. */
+    MVM_JIT_ARG_I64,
+    MVM_JIT_ARG_I64_RW,
+    /* Pointers are passed as objects with CPointer representation, i.e. the
+       actual pointer is part of the object's data. The MVM_JIT_ARG_PTR type
+       unboxes the CPointer object and passes on the contained pointer */
+    MVM_JIT_ARG_PTR,
+    MVM_JIT_ARG_VMARRAY,
+    /* The MVM_JIT_PARAM_* types are usd when actual JIT compilation is
+       happening as part of spesh, i.e. the offset of the args buffer in WORK
+       is already known. */
+    MVM_JIT_PARAM_I64,
+    MVM_JIT_PARAM_I64_RW,
+    MVM_JIT_PARAM_PTR,
+    MVM_JIT_PARAM_VMARRAY,
 } MVMJitArgType;
 
 struct MVMJitCallArg {
@@ -119,19 +143,26 @@ typedef enum {
     MVM_JIT_RV_VOID,
     /* ptr and int are mostly the same, but they might not be on all
        platforms */
-    MVM_JIT_RV_INT, 
+    MVM_JIT_RV_INT,
     MVM_JIT_RV_PTR,
     /* floats aren't */
     MVM_JIT_RV_NUM,
     /* dereference and store */
     MVM_JIT_RV_DEREF,
     /* store local at address */
-    MVM_JIT_RV_ADDR
+    MVM_JIT_RV_ADDR,
+    /* Store in register relative to cur_op. Usually code is JIT compiled by
+       spesh which already known the indexes of the registers an op uses.
+       Compilation of native calls however happens ahead of time when the code
+       that will call the ncinvoke op may not even exist yet. In that case
+       we need to do the same as interp.c and address registers relative to
+       cur_op. */
+    MVM_JIT_RV_DYNIDX,
 } MVMJitRVMode;
 
 
 struct MVMJitCallC {
-    void       *func_ptr; 
+    void       *func_ptr;
     MVMJitCallArg  *args;
     MVMuint16   num_args;
     MVMuint16  has_vargs;
@@ -154,10 +185,20 @@ struct MVMJitInvoke {
 struct MVMJitJumpList {
     MVMint64 num_labels;
     MVMint16 reg;
-    // labels of the goto's / jump instructions themselves
+    /* labels of the goto's / jump instructions themselves */
     MVMint32 *in_labels;
-    // labels the goto's jump to
+    /* labels the goto's jump to */
     MVMint32 *out_labels;
+};
+
+struct MVMJitData {
+    MVMint32 label;
+    void     *data;
+    size_t    size;
+};
+
+struct MVMJitStackSlot {
+    MVMint16 slot;
 };
 
 /* Node types */
@@ -170,11 +211,14 @@ typedef enum {
     MVM_JIT_NODE_INVOKE,
     MVM_JIT_NODE_JUMPLIST,
     MVM_JIT_NODE_CONTROL,
+    MVM_JIT_NODE_DATA,
+    MVM_JIT_NODE_EXPR_TREE,
+    MVM_JIT_NODE_SAVE_RV,
 } MVMJitNodeType;
 
 struct MVMJitNode {
-    MVMJitNode   * next; // linked list
-    MVMJitNodeType type; // tag
+    MVMJitNode   * next; /* linked list */
+    MVMJitNodeType type; /* tag */
     union {
         MVMJitPrimitive prim;
         MVMJitCallC     call;
@@ -184,7 +228,11 @@ struct MVMJitNode {
         MVMJitInvoke    invoke;
         MVMJitJumpList  jumplist;
         MVMJitControl   control;
+        MVMJitData      data;
+        MVMJitExprTree *tree;
+        MVMJitStackSlot stack;
     } u;
 };
 
 MVMJitGraph* MVM_jit_try_make_graph(MVMThreadContext *tc, MVMSpeshGraph *sg);
+void MVM_jit_graph_destroy(MVMThreadContext *tc, MVMJitGraph *graph);

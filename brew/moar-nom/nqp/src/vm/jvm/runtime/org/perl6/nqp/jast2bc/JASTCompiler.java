@@ -260,6 +260,26 @@ public class JASTCompiler {
             else if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
                 m.visitIntInsn(Opcodes.SIPUSH, value);
             }
+            // bandaid for rakudo: reduce number of constant pool entries
+            else if (value > Short.MAX_VALUE) {
+                int value_remain = value - Short.MAX_VALUE;
+                m.visitIntInsn(Opcodes.SIPUSH, Short.MAX_VALUE);
+                while (value_remain > Short.MAX_VALUE) {
+                    value_remain = value_remain - Short.MAX_VALUE;
+                    m.visitIntInsn(Opcodes.SIPUSH, Short.MAX_VALUE);
+                    m.visitInsn(Opcodes.IADD);
+                }
+                if (value_remain <= 5) {
+                    m.visitInsn(Opcodes.ICONST_0 + value_remain);
+                }
+                else if (value_remain <= Byte.MAX_VALUE) {
+                    m.visitIntInsn(Opcodes.BIPUSH, value_remain);
+                }
+                else {
+                    m.visitIntInsn(Opcodes.SIPUSH, value_remain);
+                }
+                m.visitInsn(Opcodes.IADD);
+            }
             else {
                 m.visitLdcInsn(value);
             }
@@ -306,7 +326,7 @@ public class JASTCompiler {
             }
         }
         else {
-            throw new Exception("Unknown JAST::Node in @!instructions");
+            throw new Exception("Unknown JAST::Node in @!instructions: " + typeName(insn, tc));
         }
     }
 
@@ -333,6 +353,11 @@ public class JASTCompiler {
         case 0x0e: // dconst_0
         case 0x0f: // dconst_1
             m.visitInsn(instruction);
+            break;
+        case 0x12: // ldc
+            // XXX: only supporting String constants currently
+            String constant = atpos(args, 0, tc).get_str(tc);
+            m.visitLdcInsn(constant);
             break;
         case 0x15: // iload
         case 0x16: // lload

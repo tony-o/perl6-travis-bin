@@ -10,16 +10,14 @@
 #define MVM_PIPE_INHERIT_ERR   64
 #define MVM_PIPE_IGNORE_ERR   128
 #define MVM_PIPE_CAPTURE_ERR  256
+#define MVM_PIPE_MERGED_OUT_ERR 512
 
 MVMObject * MVM_proc_getenvhash(MVMThreadContext *tc);
-MVMint64 MVM_proc_shell(MVMThreadContext *tc, MVMString *cmd, MVMString *cwd, MVMObject *env,
-        MVMObject *in, MVMObject *out, MVMObject *err, MVMint64 flags);
-MVMint64 MVM_proc_spawn(MVMThreadContext *tc, MVMObject *argv, MVMString *cwd, MVMObject *env,
-        MVMObject *in, MVMObject *out, MVMObject *err, MVMint64 flags);
 MVMObject * MVM_proc_spawn_async(MVMThreadContext *tc, MVMObject *queue, MVMObject *args,
          MVMString *cwd, MVMObject *env, MVMObject *callbacks);
 void MVM_proc_kill_async(MVMThreadContext *tc, MVMObject *handle, MVMint64 signal);
 MVMint64 MVM_proc_getpid(MVMThreadContext *tc);
+MVMint64 MVM_proc_getppid(MVMThreadContext *tc);
 MVMint64 MVM_proc_rand_i(MVMThreadContext *tc);
 MVMnum64 MVM_proc_rand_n(MVMThreadContext *tc);
 MVMnum64 MVM_proc_randscale_n(MVMThreadContext *tc, MVMnum64 scale);
@@ -28,3 +26,10 @@ MVMint64 MVM_proc_time_i(MVMThreadContext *tc);
 MVMObject * MVM_proc_clargs(MVMThreadContext *tc);
 MVMnum64 MVM_proc_time_n(MVMThreadContext *tc);
 MVMString * MVM_executable_name(MVMThreadContext *tc);
+void MVM_proc_getrusage(MVMThreadContext *tc, MVMObject *result);
+
+#ifdef _WIN32
+#include <wchar.h>
+MVM_PUBLIC char ** MVM_UnicodeToUTF8_argv(const int argc, wchar_t **argv);
+#endif
+
